@@ -1,23 +1,18 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { winstonLoggerConfig } from './logger/logger.config';
 
-const logger = new Logger('Bootstrap');
-
-// ─── Global crash protection ────────────────────────────────
-process.on('uncaughtException', (err) => {
-  logger.error(`Uncaught Exception: ${err.message}`, err.stack);
-  // PM2 will auto-restart the process
-});
-
-process.on('unhandledRejection', (reason: any) => {
-  logger.error(`Unhandled Rejection: ${reason?.message || reason}`, reason?.stack);
-});
+// Winston handles uncaughtException & unhandledRejection via its
+// exceptionHandlers / rejectionHandlers (see logger.config.ts),
+// but we still keep a safety net so the process doesn't exit:
+process.on('uncaughtException', () => { /* logged by winston */ });
+process.on('unhandledRejection', () => { /* logged by winston */ });
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
-    logger: ['error', 'warn', 'log'],
+    logger: winstonLoggerConfig,
   });
 
   // Global prefix
