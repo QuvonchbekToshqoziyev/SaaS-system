@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { LogIn } from 'lucide-react';
 
@@ -66,7 +66,7 @@ export default function LoginPage() {
         </form>
 
         <div className="login-footer">
-          Hisobingiz yo'qmi? <Link to="/register">Ro'yxatdan o'tish</Link>
+          <span style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>Foydalanuvchilarni admin qo'shadi</span>
         </div>
       </div>
     </div>

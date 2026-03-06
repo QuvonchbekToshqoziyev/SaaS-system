@@ -3,7 +3,6 @@ import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import AppLayout from './components/layout/AppLayout';
 import LoginPage from './pages/auth/LoginPage';
-import RegisterPage from './pages/auth/RegisterPage';
 import DashboardPage from './pages/dashboard/DashboardPage';
 import TransactionsPage from './pages/transactions/TransactionsPage';
 import CompaniesPage from './pages/companies/CompaniesPage';
@@ -59,7 +58,6 @@ export default function App() {
         <Routes>
           {/* Auth */}
           <Route path="/login" element={<GuestRoute><LoginPage /></GuestRoute>} />
-          <Route path="/register" element={<GuestRoute><RegisterPage /></GuestRoute>} />
 
           {/* Protected */}
           <Route path="/" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
