@@ -1,10 +1,24 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 
+const logger = new Logger('Bootstrap');
+
+// ─── Global crash protection ────────────────────────────────
+process.on('uncaughtException', (err) => {
+  logger.error(`Uncaught Exception: ${err.message}`, err.stack);
+  // PM2 will auto-restart the process
+});
+
+process.on('unhandledRejection', (reason: any) => {
+  logger.error(`Unhandled Rejection: ${reason?.message || reason}`, reason?.stack);
+});
+
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    logger: ['error', 'warn', 'log'],
+  });
 
   // Global prefix
   app.setGlobalPrefix('api/v1');

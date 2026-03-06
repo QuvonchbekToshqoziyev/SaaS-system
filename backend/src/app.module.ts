@@ -16,6 +16,7 @@ import { ChatModule } from './chat/chat.module';
 import { AuditModule } from './audit/audit.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { PaymentsModule } from './payments/payments.module';
+import { HealthModule } from './health/health.module';
 
 import {
   User,
@@ -90,6 +91,7 @@ import {
     AuditModule,
     SubscriptionsModule,
     PaymentsModule,
+    HealthModule,
   ],
 })
 export class AppModule {}
