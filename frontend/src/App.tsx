@@ -15,7 +15,7 @@ import ChatPage from './pages/chat/ChatPage';
 import UsersPage from './pages/users/UsersPage';
 import AuditPage from './pages/audit/AuditPage';
 import SettingsPage from './pages/settings/SettingsPage';
-import SubscriptionsPage from './pages/subscriptions/SubscriptionsPage';
+// import SubscriptionsPage from './pages/subscriptions/SubscriptionsPage'; // admin manages subscriptions
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -73,7 +73,7 @@ export default function App() {
             <Route path="users" element={<UsersPage />} />
             <Route path="audit" element={<AuditPage />} />
             <Route path="settings" element={<SettingsPage />} />
-            <Route path="subscriptions" element={<SubscriptionsPage />} />
+            {/* <Route path="subscriptions" element={<SubscriptionsPage />} /> */}
           </Route>
 
           {/* Catch-all */}

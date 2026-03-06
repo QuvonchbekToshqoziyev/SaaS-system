@@ -3,7 +3,7 @@ import { useAuth } from '../../context/AuthContext';
 import {
   LayoutDashboard, ArrowLeftRight, Building2, Users, Package,
   UserCheck, GitBranch, BarChart3, MessageCircle, Shield,
-  Settings, LogOut, Menu, X, CreditCard
+  Settings, LogOut, Menu, X,
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -20,7 +20,7 @@ const mainNav = [
 const secondaryNav = [
   { to: '/reports', icon: BarChart3, label: 'Hisobotlar' },
   { to: '/chat', icon: MessageCircle, label: 'Chat' },
-  { to: '/subscriptions', icon: CreditCard, label: 'Obuna & To\'lov' },
+  // { to: '/subscriptions', icon: CreditCard, label: 'Obuna & To\'lov' }, // admin manages subscriptions
   { to: '/audit', icon: Shield, label: 'Audit log' },
   { to: '/users', icon: Users, label: 'Foydalanuvchilar' },
   { to: '/settings', icon: Settings, label: 'Sozlamalar' },
