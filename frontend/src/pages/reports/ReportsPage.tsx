@@ -6,7 +6,7 @@ import { FileBarChart2, Download } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import toast from 'react-hot-toast';
 
-const COLORS = ['#4361EE', '#06B6D4', '#F59E0B', '#EF4444', '#7C3AED', '#10B981'];
+const COLORS = ['#4361EE', '#06B6D4', '#FF6427', '#EF4444', '#7C3AED', '#10B981'];
 
 export default function ReportsPage() {
   const { user } = useAuth();

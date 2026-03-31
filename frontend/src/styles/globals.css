@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
 :root {
   /* ── Brand Palette ── */
@@ -7,8 +7,8 @@
   --brand-primary-light: #6B83F5;
   --brand-primary-bg: rgba(67, 97, 238, 0.08);
   --brand-secondary: #7C3AED;
-  --brand-accent: #F59E0B;
-  --brand-accent-light: #FCD34D;
+  --brand-accent: #FF6427;
+  --brand-accent-light: #FF9066;
 
   /* ── Semantic Palette ── */
   --success: #10B981;
@@ -39,8 +39,8 @@
   --text-inverse: #FFFFFF;
 
   /* ── Font Families ── */
-  --font-display: 'Plus Jakarta Sans', 'Inter', sans-serif;
-  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-display: 'Space Grotesk', 'Outfit', sans-serif;
+  --font-body: 'Outfit', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
 
   --input-bg: #FFFFFF;
@@ -123,6 +123,16 @@
   --glass-hover: var(--bg-tertiary);
 }
 
+[data-theme="dark"] .app-background {
+  background-image:
+    radial-gradient(ellipse 70% 60% at 10% 10%, rgba(67, 97, 238, 0.20) 0, transparent 60%),
+    radial-gradient(ellipse 50% 50% at 90% 85%, rgba(255, 100, 39, 0.12) 0, transparent 55%),
+    radial-gradient(ellipse 60% 50% at 75% 15%, rgba(124, 58, 237, 0.10) 0, transparent 50%),
+    linear-gradient(rgba(67, 97, 238, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(67, 97, 238, 0.035) 1px, transparent 1px);
+  background-size: auto, auto, auto, 44px 44px, 44px 44px;
+}
+
 /* ══════════════════ RESET ══════════════════ */
 
 * {
@@ -141,7 +151,7 @@ body {
   -moz-osx-font-smoothing: grayscale;
   line-height: 1.65;
   font-size: 14.5px;
-  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  font-feature-settings: 'liga' 1, 'kern' 1;
 }
 
 h1, h2, h3, h4, h5, h6 {
@@ -174,10 +184,14 @@ a:hover {
   inset: 0;
   z-index: -1;
   background: var(--bg-secondary);
-  /* Subtle warm gradient mesh for optimism */
+  /* Atmospheric gradient mesh with depth */
   background-image:
-    radial-gradient(at 30% 20%, rgba(67, 97, 238, 0.03) 0, transparent 50%),
-    radial-gradient(at 80% 80%, rgba(245, 158, 11, 0.025) 0, transparent 50%);
+    radial-gradient(ellipse 70% 60% at 10% 10%, rgba(67, 97, 238, 0.14) 0, transparent 60%),
+    radial-gradient(ellipse 50% 50% at 90% 85%, rgba(255, 100, 39, 0.10) 0, transparent 55%),
+    radial-gradient(ellipse 60% 50% at 75% 15%, rgba(124, 58, 237, 0.07) 0, transparent 50%),
+    linear-gradient(rgba(67, 97, 238, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(67, 97, 238, 0.025) 1px, transparent 1px);
+  background-size: auto, auto, auto, 44px 44px, 44px 44px;
 }
 
 .app-background .orb,
@@ -263,6 +277,17 @@ a:hover {
   margin-bottom: 28px;
 }
 
+/* Staggered reveal for stat cards */
+.stats-grid > * {
+  animation: fadeSlideUp 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.stats-grid > *:nth-child(1) { animation-delay: 0.04s; }
+.stats-grid > *:nth-child(2) { animation-delay: 0.10s; }
+.stats-grid > *:nth-child(3) { animation-delay: 0.16s; }
+.stats-grid > *:nth-child(4) { animation-delay: 0.22s; }
+.stats-grid > *:nth-child(5) { animation-delay: 0.28s; }
+.stats-grid > *:nth-child(6) { animation-delay: 0.34s; }
+
 .content-grid {
   display: grid;
   grid-template-columns: 5fr 3fr;
@@ -279,6 +304,17 @@ a:hover {
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 20px;
 }
+
+/* Staggered reveal for card grids */
+.card-grid > * {
+  animation: fadeSlideUp 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.card-grid > *:nth-child(1) { animation-delay: 0.06s; }
+.card-grid > *:nth-child(2) { animation-delay: 0.12s; }
+.card-grid > *:nth-child(3) { animation-delay: 0.18s; }
+.card-grid > *:nth-child(4) { animation-delay: 0.24s; }
+.card-grid > *:nth-child(5) { animation-delay: 0.30s; }
+.card-grid > *:nth-child(6) { animation-delay: 0.36s; }
 
 /* ── Card top accent line ── */
 .card-top-line {
@@ -677,6 +713,12 @@ a:hover {
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Page-load staggered reveal ── */
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(22px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
 
 .loading-center {
   display: flex;
