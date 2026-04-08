@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { LogIn } from 'lucide-react';
+import loginVideo from '../../assets/login-video.mp4';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -27,8 +28,13 @@ export default function LoginPage() {
 
   return (
     <div className="login-page">
-      <div className="login-card">
-        <div className="login-header">
+      <div className="login-wrapper">
+        <div className="login-video-container">
+          <video src={loginVideo} autoPlay loop muted playsInline />
+        </div>
+
+        <div className="login-card">
+          <div className="login-header">
           <div className="login-logo">AH</div>
           <h1>Aniq Hisob</h1>
           <p className="login-subtitle">Hisobingizga kiring</p>
@@ -68,6 +74,7 @@ export default function LoginPage() {
         <div className="login-footer">
           <span style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>Foydalanuvchilarni admin qo'shadi</span>
         </div>
+      </div>
       </div>
     </div>
   );
