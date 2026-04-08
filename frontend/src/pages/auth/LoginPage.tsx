@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { LogIn } from 'lucide-react';
@@ -11,6 +11,14 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = 0;
+      videoRef.current.play().catch(err => console.log('Autoplay maxfiy qoidalari tufayli bloklandi:', err));
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,7 +38,14 @@ export default function LoginPage() {
     <div className="login-page">
       <div className="login-wrapper">
         <div className="login-video-container">
-          <video src={loginVideo} autoPlay loop muted playsInline />
+          <video 
+            ref={videoRef}
+            src={loginVideo} 
+            autoPlay 
+            loop 
+            muted 
+            playsInline 
+          />
         </div>
 
         <div className="login-card">
