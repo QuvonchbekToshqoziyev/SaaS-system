@@ -83,3 +83,7 @@ test-*.ts
 # Local-only test workspace
 /e2e-tests/
 
+# Legacy projects (kept on main; excluded from product branch)
+/backend/
+/frontend/
+
