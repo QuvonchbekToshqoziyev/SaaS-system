@@ -1,0 +1,115 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  SUPERADMIN
+  ADMIN
+  FIRM
+}
+
+enum TicketStatus {
+  AVAILABLE
+  ASSIGNED
+  SOLD
+}
+
+enum TransactionType {
+  SALE
+  PAYABLE
+  PAYMENT
+  ADJUSTMENT
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  role      Role     @default(FIRM)
+  firmId    String?
+  firm      Firm?    @relation(fields: [firmId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Firm {
+  id            String        @id @default(uuid())
+  name          String
+  users         User[]
+  tickets       Ticket[]
+  transactions  Transaction[]
+  invitations   Invitation[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model Invitation {
+  id        String    @id @default(uuid())
+  email     String
+  firmId    String?
+  firm      Firm?     @relation(fields: [firmId], references: [id])
+  role      Role      @default(FIRM)
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdBy String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Flight {
+  id           String        @id @default(uuid())
+  flightNumber String
+  departure    DateTime
+  arrival      DateTime
+  tickets      Ticket[]
+  transactions Transaction[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model Ticket {
+  id             String        @id @default(uuid())
+  flightId       String
+  flight         Flight        @relation(fields: [flightId], references: [id])
+  price          Decimal       @db.Decimal(12, 4)
+  currency       String
+  status         TicketStatus  @default(AVAILABLE)
+  assignedFirmId String?
+  assignedFirm   Firm?         @relation(fields: [assignedFirmId], references: [id])
+  transactions   Transaction[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model CurrencyRate {
+  id             String   @id @default(uuid())
+  baseCurrency   String
+  targetCurrency String
+  rate           Decimal  @db.Decimal(12, 6)
+  source         String
+  recordedAt     DateTime @default(now())
+}
+
+model Transaction {
+  id             String          @id @default(uuid())
+  firmId         String
+  firm           Firm            @relation(fields: [firmId], references: [id])
+  flightId       String
+  flight         Flight          @relation(fields: [flightId], references: [id])
+  ticketId       String?
+  ticket         Ticket?         @relation(fields: [ticketId], references: [id])
+  type           TransactionType
+  originalAmount Decimal         @db.Decimal(12, 4)
+  currency       String
+  exchangeRate   Decimal         @db.Decimal(12, 6)
+  baseAmount     Decimal         @db.Decimal(12, 4)
+  paymentMethod  String?
+  metadata       Json?
+  createdAt      DateTime        @default(now())
+}

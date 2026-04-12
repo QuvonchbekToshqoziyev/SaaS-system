@@ -18,5 +18,68 @@ desktop.ini
 nul
 *.log
 
+# Runtime logs / process outputs
+nohup.out
+*.pid
+*.pid.lock
+
+# Environment & secrets (never commit)
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+!.env.local.example
+
 server_credentials.md
+
+# Credentials / keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+
+# Package manager auth
+.npmrc
+.yarnrc
+.yarnrc.yml
+
+# Node / frontend build artifacts
+node_modules/
+dist/
+build/
+out/
+.next/
+.turbo/
+.vercel/
+coverage/
+*.tsbuildinfo
+
+# Local DB / Prisma generated
+*.sqlite
+*.db
+prisma/dev.db
+**/generated/prisma/
+
+# Local scratch / one-off scripts
+test-*.js
+test-*.ts
+
+# Copilot / editor local debug logs
+**/.next/trace
+**/.next/trace-build
+
+# VS Code Copilot customizations (keep local unless explicitly needed)
+/.github/agents/
+/.github/hooks/
+
+# Non-product instruction docs
+**/AGENTS.md
+**/CLAUDE.md
+
+# Local-only test workspace
+/e2e-tests/
 
