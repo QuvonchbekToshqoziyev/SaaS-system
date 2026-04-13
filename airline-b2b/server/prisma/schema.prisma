@@ -13,8 +13,14 @@ enum Role {
   FIRM
 }
 
+enum FlightStatus {
+  SCHEDULED
+  CANCELLED
+}
+
 enum TicketStatus {
   AVAILABLE
+  PENDING
   ASSIGNED
   SOLD
 }
@@ -33,6 +39,7 @@ model User {
   role      Role     @default(FIRM)
   firmId    String?
   firm      Firm?    @relation(fields: [firmId], references: [id])
+  createdTransactions Transaction[] @relation("TransactionCreatedBy")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -60,6 +67,11 @@ model Invitation {
   createdBy String
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
+
+  @@index([firmId])
+  @@index([createdBy])
+  @@index([expiresAt])
+  @@index([usedAt])
 }
 
 model Flight {
@@ -67,6 +79,7 @@ model Flight {
   flightNumber String
   departure    DateTime
   arrival      DateTime
+  status       FlightStatus  @default(SCHEDULED)
   tickets      Ticket[]
   transactions Transaction[]
   createdAt    DateTime      @default(now())
@@ -82,9 +95,16 @@ model Ticket {
   status         TicketStatus  @default(AVAILABLE)
   assignedFirmId String?
   assignedFirm   Firm?         @relation(fields: [assignedFirmId], references: [id])
+  soldPrice      Decimal?      @db.Decimal(12, 4)
+  soldCurrency   String?
+  purchaserInfo  Json?
   transactions   Transaction[]
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
+
+  @@index([flightId, status])
+  @@index([assignedFirmId, status])
+  @@index([flightId, assignedFirmId])
 }
 
 model CurrencyRate {
@@ -104,6 +124,8 @@ model Transaction {
   flight         Flight          @relation(fields: [flightId], references: [id])
   ticketId       String?
   ticket         Ticket?         @relation(fields: [ticketId], references: [id])
+  createdByUserId String?
+  createdBy      User?           @relation("TransactionCreatedBy", fields: [createdByUserId], references: [id])
   type           TransactionType
   originalAmount Decimal         @db.Decimal(12, 4)
   currency       String
@@ -112,4 +134,11 @@ model Transaction {
   paymentMethod  String?
   metadata       Json?
   createdAt      DateTime        @default(now())
+
+  @@index([firmId, createdAt])
+  @@index([flightId, createdAt])
+  @@index([type, createdAt])
+  @@index([currency, createdAt])
+  @@index([paymentMethod, createdAt])
+  @@index([createdByUserId, createdAt])
 }

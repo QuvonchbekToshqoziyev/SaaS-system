@@ -48,6 +48,9 @@ check_not_next_error "/login/" || fail=1
 check_not_next_error "/admin/" || fail=1
 check_deep_link_not_fallback "/firms/" "$root_etag" || fail=1
 check_deep_link_not_fallback "/settings/" "$root_etag" || fail=1
+check_deep_link_not_fallback "/flights/" "$root_etag" || fail=1
+check_deep_link_not_fallback "/transactions/" "$root_etag" || fail=1
+check_deep_link_not_fallback "/reports/" "$root_etag" || fail=1
 
 if [ "$fail" -ne 0 ]; then
   echo "\nSmoke check FAILED."

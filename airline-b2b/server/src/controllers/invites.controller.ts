@@ -67,6 +67,11 @@ export const createInvite = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Email is required' });
   }
 
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+
   const upperRole = typeof role === 'string' ? role.toUpperCase() : '';
   const roleValue: Role = ALLOWED_ROLES.has(upperRole as Role) ? (upperRole as Role) : Role.FIRM;
 
@@ -100,7 +105,7 @@ export const createInvite = async (req: Request, res: Response) => {
 
   const invite = await prisma.invitation.create({
     data: {
-      email,
+      email: normalizedEmail,
       role: roleValue,
       firmId: resolvedFirmId,
       token: hashedToken,
@@ -110,7 +115,7 @@ export const createInvite = async (req: Request, res: Response) => {
   });
 
   const origin = resolvePublicWebOrigin(req);
-  const link = origin ? `${origin}/invite?token=${rawToken}&id=${invite.id}` : undefined;
+  const link = origin ? `${origin}/invite/accept?token=${rawToken}&id=${invite.id}` : undefined;
 
   res.json({
     inviteId: invite.id,
@@ -123,6 +128,11 @@ export const createInvite = async (req: Request, res: Response) => {
 
 export const acceptInvite = async (req: Request, res: Response) => {
   const { id, token, password } = req.body;
+
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret || !jwtSecret.trim()) {
+    return res.status(500).json({ error: 'Server misconfigured' });
+  }
 
   if (!id || typeof id !== 'string') {
     return res.status(400).json({ error: 'Invite id is required' });
@@ -148,15 +158,23 @@ export const acceptInvite = async (req: Request, res: Response) => {
   const hashedPassword = await bcrypt.hash(password, 10);
 
   try {
+    const normalizedUserEmail = invite.email.trim().toLowerCase();
     const createdUser = await prisma.$transaction(async (tx) => {
-      const existingUser = await tx.user.findUnique({ where: { email: invite.email } });
+      const existingUser = await tx.user.findFirst({
+        where: {
+          email: {
+            equals: normalizedUserEmail,
+            mode: 'insensitive',
+          },
+        },
+      });
       if (existingUser) {
         throw new Error('Account already exists for this email');
       }
 
       const user = await tx.user.create({
         data: {
-          email: invite.email,
+          email: normalizedUserEmail,
           password: hashedPassword,
           role: invite.role,
           firmId: invite.firmId,
@@ -173,7 +191,7 @@ export const acceptInvite = async (req: Request, res: Response) => {
 
     const jwtToken = jwt.sign(
       { userId: createdUser.id, role: createdUser.role, firmId: createdUser.firmId },
-      process.env.JWT_SECRET || 'secret',
+      jwtSecret,
       { expiresIn: '1d' },
     );
 

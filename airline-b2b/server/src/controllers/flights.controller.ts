@@ -1,21 +1,37 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
+import { logger } from '../logger';
 
 export interface AuthenticatedRequest extends Request {
   user?: any;
 }
 
+function normalizeRole(role: unknown): string {
+  return String(role || '').toUpperCase();
+}
+
 // GET /flights - Get all flights
 export const getAllFlights = async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const role = normalizeRole(req.user?.role);
+    const firmId = req.user?.firmId ? String(req.user.firmId) : '';
+    const txWhere = role === 'FIRM'
+      ? (firmId ? { firmId } : undefined)
+      : undefined;
+
     // Superadmin sees all flights. Firms see all flights too, but details might be limited elsewhere.
     const flights = await prisma.flight.findMany({
       orderBy: { departure: 'asc' },
       include: {
-        _count: {
-          select: { tickets: true }
-        },
+        ...(role === 'FIRM'
+          ? {}
+          : {
+              _count: {
+                select: { tickets: true },
+              },
+            }),
         transactions: {
+          ...(txWhere ? { where: txWhere } : {}),
           select: {
             type: true,
             baseAmount: true
@@ -42,7 +58,7 @@ export const getAllFlights = async (req: AuthenticatedRequest, res: Response) =>
     });
     res.json(flightData);
   } catch (error) {
-    console.error('Failed to get flights:', error);
+    logger.error({ err: error }, 'Failed to get flights');
     res.status(500).json({ error: 'Failed to retrieve flights' });
   }
 };
@@ -51,10 +67,17 @@ export const getAllFlights = async (req: AuthenticatedRequest, res: Response) =>
 export const getFlightById = async (req: Request, res: Response) => {
   const id = req.params.id as string;
   try {
+    const role = normalizeRole((req as any).user?.role);
+    const firmId = (req as any).user?.firmId ? String((req as any).user.firmId) : '';
+    if (role === 'FIRM' && !firmId) {
+      return res.status(400).json({ error: 'Firm account is missing firmId' });
+    }
+
     const flight = await prisma.flight.findUnique({
       where: { id },
       include: {
         tickets: {
+          ...(role === 'FIRM' ? { where: { assignedFirmId: firmId } } : {}),
           include: {
             assignedFirm: {
               select: { id: true, name: true }
@@ -68,6 +91,7 @@ export const getFlightById = async (req: Request, res: Response) => {
     }
     res.json(flight);
   } catch (error) {
+    logger.error({ err: error, flightId: id }, 'Failed to get flight');
     res.status(500).json({ error: 'Failed to retrieve flight' });
   }
 };
@@ -95,7 +119,7 @@ export const createFlight = async (req: Request, res: Response) => {
     });
     res.status(201).json(newFlight);
   } catch (error) {
-    console.error('Failed to create flight:', error);
+    logger.error({ err: error }, 'Failed to create flight');
     res.status(500).json({ error: 'Failed to create flight' });
   }
 };
@@ -115,31 +139,30 @@ export const updateFlight = async (req: Request, res: Response) => {
     });
     res.json(updatedFlight);
   } catch (error) {
+    logger.error({ err: error, flightId: id }, 'Failed to update flight');
     res.status(500).json({ error: 'Failed to update flight' });
   }
 };
 
-// DELETE /flights/:id - Delete a flight
+// DELETE /flights/:id - Cancel a flight (soft delete)
 export const deleteFlight = async (req: Request, res: Response) => {
   const id = req.params.id as string;
   try {
-    // Ensure no tickets are sold before deleting
-    const soldTickets = await prisma.ticket.count({
-      where: { flightId: id, status: 'SOLD' },
-    });
-
-    if (soldTickets > 0) {
-      return res.status(400).json({ error: 'Cannot delete flight with sold tickets. Please handle transactions first.' });
+    const flight = await prisma.flight.findUnique({ where: { id }, select: { id: true, status: true } });
+    if (!flight) {
+      return res.status(404).json({ error: 'Flight not found' });
     }
 
-    // Use a transaction to delete tickets and then the flight
-    await prisma.$transaction([
-      prisma.ticket.deleteMany({ where: { flightId: id } }),
-      prisma.flight.delete({ where: { id } }),
-    ]);
-    
-    res.status(204).send();
+    if (flight.status !== 'CANCELLED') {
+      await prisma.flight.update({
+        where: { id },
+        data: { status: 'CANCELLED' },
+      });
+    }
+
+    return res.status(204).send();
   } catch (error) {
-    res.status(500).json({ error: 'Failed to delete flight' });
+    logger.error({ err: error, flightId: id }, 'Failed to cancel flight');
+    return res.status(500).json({ error: 'Failed to cancel flight' });
   }
 };

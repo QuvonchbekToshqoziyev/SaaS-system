@@ -26,7 +26,25 @@ Create a database named `airline_db`.
 3. Set your `.env` file with `DATABASE_URL` and `JWT_SECRET`:
    ```bash
    DATABASE_URL="postgresql://user:pass@localhost:5432/airline_db?schema=public"
+   # REQUIRED: the API will refuse to start if missing
    JWT_SECRET="your-super-secret"
+   # Used for absolute invite links returned by POST /invites
+   # (set this to your real website domain in production)
+   PUBLIC_WEB_ORIGIN="https://your-domain.com"
+
+   # Optional: explicit CORS allow-list for cross-origin frontend setups
+   # (comma-separated origins; useful if your frontend runs on a different host/port)
+   # CORS_ORIGINS="http://localhost:3000,https://your-domain.com"
+
+   # Optional (testing/debug): structured logger level
+   # LOG_LEVEL="debug"
+
+   # Optional (testing): log every request/action performed by admins & firms
+   # LOG_ACTIONS="1"
+
+   # Optional (testing/debug): persist the in-app error registry to disk
+   # (enables tracking OPEN/RESOLVED errors across restarts)
+   # ERROR_REGISTRY_PATH="./error-registry.json"
    ```
 4. Push Prisma schema:
    ```bash
@@ -90,6 +108,14 @@ Production tester (recommended):
 Deploy (recommended):
 - `cd airline-b2b/client && npm run build`
 - `./scripts/deploy-client-out.sh`
+
+Backend deploy (recommended):
+- Ensure production has a `JWT_SECRET` (required; the API will refuse to start if missing):
+   - `bash ./scripts/remote-set-jwt-secret.sh`
+- Deploy and restart PM2:
+   - `bash ./scripts/deploy-backend.sh`
+    - If you changed Prisma schema and see missing-column errors in prod, run once with:
+       - `RUN_PRISMA_DB_PUSH=1 bash ./scripts/deploy-backend.sh`
 
 Server-side Nginx check (deep links):
 - Find the active site config:

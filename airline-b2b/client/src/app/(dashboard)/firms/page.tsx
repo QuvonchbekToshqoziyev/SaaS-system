@@ -97,9 +97,22 @@ export default function FirmsPage() {
         return window.location.origin;
       })();
 
-      const computedLink = (finalInviteId && finalToken)
-        ? `${baseOrigin}/invite?token=${finalToken}&id=${finalInviteId}`
-        : `${baseOrigin}/invite`;
+      const computedLink = (() => {
+        if (link) {
+          try {
+            const u = new URL(link);
+            if (u.searchParams.get('token') && u.searchParams.get('id')) {
+              return u.toString();
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        return (finalInviteId && finalToken)
+          ? `${baseOrigin}/invite/accept?token=${finalToken}&id=${finalInviteId}`
+          : `${baseOrigin}/invite/accept`;
+      })();
 
       setInviteLink(computedLink);
       setInviteExpiresAt(expiresAt || null);
@@ -126,9 +139,9 @@ export default function FirmsPage() {
 
   if (!canManage) {
     return (
-      <div className="text-slate-300">
-        <h2 className="text-2xl font-bold text-white">Firms</h2>
-        <p className="mt-2 text-slate-400">Only admins can create firms.</p>
+      <div className="text-foreground">
+        <h2 className="text-2xl font-bold text-foreground">Firms</h2>
+        <p className="mt-2 text-muted">Only admins can create firms.</p>
       </div>
     );
   }
@@ -137,34 +150,34 @@ export default function FirmsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-3xl font-bold text-white">Firms</h2>
-          <p className="mt-1 text-sm text-slate-400">
+          <h2 className="text-3xl font-bold text-foreground">Firms</h2>
+          <p className="mt-1 text-sm text-muted">
             Create a firm and generate a one-time invite link.
           </p>
         </div>
       </div>
 
-      <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6 max-w-xl">
-        <h3 className="text-lg font-semibold text-white mb-4">Create new firm</h3>
+      <div className="bg-surface-2 border border-border rounded-xl p-6 max-w-xl">
+        <h3 className="text-lg font-semibold text-foreground mb-4">Create new firm</h3>
         <form onSubmit={handleCreate} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1">Firm name</label>
+            <label className="block text-sm font-medium text-muted mb-1">Firm name</label>
             <input
               value={firmName}
               onChange={(e) => setFirmName(e.target.value)}
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-white outline-none focus:border-fuchsia-500 transition"
+              className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-fuchsia-500 transition"
               placeholder="e.g. Atlas Travel"
               required
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1">Firm email</label>
+            <label className="block text-sm font-medium text-muted mb-1">Firm email</label>
             <input
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               type="email"
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-white outline-none focus:border-fuchsia-500 transition"
+              className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-fuchsia-500 transition"
               placeholder="firm@example.com"
               required
             />
@@ -183,15 +196,15 @@ export default function FirmsPage() {
 
       {inviteLink && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl shadow-2xl w-full max-w-lg p-6">
+          <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-lg p-6">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold text-white">One-time invite link</h3>
-              <button onClick={closeModal} className="text-slate-400 hover:text-white" aria-label="Close">
+              <h3 className="text-xl font-bold text-foreground">One-time invite link</h3>
+              <button onClick={closeModal} className="text-muted hover:text-foreground" aria-label="Close">
                 <X size={20} />
               </button>
             </div>
 
-            <p className="text-sm text-slate-400 mb-3">
+            <p className="text-sm text-muted mb-3">
               Send this link to the firm. It can only be used once.
             </p>
 
@@ -199,19 +212,19 @@ export default function FirmsPage() {
               <input
                 readOnly
                 value={inviteLink}
-                className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-slate-200 outline-none"
+                className="flex-1 bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none"
               />
               <button
                 type="button"
                 onClick={copyInvite}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition"
+                className="px-4 py-2 bg-surface-2 hover:bg-surface text-foreground rounded-lg transition"
               >
                 Copy
               </button>
             </div>
 
             {inviteExpiresAt && (
-              <p className="mt-3 text-xs text-slate-500">
+              <p className="mt-3 text-xs text-muted">
                 Expires: {new Date(inviteExpiresAt).toLocaleString()}
               </p>
             )}
