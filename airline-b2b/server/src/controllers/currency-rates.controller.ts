@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma, Role } from '@prisma/client';
 
+const BASE_CURRENCY = 'UZS' as const;
+
 type AuthUser = {
   userId?: string;
   role?: Role | string;
@@ -113,7 +115,7 @@ export const createCurrencyRate = async (req: Request, res: Response) => {
   const rawDate = (req.body as any)?.date;
   const rawSource = (req.body as any)?.source;
 
-  const base = normalizeCurrency(rawBase || 'USD');
+  const base = normalizeCurrency(rawBase || BASE_CURRENCY);
   const target = normalizeCurrency(rawTarget);
   const rate = parseDecimal(rawRate);
   const day = parseDateOnly(rawDate);
@@ -121,6 +123,9 @@ export const createCurrencyRate = async (req: Request, res: Response) => {
 
   if (!/^[A-Z]{3}$/.test(base)) {
     return res.status(400).json({ error: 'Invalid baseCurrency' });
+  }
+  if (base !== BASE_CURRENCY) {
+    return res.status(400).json({ error: `baseCurrency must be ${BASE_CURRENCY}` });
   }
   if (!/^[A-Z]{3}$/.test(target)) {
     return res.status(400).json({ error: 'Invalid targetCurrency' });

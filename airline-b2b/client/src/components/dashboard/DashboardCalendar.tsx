@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import toast from 'react-hot-toast';
 import Link from 'next/link';
+import { useLanguage } from '@/contexts/LanguageContext';
 import {
   addDays,
   addMonths,
@@ -84,18 +85,45 @@ function getTxDateKey(tx: CalendarTransaction): string {
 export default function DashboardCalendar({
   title = 'Calendar',
   reloadKey = 0,
+  defaultOpen = true,
+  storageKey,
 }: {
   title?: string;
   reloadKey?: number;
+  defaultOpen?: boolean;
+  storageKey?: string;
 }) {
+  const { tr } = useLanguage();
   const [monthDate, setMonthDate] = useState<Date>(() => startOfMonth(new Date()));
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<CalendarResponse | null>(null);
   const [selectedDateKey, setSelectedDateKey] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
+  const [open, setOpen] = useState<boolean>(() => defaultOpen);
+
+  useEffect(() => {
+    if (!storageKey) return;
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw === '1' || raw === 'true') setOpen(true);
+      if (raw === '0' || raw === 'false') setOpen(false);
+    } catch {
+      // ignore
+    }
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!storageKey) return;
+    try {
+      localStorage.setItem(storageKey, open ? '1' : '0');
+    } catch {
+      // ignore
+    }
+  }, [open, storageKey]);
 
   const monthKey = useMemo(() => format(monthDate, 'yyyy-MM'), [monthDate]);
 
   useEffect(() => {
+    if (!open) return;
     const fetchCalendar = async () => {
       try {
         setLoading(true);
@@ -116,7 +144,7 @@ export default function DashboardCalendar({
     };
 
     fetchCalendar();
-  }, [monthKey, reloadKey]);
+  }, [monthKey, reloadKey, open]);
 
   const grouped = useMemo(() => {
     const flightsByDate = new Map<string, CalendarFlight[]>();
@@ -162,7 +190,7 @@ export default function DashboardCalendar({
 
   return (
     <div className="bg-surface-2 border border-border rounded-lg p-4 space-y-4">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="text-xl font-semibold text-foreground">{title}</h3>
           <p className="mt-1 text-sm text-muted">
@@ -170,154 +198,174 @@ export default function DashboardCalendar({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
+          {open ? (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setMonthDate((m) => startOfMonth(addMonths(m, -1)))}
+                className="px-3 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition border border-border"
+              >
+                Prev
+              </button>
+              <div className="px-3 py-2 bg-surface text-foreground rounded-lg font-medium border border-border">
+                {format(monthDate, 'MMMM yyyy')}
+              </div>
+              <button
+                type="button"
+                onClick={() => setMonthDate((m) => startOfMonth(addMonths(m, 1)))}
+                className="px-3 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition border border-border"
+              >
+                Next
+              </button>
+            </div>
+          ) : null}
+
           <button
             type="button"
-            onClick={() => setMonthDate((m) => startOfMonth(addMonths(m, -1)))}
+            onClick={() => setOpen((v) => !v)}
             className="px-3 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition border border-border"
+            aria-expanded={open}
           >
-            Prev
-          </button>
-          <div className="px-3 py-2 bg-surface text-foreground rounded-lg font-medium border border-border">
-            {format(monthDate, 'MMMM yyyy')}
-          </div>
-          <button
-            type="button"
-            onClick={() => setMonthDate((m) => startOfMonth(addMonths(m, 1)))}
-            className="px-3 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition border border-border"
-          >
-            Next
+            {open ? tr('Hide', 'Yopish') : tr('Show', "Ko'rsatish")}
           </button>
         </div>
       </div>
 
-      {loading ? (
-        <div className="text-muted">Loading…</div>
-      ) : (
-        <>
-          <div className="grid grid-cols-7 gap-2 text-xs text-muted">
-            {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => (
-              <div key={d} className="px-2 py-1">{d}</div>
-            ))}
-          </div>
+      {open ? (
+        loading ? (
+          <div className="text-muted">Loading…</div>
+        ) : (
+          <>
+            <div className="grid grid-cols-7 gap-2 text-xs text-muted">
+              {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => (
+                <div key={d} className="px-2 py-1">{d}</div>
+              ))}
+            </div>
 
-          <div className="grid grid-cols-7 gap-2">
-            {days.map((day) => {
-              const key = format(day, 'yyyy-MM-dd');
-              const inMonth = isSameMonth(day, monthDate);
-              const isSelected = key === selectedDateKey;
-              const flights = grouped.flightsByDate.get(key) || [];
-              const txs = grouped.transactionsByDate.get(key) || [];
-              const pays = txs.filter((t) => t.type === 'PAYMENT');
-              const rates = grouped.ratesByDate.get(key) || [];
+            <div className="grid grid-cols-7 gap-2">
+              {days.map((day) => {
+                const key = format(day, 'yyyy-MM-dd');
+                const inMonth = isSameMonth(day, monthDate);
+                const isSelected = key === selectedDateKey;
+                const flights = grouped.flightsByDate.get(key) || [];
+                const txs = grouped.transactionsByDate.get(key) || [];
+                const pays = txs.filter((t) => t.type === 'PAYMENT');
+                const rates = grouped.ratesByDate.get(key) || [];
 
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setSelectedDateKey(key)}
-                  className={
-                    `text-left rounded-lg border p-2 min-h-[92px] transition ` +
-                    (isSelected
-                      ? 'border-fuchsia-500 bg-fuchsia-500/10'
-                      : 'border-border bg-surface hover:bg-surface-2') +
-                    (inMonth ? '' : ' opacity-50')
-                  }
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm font-semibold text-foreground">{format(day, 'd')}</div>
-                    <div className="text-[10px] text-muted">{key}</div>
-                  </div>
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setSelectedDateKey(key)}
+                    className={
+                      `text-left rounded-lg border p-2 min-h-[92px] transition ` +
+                      (isSelected
+                        ? 'border-blue-500 bg-blue-500/10'
+                        : 'border-border bg-surface hover:bg-surface-2') +
+                      (inMonth ? '' : ' opacity-50')
+                    }
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold text-foreground">{format(day, 'd')}</div>
+                      <div className="text-[10px] text-muted">{key}</div>
+                    </div>
 
-                  <div className="mt-2 space-y-1 text-xs text-muted">
-                    {flights.length > 0 && <div>Flights: {flights.length}</div>}
-                    {txs.length > 0 && <div>Transactions: {txs.length}</div>}
-                    {pays.length > 0 && <div>Payments: {pays.length}</div>}
-                    {rates.length > 0 && <div>Rates: {rates.length}</div>}
-                    {flights.length === 0 && txs.length === 0 && rates.length === 0 && (
-                      <div className="text-muted">No activity</div>
+                    <div className="mt-2 space-y-1 text-xs text-muted">
+                      {flights.length > 0 && <div>Flights: {flights.length}</div>}
+                      {txs.length > 0 && <div>Transactions: {txs.length}</div>}
+                      {pays.length > 0 && <div>Payments: {pays.length}</div>}
+                      {rates.length > 0 && <div>Rates: {rates.length}</div>}
+                      {flights.length === 0 && txs.length === 0 && rates.length === 0 && (
+                        <div className="text-muted">No activity</div>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="border-t border-border pt-4">
+              <div className="flex items-center justify-between gap-3">
+                <h4 className="text-lg font-semibold text-foreground">{selectedDateKey}</h4>
+                <div className="text-sm text-muted">
+                  {selectedFlights.length} flights · {selectedTransactions.length} transactions · {selectedRates.length} rates
+                </div>
+              </div>
+
+              <div className="mt-3 grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="bg-surface border border-border rounded-lg p-3">
+                  <div className="text-sm font-semibold text-foreground">Flights</div>
+                  <div className="mt-2 space-y-2">
+                    {selectedFlights.map((f) => (
+                      <div key={f.id} className="text-sm text-foreground">
+                        <Link href={`/flights/detail?id=${f.id}`} className="hover:underline">
+                          {f.flightNumber}
+                        </Link>
+                        <div className="text-xs text-muted">{format(new Date(f.departure), 'PPP p')}</div>
+                      </div>
+                    ))}
+                    {selectedFlights.length === 0 && (
+                      <div className="text-sm text-muted">No flights</div>
                     )}
                   </div>
-                </button>
-              );
-            })}
-          </div>
+                </div>
 
-          <div className="border-t border-border pt-4">
-            <div className="flex items-center justify-between gap-3">
-              <h4 className="text-lg font-semibold text-foreground">{selectedDateKey}</h4>
-              <div className="text-sm text-muted">
-                {selectedFlights.length} flights · {selectedTransactions.length} transactions · {selectedRates.length} rates
+                <div className="bg-surface border border-border rounded-lg p-3">
+                  <div className="text-sm font-semibold text-foreground">Transactions</div>
+                  <div className="mt-2 space-y-2">
+                    {selectedTransactions.map((t) => (
+                      <div key={t.id} className="text-sm text-foreground">
+                        <Link href={`/transactions/detail?id=${t.id}`} className="hover:underline">
+                          {t.type}
+                        </Link>
+                        <div className="text-xs text-muted">
+                          {format(new Date(t.createdAt), 'PPP p')} · {Number(t.originalAmount).toFixed(2)} {t.currency}
+                          {' '}({Number(t.baseAmount).toFixed(2)} UZS)
+                          {t.type === 'PAYMENT' && t.paymentMethod ? ` · ${t.paymentMethod}` : ''}
+                        </div>
+                      </div>
+                    ))}
+                    {selectedTransactions.length === 0 && (
+                      <div className="text-sm text-muted">No transactions</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="bg-surface border border-border rounded-lg p-3">
+                  <div className="text-sm font-semibold text-foreground">Exchange rates</div>
+                  <div className="mt-2 space-y-2">
+                    {selectedRates.map((r) => (
+                      <div key={r.id} className="text-sm text-foreground">
+                        <div>
+                          {(String(r.baseCurrency || '').toUpperCase() === 'UZS' && r.targetCurrency
+                            ? `${r.targetCurrency}→${r.baseCurrency}`
+                            : String(r.targetCurrency || '').toUpperCase() === 'UZS' && r.baseCurrency
+                              ? `${r.baseCurrency}→${r.targetCurrency}`
+                              : `${r.baseCurrency}→${r.targetCurrency}`
+                          )}: {Number(r.rate).toFixed(6)}
+                        </div>
+                        <div className="text-xs text-muted">
+                          {format(new Date(r.recordedAt), 'PPP')} · {r.source}
+                        </div>
+                      </div>
+                    ))}
+                    {selectedRates.length === 0 && (
+                      <div className="text-sm text-muted">No rates</div>
+                    )}
+                  </div>
+                </div>
               </div>
+
+              {selectedPayments.length > 0 && (
+                <div className="mt-4 text-xs text-muted">
+                  Payments in this day: {selectedPayments.length}
+                </div>
+              )}
             </div>
-
-            <div className="mt-3 grid grid-cols-1 lg:grid-cols-3 gap-4">
-              <div className="bg-surface border border-border rounded-lg p-3">
-                <div className="text-sm font-semibold text-foreground">Flights</div>
-                <div className="mt-2 space-y-2">
-                  {selectedFlights.map((f) => (
-                    <div key={f.id} className="text-sm text-foreground">
-                      <Link href={`/flights/detail?id=${f.id}`} className="hover:underline">
-                        {f.flightNumber}
-                      </Link>
-                      <div className="text-xs text-muted">{format(new Date(f.departure), 'PPP p')}</div>
-                    </div>
-                  ))}
-                  {selectedFlights.length === 0 && (
-                    <div className="text-sm text-muted">No flights</div>
-                  )}
-                </div>
-              </div>
-
-              <div className="bg-surface border border-border rounded-lg p-3">
-                <div className="text-sm font-semibold text-foreground">Transactions</div>
-                <div className="mt-2 space-y-2">
-                  {selectedTransactions.map((t) => (
-                    <div key={t.id} className="text-sm text-foreground">
-                      <Link href={`/transactions/detail?id=${t.id}`} className="hover:underline">
-                        {t.type}
-                      </Link>
-                      <div className="text-xs text-muted">
-                        {format(new Date(t.createdAt), 'PPP p')} · {Number(t.originalAmount).toFixed(2)} {t.currency}
-                        {' '}({Number(t.baseAmount).toFixed(2)} USD)
-                        {t.type === 'PAYMENT' && t.paymentMethod ? ` · ${t.paymentMethod}` : ''}
-                      </div>
-                    </div>
-                  ))}
-                  {selectedTransactions.length === 0 && (
-                    <div className="text-sm text-muted">No transactions</div>
-                  )}
-                </div>
-              </div>
-
-              <div className="bg-surface border border-border rounded-lg p-3">
-                <div className="text-sm font-semibold text-foreground">Exchange rates</div>
-                <div className="mt-2 space-y-2">
-                  {selectedRates.map((r) => (
-                    <div key={r.id} className="text-sm text-foreground">
-                      <div>
-                        {r.baseCurrency}→{r.targetCurrency}: {Number(r.rate).toFixed(6)}
-                      </div>
-                      <div className="text-xs text-muted">
-                        {format(new Date(r.recordedAt), 'PPP')} · {r.source}
-                      </div>
-                    </div>
-                  ))}
-                  {selectedRates.length === 0 && (
-                    <div className="text-sm text-muted">No rates</div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {selectedPayments.length > 0 && (
-              <div className="mt-4 text-xs text-muted">
-                Payments in this day: {selectedPayments.length}
-              </div>
-            )}
-          </div>
-        </>
-      )}
+          </>
+        )
+      ) : null}
     </div>
   );
 }

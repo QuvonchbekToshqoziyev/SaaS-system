@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useCallback, useEffect, useState } from 'react';
@@ -6,6 +7,8 @@ import toast from 'react-hot-toast';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import DashboardCalendar from '@/components/dashboard/DashboardCalendar';
+import CollapsibleCard from '@/components/ui/CollapsibleCard';
+import { useLanguage } from '@/contexts/LanguageContext';
 
 type MonthlyReportRow = {
   month: string;
@@ -81,6 +84,7 @@ type DashboardReport = {
 };
 
 export default function FirmDashboard() {
+  const { tr } = useLanguage();
   const [monthly, setMonthly] = useState<MonthlyReportRow[] | null>(null);
   const [firmReport, setFirmReport] = useState<FirmReport | null>(null);
   const [dashboard, setDashboard] = useState<DashboardReport | null>(null);
@@ -99,8 +103,7 @@ export default function FirmDashboard() {
       setMonthly(monthlyRes.data);
       setFirmReport(firmRes.data);
       setDashboard(dashRes.data);
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any
-    } catch (err: any) {
+    } catch {
       toast.error('Failed to load reports');
     } finally {
       if (!silent) setLoading(false);
@@ -128,7 +131,7 @@ export default function FirmDashboard() {
     }
   };
 
-  if (loading) return <div>Loading reports...</div>;
+  if (loading) return <div>{tr('Loading reports...', 'Hisobotlar yuklanmoqda...')}</div>;
 
   const totals = firmReport?.totals || {};
   const tickets = firmReport?.tickets || {};
@@ -141,49 +144,88 @@ export default function FirmDashboard() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-3xl font-bold text-foreground">Firm Overview</h2>
-        <p className="mt-1 text-sm text-muted">Your firm-scoped KPIs and monthly breakdown.</p>
+        <h2 className="text-3xl font-bold text-foreground">{tr('Firm Overview', "Firma ko'rinishi")}</h2>
+        <p className="mt-1 text-sm text-muted">{tr('Your firm-scoped KPIs and monthly breakdown.', 'Firma bo‘yicha KPI va oylik kesim.')}</p>
       </div>
+
+      <CollapsibleCard
+        title={tr('Start here', 'Boshlash')}
+        description={tr('A quick checklist for your daily flow.', 'Kundalik jarayon uchun tezkor ro\'yxat.')}
+        defaultOpen={false}
+        storageKey="jetstream-firm-start-here-open"
+        className="shadow sm:rounded-lg"
+      >
+        <ol className="space-y-2 text-sm text-foreground list-decimal list-inside">
+          <li>
+            <span>
+              {tr('Confirm pending allocations', 'Kutilayotgan ajratmalarni tasdiqlang')}
+            </span>
+            <span className="text-muted"> — {tr('see the Todo section below.', "pastdagi Vazifalar bo'limida.")}</span>
+          </li>
+          <li>
+            <Link href="/flights" className="hover:underline">
+              {tr('Open a flight and sell assigned tickets', 'Reysni ochib biriktirilgan chiptalarni soting')}
+            </Link>
+          </li>
+          <li>
+            <Link href="/transactions" className="hover:underline">
+              {tr('Record payments', "To'lovlarni qayd eting")}
+            </Link>
+            <span className="text-muted"> — {tr('keep your outstanding balance accurate.', 'qoldiqni aniq saqlang.')}</span>
+          </li>
+          <li>
+            <Link href="/reports" className="hover:underline">
+              {tr('Review reports', 'Hisobotlarni ko\'ring')}
+            </Link>
+            <span className="text-muted"> — {tr('track revenue and debt.', 'tushum va qarzni kuzating.')}</span>
+          </li>
+        </ol>
+      </CollapsibleCard>
       
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <div className="bg-surface-2 border border-border overflow-hidden rounded-lg px-4 py-5 sm:p-6">
-          <dt className="text-sm font-medium text-muted truncate">Tickets assigned</dt>
+          <dt className="text-sm font-medium text-muted truncate">{tr('Tickets assigned', 'Biriktirilgan chiptalar')}</dt>
           <dd className="mt-1 text-3xl font-semibold text-foreground">{tickets.assigned ?? 0}</dd>
         </div>
         <div className="bg-surface-2 border border-border overflow-hidden rounded-lg px-4 py-5 sm:p-6">
-          <dt className="text-sm font-medium text-muted truncate">Tickets sold</dt>
+          <dt className="text-sm font-medium text-muted truncate">{tr('Tickets sold', 'Sotilgan chiptalar')}</dt>
           <dd className="mt-1 text-3xl font-semibold text-foreground">{tickets.sold ?? 0}</dd>
         </div>
         <div className="bg-surface-2 border border-border overflow-hidden rounded-lg px-4 py-5 sm:p-6">
-          <dt className="text-sm font-medium text-muted truncate">Debt (USD)</dt>
-          <dd className="mt-1 text-3xl font-semibold text-foreground">${Number(totals.debt || 0).toFixed(2)}</dd>
+          <dt className="text-sm font-medium text-muted truncate">{tr('Debt (UZS)', 'Qarz (UZS)')}</dt>
+          <dd className="mt-1 text-3xl font-semibold text-foreground">{Number(totals.debt || 0).toFixed(2)}</dd>
         </div>
         <div className="bg-surface-2 border border-border overflow-hidden rounded-lg px-4 py-5 sm:p-6">
-          <dt className="text-sm font-medium text-muted truncate">Outstanding (USD)</dt>
-          <dd className="mt-1 text-3xl font-semibold text-foreground">${Number(totals.outstanding || 0).toFixed(2)}</dd>
+          <dt className="text-sm font-medium text-muted truncate">{tr('Outstanding (UZS)', 'Qoldiq (UZS)')}</dt>
+          <dd className="mt-1 text-3xl font-semibold text-foreground">{Number(totals.outstanding || 0).toFixed(2)}</dd>
         </div>
       </div>
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        <div className="bg-surface-2 border border-border overflow-hidden rounded-lg px-4 py-5 sm:p-6">
-          <h3 className="text-lg font-semibold text-foreground">Todo</h3>
-          <div className="mt-3 space-y-2">
+        <CollapsibleCard
+          title={tr('Todo', 'Vazifalar')}
+          defaultOpen={false}
+          storageKey="jetstream-firm-todo-open"
+          className="overflow-hidden"
+          contentClassName="px-4 py-5 sm:p-6"
+        >
+          <div className="space-y-2">
             {todos.map((t) => (
               <div key={t.key} className="flex items-center justify-between text-sm text-foreground">
                 <span>{t.label}</span>
                 <span className="font-semibold">
-                  {typeof t.amount === 'number' ? `${t.amount.toFixed(2)} USD` : t.count}
+                  {typeof t.amount === 'number' ? `${t.amount.toFixed(2)} UZS` : t.count}
                 </span>
               </div>
             ))}
             {todos.length === 0 && (
-              <div className="text-sm text-muted">No todos</div>
+              <div className="text-sm text-muted">{tr('No todos', "Vazifalar yo'q")}</div>
             )}
           </div>
 
           {pending.length > 0 && (
             <div className="mt-4 border-t border-border pt-3">
-              <div className="text-sm font-semibold text-foreground">Pending allocations</div>
+              <div className="text-sm font-semibold text-foreground">{tr('Pending allocations', 'Kutilayotgan ajratmalar')}</div>
               <div className="mt-2 space-y-2">
                 {pending.slice(0, 6).map((p) => (
                   <div key={p.flightId} className="text-sm text-foreground">
@@ -199,7 +241,9 @@ export default function FirmDashboard() {
                           disabled={Boolean(confirmingFlightId)}
                           className="px-2 py-1 bg-yellow-600/20 text-yellow-300 hover:bg-yellow-600/40 rounded transition border border-yellow-600/50 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          {confirmingFlightId === p.flightId ? 'Confirming…' : 'Confirm'}
+                          {confirmingFlightId === p.flightId
+                            ? tr('Confirming…', 'Tasdiqlanmoqda…')
+                            : tr('Confirm', 'Tasdiqlash')}
                         </button>
                       </div>
                     </div>
@@ -209,101 +253,114 @@ export default function FirmDashboard() {
                   </div>
                 ))}
                 {pending.length > 6 && (
-                  <div className="text-xs text-muted">+{pending.length - 6} more</div>
+                  <div className="text-xs text-muted">{tr(`+${pending.length - 6} more`, `+${pending.length - 6} ta yana`)}</div>
                 )}
               </div>
             </div>
           )}
-        </div>
+        </CollapsibleCard>
 
-        <div className="bg-surface-2 border border-border max-w-full overflow-x-auto rounded-lg">
-          <div className="px-4 py-4 border-b border-border">
-            <h3 className="text-lg font-semibold text-foreground">Due payments</h3>
-            <p className="mt-1 text-sm text-muted">Flights with outstanding balance (USD).</p>
+        <CollapsibleCard
+          title={tr('Due payments', "To'lanishi kerak")}
+          description={tr('Flights with outstanding balance (UZS).', 'Qoldiq qarzi bor reyslar (UZS).')}
+          defaultOpen={false}
+          storageKey="jetstream-firm-due-payments-open"
+          contentClassName="p-0"
+        >
+          <div className="max-w-full overflow-x-auto">
+            <table className="min-w-full divide-y divide-border">
+              <thead className="bg-surface">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Flight', 'Reys')}</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Debt', 'Qarz')}</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Paid', "To'langan")}</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Outstanding', 'Qoldiq')}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {dueFlights.slice(0, 10).map((f) => (
+                  <tr key={f.flightId}>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">
+                      <Link href={`/flights/detail?id=${f.flightId}`} className="hover:underline">
+                        {f.flightNumber || f.flightId}
+                      </Link>
+                      {f.departure && (
+                        <div className="text-xs text-muted">{format(new Date(f.departure), 'PPP')}</div>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(f.debt || 0).toFixed(2)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(f.paid || 0).toFixed(2)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground font-semibold">{Number(f.outstanding || 0).toFixed(2)}</td>
+                  </tr>
+                ))}
+                {dueFlights.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-6 py-4 text-center text-sm text-muted">{tr('No due payments', "Qarz to'lovlari yo'q")}</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
+        </CollapsibleCard>
+      </div>
+
+      <CollapsibleCard
+        title={tr('Monthly report', 'Oylik hisobot')}
+        defaultOpen={false}
+        storageKey="jetstream-firm-monthly-open"
+        contentClassName="p-0"
+      >
+        <div className="max-w-full overflow-x-auto">
           <table className="min-w-full divide-y divide-border">
             <thead className="bg-surface">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Flight</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Debt</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Paid</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Outstanding</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Month', 'Oy')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Allocations (Debt)', 'Ajratmalar (Qarz)')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Sales (Revenue)', 'Sotuvlar (Daromad)')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Payments', "To'lovlar")}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {dueFlights.slice(0, 10).map((f) => (
-                <tr key={f.flightId}>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">
-                    <Link href={`/flights/detail?id=${f.flightId}`} className="hover:underline">
-                      {f.flightNumber || f.flightId}
-                    </Link>
-                    {f.departure && (
-                      <div className="text-xs text-muted">{format(new Date(f.departure), 'PPP')}</div>
-                    )}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(f.debt || 0).toFixed(2)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(f.paid || 0).toFixed(2)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground font-semibold">{Number(f.outstanding || 0).toFixed(2)}</td>
+              {monthly?.map((r, idx: number) => (
+                <tr key={idx}>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{r.month}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(r.allocations).toFixed(2)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(r.sales).toFixed(2)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(r.payments).toFixed(2)}</td>
                 </tr>
               ))}
-              {dueFlights.length === 0 && (
+              {(!monthly || monthly.length === 0) && (
                 <tr>
-                  <td colSpan={4} className="px-6 py-4 text-center text-sm text-muted">No due payments</td>
+                  <td colSpan={4} className="px-6 py-4 text-center text-sm text-muted">
+                    {tr('No data available yet', "Hali ma'lumot yo'q")}
+                  </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
-      </div>
+      </CollapsibleCard>
 
-      <div className="bg-surface-2 border border-border max-w-full overflow-x-auto rounded-lg">
-        <table className="min-w-full divide-y divide-border">
-          <thead className="bg-surface">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Month</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Allocations (Debt)</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Sales (Revenue)</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Payments</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {monthly?.map((r, idx: number) => (
-              <tr key={idx}>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{r.month}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(r.allocations).toFixed(2)}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(r.sales).toFixed(2)}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(r.payments).toFixed(2)}</td>
-              </tr>
-            ))}
-            {(!monthly || monthly.length === 0) && (
-              <tr>
-                <td colSpan={4} className="px-6 py-4 text-center text-sm text-muted">
-                  No data available yet
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="space-y-3">
-        <div>
-          <h3 className="text-xl font-semibold text-foreground">By flight</h3>
-          <p className="mt-1 text-sm text-muted">
-            Ticket inventory and financials per flight (firm-scoped).
-          </p>
-        </div>
-
-        <div className="bg-surface-2 border border-border max-w-full overflow-x-auto rounded-lg">
+      <CollapsibleCard
+        title={tr('By flight', "Reys bo'yicha")}
+        description={tr(
+          'Ticket inventory and financials per flight (firm-scoped).',
+          'Har bir reys bo‘yicha chipta zaxirasi va moliya (firma doirasida).'
+        )}
+        defaultOpen={false}
+        storageKey="jetstream-firm-by-flight-open"
+        contentClassName="p-0"
+      >
+        <div className="max-w-full overflow-x-auto">
           <table className="min-w-full divide-y divide-border">
             <thead className="bg-surface">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Flight</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Departure</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Tickets</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Debt (USD)</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Paid (USD)</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Outstanding (USD)</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Flight', 'Reys')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Departure', 'Jo‘nab ketish')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Tickets', 'Chiptalar')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Debt (UZS)', 'Qarz (UZS)')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Paid (UZS)', "To'langan (UZS)")}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Outstanding (UZS)', 'Qoldiq (UZS)')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -326,7 +383,7 @@ export default function FirmDashboard() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{dep}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">
-                      {row.ticketsSold || 0} sold / {unsold} unsold
+                      {row.ticketsSold || 0} {tr('sold', 'sotilgan')} / {unsold} {tr('unsold', 'sotilmagan')}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{debt.toFixed(2)}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{paid.toFixed(2)}</td>
@@ -338,16 +395,20 @@ export default function FirmDashboard() {
               {byFlight.length === 0 && (
                 <tr>
                   <td colSpan={6} className="px-6 py-4 text-center text-sm text-muted">
-                    No flight data yet
+                    {tr('No flight data yet', "Hali reys ma'lumoti yo'q")}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
-      </div>
+      </CollapsibleCard>
 
-      <DashboardCalendar title="Activity calendar" />
+      <DashboardCalendar
+        title={tr('Activity calendar', 'Faollik taqvimi')}
+        defaultOpen={false}
+        storageKey="jetstream-firm-calendar-open"
+      />
     </div>
   );
 }

@@ -1,13 +1,15 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { api } from '@/lib/api';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
+import { useLanguage } from '@/contexts/LanguageContext';
+import CollapsibleCard from '@/components/ui/CollapsibleCard';
 
 type FirmOption = {
   id: string;
@@ -20,9 +22,37 @@ type FlightOption = {
   flightNumber?: string;
 };
 
+type TransactionsPrefs = {
+  view?: 'list' | 'boxes';
+  filterType?: string;
+  filterFirmId?: string;
+  filterFlightId?: string;
+  filterCurrency?: string;
+  dateFrom?: string;
+  dateTo?: string;
+};
+
+const TRANSACTIONS_PREFS_KEY = 'jetstream-transactions-prefs';
+
+function normalizeTxTypeParam(value: string): string {
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'sale' || v === 'payable' || v === 'payment' || v === 'adjustment') return v;
+  return '';
+}
+
+function normalizeDateParam(value: string): string {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match?.[1] || '';
+}
+
 export default function TransactionsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user } = useAuth();
+  const { tr, language } = useLanguage();
 
   const role = String(user?.role || '').toUpperCase();
   const canFilterFirm = role === 'ADMIN' || role === 'SUPERADMIN';
@@ -36,6 +66,9 @@ export default function TransactionsPage() {
   const [filterCurrency, setFilterCurrency] = useState<string>('');
   const [dateFrom, setDateFrom] = useState<string>('');
   const [dateTo, setDateTo] = useState<string>('');
+
+  const [prefsReady, setPrefsReady] = useState(false);
+  const lastAppliedQuerySignatureRef = useRef<string>('');
 
   const [firmOptions, setFirmOptions] = useState<FirmOption[]>([]);
   const [flightOptions, setFlightOptions] = useState<FlightOption[]>([]);
@@ -52,7 +85,7 @@ export default function TransactionsPage() {
   const [payFirmId, setPayFirmId] = useState<string>('');
   const [payFlightId, setPayFlightId] = useState<string>('');
   const [payAmount, setPayAmount] = useState<string>('');
-  const [payCurrency, setPayCurrency] = useState<'USD' | 'UZS' | 'OTHER'>('USD');
+  const [payCurrency, setPayCurrency] = useState<'USD' | 'UZS' | 'OTHER'>('UZS');
   const [payOtherCurrency, setPayOtherCurrency] = useState<string>('');
   const [payExchangeRate, setPayExchangeRate] = useState<string>('');
   const [payMethod, setPayMethod] = useState<'cash' | 'card'>('cash');
@@ -61,6 +94,179 @@ export default function TransactionsPage() {
   const [payCardReference, setPayCardReference] = useState<string>('');
   const [payReference, setPayReference] = useState<string>('');
   const [recordingPayment, setRecordingPayment] = useState(false);
+
+  const payCurrencyCode = useMemo(() => {
+    const c = payCurrency === 'OTHER' ? payOtherCurrency : payCurrency;
+    return String(c || '').trim().toUpperCase();
+  }, [payCurrency, payOtherCurrency]);
+
+  const payAmountNum = useMemo(() => {
+    const n = Number(payAmount);
+    return Number.isFinite(n) ? n : NaN;
+  }, [payAmount]);
+
+  const payExchangeRateNum = useMemo(() => {
+    const raw = String(payExchangeRate || '').trim();
+    if (!raw) return NaN;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : NaN;
+  }, [payExchangeRate]);
+
+  const [savedRate, setSavedRate] = useState<number | null>(null);
+  const [savedRateSource, setSavedRateSource] = useState<string | null>(null);
+  const [savedRateLoading, setSavedRateLoading] = useState(false);
+
+  const rateLookupDate = useMemo(() => {
+    if (String(payMethod || '').trim().toLowerCase() === 'cash') return payCashDate;
+    return format(new Date(), 'yyyy-MM-dd');
+  }, [payCashDate, payMethod]);
+
+  useEffect(() => {
+    if (!prefsReady) return;
+
+    const signature = searchParams.toString();
+    if (signature === lastAppliedQuerySignatureRef.current) return;
+    lastAppliedQuerySignatureRef.current = signature;
+
+    const flightId = (searchParams.get('flightId') || searchParams.get('flight_id') || '').trim();
+    const firmId = (searchParams.get('firmId') || searchParams.get('firm_id') || '').trim();
+    const type = normalizeTxTypeParam(searchParams.get('type') || '');
+    const currency = String(searchParams.get('currency') || '').trim();
+    const view = String(searchParams.get('view') || '').trim().toLowerCase();
+    const qDateFrom = normalizeDateParam(searchParams.get('dateFrom') || '');
+    const qDateTo = normalizeDateParam(searchParams.get('dateTo') || '');
+
+    let resetPage = false;
+
+    if (view === 'list' || view === 'boxes') {
+      setTransactionsView(view);
+    }
+
+    if (type) {
+      setFilterType(type);
+      resetPage = true;
+    }
+
+    if (currency) {
+      setFilterCurrency(currency.toUpperCase());
+      resetPage = true;
+    }
+
+    if (flightId) {
+      setFilterFlightId(flightId);
+      resetPage = true;
+    }
+
+    if (canFilterFirm && firmId) {
+      setFilterFirmId(firmId);
+      resetPage = true;
+    }
+
+    if (qDateFrom) {
+      setDateFrom(qDateFrom);
+      resetPage = true;
+    }
+    if (qDateTo) {
+      setDateTo(qDateTo);
+      resetPage = true;
+    }
+
+    if (resetPage) setPage(1);
+  }, [canFilterFirm, prefsReady, searchParams]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(TRANSACTIONS_PREFS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as TransactionsPrefs;
+
+      if (parsed.view === 'list' || parsed.view === 'boxes') setTransactionsView(parsed.view);
+      if (typeof parsed.filterType === 'string') setFilterType(parsed.filterType);
+      if (typeof parsed.filterFlightId === 'string') setFilterFlightId(parsed.filterFlightId);
+      if (typeof parsed.filterCurrency === 'string') setFilterCurrency(parsed.filterCurrency);
+      if (typeof parsed.dateFrom === 'string') setDateFrom(parsed.dateFrom);
+      if (typeof parsed.dateTo === 'string') setDateTo(parsed.dateTo);
+
+      if (canFilterFirm && typeof parsed.filterFirmId === 'string') setFilterFirmId(parsed.filterFirmId);
+    } catch {
+      // ignore
+    } finally {
+      setPrefsReady(true);
+    }
+  }, [canFilterFirm]);
+
+  useEffect(() => {
+    if (!prefsReady) return;
+    try {
+      const prefs: TransactionsPrefs = {
+        view: transactionsView,
+        filterType,
+        filterFirmId: canFilterFirm ? filterFirmId : '',
+        filterFlightId,
+        filterCurrency,
+        dateFrom,
+        dateTo,
+      };
+      localStorage.setItem(TRANSACTIONS_PREFS_KEY, JSON.stringify(prefs));
+    } catch {
+      // ignore
+    }
+  }, [canFilterFirm, dateFrom, dateTo, filterCurrency, filterFirmId, filterFlightId, filterType, prefsReady, transactionsView]);
+
+  useEffect(() => {
+    const shouldFetchSavedRate =
+      prefsReady &&
+      payCurrencyCode !== 'UZS' &&
+      !String(payExchangeRate || '').trim() &&
+      /^[A-Z]{3}$/.test(payCurrencyCode) &&
+      /^\d{4}-\d{2}-\d{2}$/.test(rateLookupDate);
+
+    if (!shouldFetchSavedRate) {
+      setSavedRate(null);
+      setSavedRateSource(null);
+      setSavedRateLoading(false);
+      return;
+    }
+
+    let ignore = false;
+
+    const run = async () => {
+      try {
+        setSavedRateLoading(true);
+        const query = new URLSearchParams();
+        query.set('date', rateLookupDate);
+        query.set('baseCurrency', 'UZS');
+        query.set('targetCurrency', payCurrencyCode);
+        const res = await api.get(`/currency-rates?${query.toString()}`);
+        const rates = Array.isArray(res.data) ? res.data : [];
+        const first = rates[0];
+        const rateValue = first?.rate;
+        const num = Number(rateValue);
+
+        if (ignore) return;
+
+        if (Number.isFinite(num) && num > 0) {
+          setSavedRate(num);
+          setSavedRateSource(typeof first?.source === 'string' ? String(first.source) : null);
+        } else {
+          setSavedRate(null);
+          setSavedRateSource(null);
+        }
+      } catch {
+        if (!ignore) {
+          setSavedRate(null);
+          setSavedRateSource(null);
+        }
+      } finally {
+        if (!ignore) setSavedRateLoading(false);
+      }
+    };
+
+    run();
+    return () => {
+      ignore = true;
+    };
+  }, [payCurrencyCode, payExchangeRate, prefsReady, rateLookupDate]);
 
   useEffect(() => {
     if (!payFlightId && filterFlightId) {
@@ -84,38 +290,38 @@ export default function TransactionsPage() {
     const flightId = payFlightId;
 
     if (canFilterFirm && !payFirmId) {
-      toast.error('Select a firm for this payment');
+      toast.error(tr('Select a firm for this payment', "Ushbu to'lov uchun firmangizni tanlang"));
       return;
     }
     if (!flightId) {
-      toast.error('Select a flight for this payment');
+      toast.error(tr('Select a flight for this payment', "Ushbu to'lov uchun reysni tanlang"));
       return;
     }
     if (!amount || !Number.isFinite(Number(amount)) || Number(amount) <= 0) {
-      toast.error('Enter a valid amount');
+      toast.error(tr('Enter a valid amount', "To'g'ri summani kiriting"));
       return;
     }
     if (!/^[A-Z]{3}$/.test(currency)) {
-      toast.error('Currency must be a 3-letter code (e.g. USD)');
+      toast.error(tr('Currency must be a 3-letter code (e.g. USD)', 'Valyuta 3 harfli kod bo\'lishi kerak (masalan, USD)'));
       return;
     }
 
-    if (currency !== 'USD') {
+    if (currency !== 'UZS') {
       const rateRaw = payExchangeRate.trim();
       const rateNum = rateRaw ? Number(rateRaw) : NaN;
       if (payCurrency === 'OTHER') {
         if (!rateRaw || !Number.isFinite(rateNum) || rateNum <= 0) {
-          toast.error('Enter a valid exchange rate (required for non-USD currencies)');
+          toast.error(tr('Enter a valid exchange rate (required for non-UZS currencies)', 'To\'g\'ri kursni kiriting (UZS bo\'lmagan valyutalar uchun majburiy)'));
           return;
         }
       }
       if (rateRaw && (!Number.isFinite(rateNum) || rateNum <= 0)) {
-        toast.error('Enter a valid exchange rate');
+        toast.error(tr('Enter a valid exchange rate', 'To\'g\'ri kursni kiriting'));
         return;
       }
     }
     if (method !== 'cash' && method !== 'card') {
-      toast.error('Select a payment method');
+      toast.error(tr('Select a payment method', "To'lov usulini tanlang"));
       return;
     }
 
@@ -124,7 +330,7 @@ export default function TransactionsPage() {
 
     if (method === 'cash') {
       if (!payCashDate) {
-        toast.error('Cash payments require a date');
+        toast.error(tr('Cash payments require a date', "Naqd to'lov uchun sana kerak"));
         return;
       }
       metadata.date = payCashDate;
@@ -132,11 +338,11 @@ export default function TransactionsPage() {
 
     if (method === 'card') {
       if (!payCardProvider.trim()) {
-        toast.error('Card payments require a provider');
+        toast.error(tr('Card payments require a provider', "Karta to'lovi uchun provayder kerak"));
         return;
       }
       if (!payCardReference.trim()) {
-        toast.error('Card payments require a transaction reference');
+        toast.error(tr('Card payments require a transaction reference', "Karta to'lovi uchun tranzaksiya raqami kerak"));
         return;
       }
       metadata.payment_provider = payCardProvider.trim();
@@ -155,12 +361,12 @@ export default function TransactionsPage() {
       };
       if (canFilterFirm) body.firmId = payFirmId;
 
-      if (currency !== 'USD' && payExchangeRate.trim()) {
+      if (currency !== 'UZS' && payExchangeRate.trim()) {
         body.exchangeRate = payExchangeRate.trim();
       }
 
       await api.post('/payments', body);
-      toast.success('Payment recorded');
+      toast.success(tr('Payment recorded', "To'lov qayd etildi"));
 
       setPayAmount('');
       setPayCardProvider('');
@@ -171,13 +377,14 @@ export default function TransactionsPage() {
       setPage(1);
       setReloadKey((k) => k + 1);
     } catch (err: any) {
-      toast.error(err?.response?.data?.error || 'Failed to record payment');
+      toast.error(err?.response?.data?.error || tr('Failed to record payment', "To'lovni qayd etib bo'lmadi"));
     } finally {
       setRecordingPayment(false);
     }
   };
 
   useEffect(() => {
+    if (!prefsReady) return;
     const fetchTransactions = async () => {
       try {
         setLoading(true);
@@ -206,13 +413,13 @@ export default function TransactionsPage() {
         }
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       } catch (err: any) {
-        toast.error('Failed to load transactions');
+        toast.error(tr('Failed to load transactions', 'Tranzaksiyalarni yuklab bo\'lmadi'));
       } finally {
         setLoading(false);
       }
     };
     fetchTransactions();
-  }, [filterType, filterFirmId, filterFlightId, filterCurrency, dateFrom, dateTo, page, limit, canFilterFirm, reloadKey]);
+  }, [prefsReady, filterType, filterFirmId, filterFlightId, filterCurrency, dateFrom, dateTo, page, limit, canFilterFirm, reloadKey, tr]);
 
   useEffect(() => {
     const loadOptions = async () => {
@@ -235,34 +442,97 @@ export default function TransactionsPage() {
     loadOptions();
   }, [canFilterFirm]);
 
+  const getTransactionTypeLabel = (type?: string) => {
+    const normalized = String(type || '').trim().toUpperCase();
+    if (normalized === 'SALE') return tr('SALE', 'SOTUV');
+    if (normalized === 'PAYABLE') return tr('PAYABLE', 'QARZDORLIK');
+    if (normalized === 'PAYMENT') return tr('PAYMENT', "TO'LOV");
+    if (normalized === 'ADJUSTMENT') return tr('ADJUSTMENT', 'KORREKSIYA');
+    return normalized || String(type || '');
+  };
+
+  const getPaymentMethodLabel = (method?: string) => {
+    const normalized = String(method || '').trim().toLowerCase();
+    if (normalized === 'cash') return tr('Cash', 'Naqd');
+    if (normalized === 'card') return tr('Card', 'Karta');
+    return method ? String(method) : '-';
+  };
+
+  const getTransactionTypeHelp = (type?: string) => {
+    const normalized = String(type || '').trim().toUpperCase();
+    if (normalized === 'SALE') return tr('Ticket sale (revenue)', 'Chipta sotuv (daromad)');
+    if (normalized === 'PAYABLE') return tr('Debt created (firm owes)', 'Qarz yaratildi (firma qarzdor)');
+    if (normalized === 'PAYMENT') return tr('Payment received/recorded', "To'lov qabul qilindi/qayd etildi");
+    if (normalized === 'ADJUSTMENT') return tr('Manual correction entry', 'Qo\'lda kiritilgan tuzatish');
+    return normalized || String(type || '');
+  };
+
+  const hasActiveFilters = Boolean(
+    filterType ||
+    (canFilterFirm && filterFirmId) ||
+    filterFlightId ||
+    filterCurrency.trim() ||
+    dateFrom ||
+    dateTo,
+  );
+
+  const clearFilters = () => {
+    setFilterType('');
+    setFilterFirmId('');
+    setFilterFlightId('');
+    setFilterCurrency('');
+    setDateFrom('');
+    setDateTo('');
+    setPage(1);
+  };
+
+  const resolvedRate = (() => {
+    if (payCurrencyCode === 'UZS') return { rate: 1, source: 'base' as const };
+    if (Number.isFinite(payExchangeRateNum) && payExchangeRateNum > 0) return { rate: payExchangeRateNum, source: 'manual' as const };
+    if (typeof savedRate === 'number' && Number.isFinite(savedRate) && savedRate > 0) return { rate: savedRate, source: 'saved' as const };
+    return { rate: null as number | null, source: 'missing' as const };
+  })();
+
+  const previewBaseAmount = (() => {
+    if (!Number.isFinite(payAmountNum) || payAmountNum <= 0) return null;
+    if (!resolvedRate.rate || !Number.isFinite(resolvedRate.rate) || resolvedRate.rate <= 0) return null;
+    return payAmountNum * resolvedRate.rate;
+  })();
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold text-foreground">Transactions</h2>
+        <h2 className="text-2xl font-bold text-foreground">{tr('Transactions', 'Tranzaksiyalar')}</h2>
       </div>
 
-      <div className="bg-surface-2 border border-border shadow sm:rounded-lg p-4 space-y-4">
-        <div>
-          <h3 className="text-lg font-semibold text-foreground">Record payment</h3>
-          <p className="mt-1 text-sm text-muted">
-            Creates a <span className="font-semibold">PAYMENT</span> transaction.
-            {' '}Supported currencies: <span className="font-semibold">USD</span> / <span className="font-semibold">UZS</span>
-            {' '}(other currencies require a manual rate).
-          </p>
-        </div>
-
+      <CollapsibleCard
+        title={tr('Record payment', "To'lovni qayd etish")}
+        description={
+          <>
+            {tr('Creates a', 'Bu')}{' '}
+            <span className="font-semibold">PAYMENT</span>{' '}
+            {tr('transaction.', 'tranzaksiyasini yaratadi.')}{' '}
+            {tr('Supported currencies:', 'Qo‘llab-quvvatlanadigan valyutalar:')}{' '}
+            <span className="font-semibold">UZS</span> / <span className="font-semibold">USD</span>{' '}
+            {tr('(non-UZS currencies require an exchange rate).', '(UZS bo\'lmagan valyutalar uchun kurs kerak).')}
+          </>
+        }
+        defaultOpen={false}
+        storageKey="jetstream-transactions-record-payment-open"
+        className="shadow sm:rounded-lg"
+      >
         <form onSubmit={submitPayment} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4 items-end">
           {canFilterFirm && (
             <div>
-              <label htmlFor="payFirm" className="block text-sm font-medium text-muted">Firm</label>
+              <label htmlFor="payFirm" className="block text-sm font-medium text-muted">{tr('Firm', 'Firma')}</label>
               <select
                 id="payFirm"
                 value={payFirmId}
                 onChange={(e) => setPayFirmId(e.target.value)}
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-fuchsia-500 transition sm:text-sm"
+                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
                 required
               >
-                <option value="">Select</option>
+                <option value="">{tr('Select', 'Tanlang')}</option>
                 {firmOptions.map((f) => (
                   <option key={f.id} value={f.id}>{f.name}</option>
                 ))}
@@ -271,15 +541,15 @@ export default function TransactionsPage() {
           )}
 
           <div>
-            <label htmlFor="payFlight" className="block text-sm font-medium text-muted">Flight</label>
+            <label htmlFor="payFlight" className="block text-sm font-medium text-muted">{tr('Flight', 'Reys')}</label>
             <select
               id="payFlight"
               value={payFlightId}
               onChange={(e) => setPayFlightId(e.target.value)}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-fuchsia-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
               required
             >
-              <option value="">Select</option>
+              <option value="">{tr('Select', 'Tanlang')}</option>
               {flightOptions.map((f) => {
                 const fid = f.id ?? f.flight_id;
                 if (!fid) return null;
@@ -293,7 +563,7 @@ export default function TransactionsPage() {
           </div>
 
           <div>
-            <label htmlFor="payAmount" className="block text-sm font-medium text-muted">Amount</label>
+            <label htmlFor="payAmount" className="block text-sm font-medium text-muted">{tr('Amount', 'Summa')}</label>
             <input
               id="payAmount"
               type="number"
@@ -302,13 +572,13 @@ export default function TransactionsPage() {
               value={payAmount}
               onChange={(e) => setPayAmount(e.target.value)}
               placeholder="0.00"
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-fuchsia-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition sm:text-sm"
               required
             />
           </div>
 
           <div>
-            <label htmlFor="payCurrency" className="block text-sm font-medium text-muted">Currency</label>
+            <label htmlFor="payCurrency" className="block text-sm font-medium text-muted">{tr('Currency', 'Valyuta')}</label>
             <select
               id="payCurrency"
               value={payCurrency}
@@ -316,33 +586,33 @@ export default function TransactionsPage() {
                 setPayCurrency(e.target.value as any);
                 setPayExchangeRate('');
               }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-fuchsia-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
               required
             >
-              <option value="USD">USD</option>
               <option value="UZS">UZS</option>
-              <option value="OTHER">Other</option>
+              <option value="USD">USD</option>
+              <option value="OTHER">{tr('Other', 'Boshqa')}</option>
             </select>
           </div>
 
           {payCurrency === 'OTHER' && (
             <div>
-              <label htmlFor="payOtherCurrency" className="block text-sm font-medium text-muted">Other currency</label>
+              <label htmlFor="payOtherCurrency" className="block text-sm font-medium text-muted">{tr('Other currency', 'Boshqa valyuta')}</label>
               <input
                 id="payOtherCurrency"
                 value={payOtherCurrency}
                 onChange={(e) => setPayOtherCurrency(e.target.value)}
-                placeholder="e.g. EUR"
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-fuchsia-500 transition sm:text-sm"
+                placeholder={tr('e.g. EUR', 'masalan, EUR')}
+                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition sm:text-sm"
                 required
               />
             </div>
           )}
 
-          {(payCurrency !== 'USD') && (
+          {(payCurrency !== 'UZS') && (
             <div>
               <label htmlFor="payExchangeRate" className="block text-sm font-medium text-muted">
-                USD→{(payCurrency === 'OTHER' ? (payOtherCurrency || 'XXX') : payCurrency).toUpperCase()} rate
+                {(payCurrency === 'OTHER' ? (payOtherCurrency || 'XXX') : payCurrency).toUpperCase()}→UZS {tr('rate', 'kursi')}
               </label>
               <input
                 id="payExchangeRate"
@@ -351,51 +621,55 @@ export default function TransactionsPage() {
                 min="0"
                 value={payExchangeRate}
                 onChange={(e) => setPayExchangeRate(e.target.value)}
-                placeholder={payCurrency === 'UZS' ? 'Optional if rate is already saved for that day' : 'Required'}
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-fuchsia-500 transition sm:text-sm"
+                placeholder={payCurrency === 'OTHER'
+                  ? tr('Required', 'Majburiy')
+                  : tr('Optional if rate is already saved for that day', 'Agar kurs shu kunga saqlangan bo\'lsa ixtiyoriy')}
+                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition sm:text-sm"
                 required={payCurrency === 'OTHER'}
               />
               <p className="mt-1 text-xs text-muted">
-                Enter how much <span className="font-semibold">{(payCurrency === 'OTHER' ? (payOtherCurrency || 'XXX') : payCurrency).toUpperCase()}</span>
-                {' '}equals <span className="font-semibold">1 USD</span> for the payment date.
+                {tr('Enter how many', 'To\'lov sanasi uchun')}{' '}
+                <span className="font-semibold">UZS</span>{' '}
+                {tr('equals', 'nechta ekanligini kiriting:')}{' '}
+                <span className="font-semibold">1 {(payCurrency === 'OTHER' ? (payOtherCurrency || 'XXX') : payCurrency).toUpperCase()}</span>.
               </p>
             </div>
           )}
 
           <div>
-            <label htmlFor="payMethod" className="block text-sm font-medium text-muted">Method</label>
+            <label htmlFor="payMethod" className="block text-sm font-medium text-muted">{tr('Method', 'Usul')}</label>
             <select
               id="payMethod"
               value={payMethod}
               onChange={(e) => setPayMethod(e.target.value as any)}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-fuchsia-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
               required
             >
-              <option value="cash">Cash</option>
-              <option value="card">Card</option>
+              <option value="cash">{tr('Cash', 'Naqd')}</option>
+              <option value="card">{tr('Card', 'Karta')}</option>
             </select>
           </div>
 
           <div>
-            <label htmlFor="payReference" className="block text-sm font-medium text-muted">Reference (optional)</label>
+            <label htmlFor="payReference" className="block text-sm font-medium text-muted">{tr('Reference (optional)', 'Izoh (ixtiyoriy)')}</label>
             <input
               id="payReference"
               value={payReference}
               onChange={(e) => setPayReference(e.target.value)}
-              placeholder="Receipt / note"
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-fuchsia-500 transition sm:text-sm"
+              placeholder={tr('Receipt / note', 'Kvitansiya / izoh')}
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition sm:text-sm"
             />
           </div>
 
           {payMethod === 'cash' && (
             <div>
-              <label htmlFor="payCashDate" className="block text-sm font-medium text-muted">Cash date</label>
+              <label htmlFor="payCashDate" className="block text-sm font-medium text-muted">{tr('Cash date', 'Naqd sana')}</label>
               <input
                 id="payCashDate"
                 type="date"
                 value={payCashDate}
                 onChange={(e) => setPayCashDate(e.target.value)}
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-fuchsia-500 transition sm:text-sm"
+                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
                 required
               />
             </div>
@@ -404,25 +678,25 @@ export default function TransactionsPage() {
           {payMethod === 'card' && (
             <>
               <div>
-                <label htmlFor="payCardProvider" className="block text-sm font-medium text-muted">Card provider</label>
+                <label htmlFor="payCardProvider" className="block text-sm font-medium text-muted">{tr('Card provider', 'Karta provayderi')}</label>
                 <input
                   id="payCardProvider"
                   value={payCardProvider}
                   onChange={(e) => setPayCardProvider(e.target.value)}
-                  placeholder="e.g. Visa / Stripe"
-                  className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-fuchsia-500 transition sm:text-sm"
+                  placeholder={tr('e.g. Visa / Stripe', 'masalan, Visa / Stripe')}
+                  className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition sm:text-sm"
                   required
                 />
               </div>
 
               <div>
-                <label htmlFor="payCardReference" className="block text-sm font-medium text-muted">Transaction reference</label>
+                <label htmlFor="payCardReference" className="block text-sm font-medium text-muted">{tr('Transaction reference', 'Tranzaksiya raqami')}</label>
                 <input
                   id="payCardReference"
                   value={payCardReference}
                   onChange={(e) => setPayCardReference(e.target.value)}
-                  placeholder="Bank / gateway reference"
-                  className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-fuchsia-500 transition sm:text-sm"
+                  placeholder={tr('Bank / gateway reference', 'Bank / to\'lov tizimi raqami')}
+                  className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition sm:text-sm"
                   required
                 />
               </div>
@@ -430,51 +704,83 @@ export default function TransactionsPage() {
           )}
 
           <div className="sm:col-span-2 lg:col-span-6">
+            <div className="mb-3 text-xs text-muted">
+              {payCurrencyCode === 'UZS' ? (
+                <span>
+                  {tr('Preview:', 'Ko\'rinish:')} {tr('Base amount equals original amount (UZS).', 'Bazaviy summa asl summaga teng (UZS).')}
+                </span>
+              ) : previewBaseAmount != null ? (
+                <span>
+                  {tr('Preview:', 'Ko\'rinish:')} {payAmountNum.toFixed(2)} {payCurrencyCode} × {resolvedRate.rate?.toFixed(6)} = {previewBaseAmount.toFixed(2)} UZS
+                  {resolvedRate.source === 'manual'
+                    ? ` (${tr('manual rate', 'qo\'lda kurs')})`
+                    : resolvedRate.source === 'saved'
+                      ? ` (${tr('saved rate', 'saqlangan kurs')}${savedRateSource ? `: ${savedRateSource}` : ''})`
+                      : ''}
+                  {savedRateLoading && resolvedRate.source !== 'manual' ? ` · ${tr('looking up saved rate…', 'saqlangan kurs qidirilmoqda…')}` : ''}
+                </span>
+              ) : (
+                <span>
+                  {savedRateLoading
+                    ? tr('Looking up saved exchange rate…', 'Saqlangan kurs qidirilmoqda…')
+                    : tr(
+                        `No saved exchange rate found for ${rateLookupDate} — enter the rate manually.`,
+                        `${rateLookupDate} uchun saqlangan kurs topilmadi — kursni qo'lda kiriting.`
+                      )}
+                </span>
+              )}
+            </div>
+
             <button
               type="submit"
               disabled={recordingPayment}
               className="inline-flex items-center justify-center px-4 py-2 rounded-md bg-indigo-600 text-white font-medium hover:bg-indigo-700 disabled:opacity-50"
             >
-              {recordingPayment ? 'Recording...' : 'Record payment'}
+              {recordingPayment ? tr('Recording...', 'Qayd etilmoqda...') : tr('Record payment', "To'lovni qayd etish")}
             </button>
           </div>
         </form>
-      </div>
+      </CollapsibleCard>
 
-      <div className="bg-surface-2 border border-border shadow sm:rounded-lg p-4 space-y-4">
+      <CollapsibleCard
+        title={tr('Filters', 'Filtrlar')}
+        defaultOpen={false}
+        storageKey="jetstream-transactions-filters-open"
+        className="shadow sm:rounded-lg"
+      >
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
           <div>
-            <label htmlFor="dateFrom" className="block text-sm font-medium text-muted">Date from</label>
+            <label htmlFor="dateFrom" className="block text-sm font-medium text-muted">{tr('Date from', 'Sana (dan)')}</label>
             <input
               id="dateFrom"
               type="date"
               value={dateFrom}
               onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-fuchsia-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
             />
           </div>
 
           <div>
-            <label htmlFor="dateTo" className="block text-sm font-medium text-muted">Date to</label>
+            <label htmlFor="dateTo" className="block text-sm font-medium text-muted">{tr('Date to', 'Sana (gacha)')}</label>
             <input
               id="dateTo"
               type="date"
               value={dateTo}
               onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-fuchsia-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
             />
           </div>
 
           {canFilterFirm && (
             <div>
-              <label htmlFor="firm" className="block text-sm font-medium text-muted">Firm</label>
+              <label htmlFor="firm" className="block text-sm font-medium text-muted">{tr('Firm', 'Firma')}</label>
               <select
                 id="firm"
                 value={filterFirmId}
                 onChange={(e) => { setFilterFirmId(e.target.value); setPage(1); }}
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-fuchsia-500 transition sm:text-sm"
+                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
               >
-                <option value="">All</option>
+                <option value="">{tr('All', 'Barchasi')}</option>
                 {firmOptions.map((f) => (
                   <option key={f.id} value={f.id}>{f.name}</option>
                 ))}
@@ -483,14 +789,14 @@ export default function TransactionsPage() {
           )}
 
           <div>
-            <label htmlFor="flight" className="block text-sm font-medium text-muted">Flight</label>
+            <label htmlFor="flight" className="block text-sm font-medium text-muted">{tr('Flight', 'Reys')}</label>
             <select
               id="flight"
               value={filterFlightId}
               onChange={(e) => { setFilterFlightId(e.target.value); setPage(1); }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-fuchsia-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
             >
-              <option value="">All</option>
+              <option value="">{tr('All', 'Barchasi')}</option>
               {flightOptions.map((f) => {
                 const fid = f.id ?? f.flight_id;
                 if (!fid) return null;
@@ -504,33 +810,33 @@ export default function TransactionsPage() {
           </div>
 
           <div>
-            <label htmlFor="type" className="block text-sm font-medium text-muted">Type</label>
+            <label htmlFor="type" className="block text-sm font-medium text-muted">{tr('Type', 'Turi')}</label>
             <select
               id="type"
               value={filterType}
               onChange={(e) => { setFilterType(e.target.value); setPage(1); }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-fuchsia-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
             >
-              <option value="">All</option>
-              <option value="sale">Sale</option>
-              <option value="payable">Payable (Debt)</option>
-              <option value="payment">Payment</option>
-              <option value="adjustment">Adjustment</option>
+              <option value="">{tr('All', 'Barchasi')}</option>
+              <option value="sale">{tr('Sale', 'Sotuv')}</option>
+              <option value="payable">{tr('Payable (Debt)', 'Qarz (qarzdorlik)')}</option>
+              <option value="payment">{tr('Payment', "To'lov")}</option>
+              <option value="adjustment">{tr('Adjustment', 'Korreksiya')}</option>
             </select>
           </div>
 
           <div>
-            <label htmlFor="currency" className="block text-sm font-medium text-muted">Currency</label>
+            <label htmlFor="currency" className="block text-sm font-medium text-muted">{tr('Currency', 'Valyuta')}</label>
             <input
               id="currency"
               value={filterCurrency}
               onChange={(e) => { setFilterCurrency(e.target.value); setPage(1); }}
-              placeholder="e.g. USD"
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-fuchsia-500 transition sm:text-sm"
+              placeholder={tr('e.g. USD', 'masalan, USD')}
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition sm:text-sm"
             />
           </div>
         </div>
-      </div>
+      </CollapsibleCard>
 
       <div className="bg-surface-2 border border-border shadow overflow-hidden sm:rounded-lg">
         <div className="px-4 py-3 border-b border-border flex items-center justify-end">
@@ -544,7 +850,7 @@ export default function TransactionsPage() {
                 : 'bg-surface text-muted hover:bg-surface-2'
               }`}
             >
-              List
+              {tr('List', "Ro'yxat")}
             </button>
             <button
               type="button"
@@ -555,7 +861,7 @@ export default function TransactionsPage() {
                 : 'bg-surface text-muted hover:bg-surface-2'
               }`}
             >
-              Boxes
+              {tr('Boxes', 'Bloklar')}
             </button>
           </div>
         </div>
@@ -564,18 +870,18 @@ export default function TransactionsPage() {
           <table className="min-w-full divide-y divide-border">
             <thead className="bg-surface">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">Date</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">Type</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">Firm / Flight</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">Amount</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">Base Amount</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">Payment Method</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">Reference</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">{tr('Date', 'Sana')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">{tr('Type', 'Turi')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">{tr('Firm / Flight', 'Firma / Reys')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">{tr('Amount', 'Summa')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">{tr('Base Amount (UZS)', 'Bazaviy summa (UZS)')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">{tr('Payment Method', "To'lov usuli")}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">{tr('Reference', 'Izoh')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {loading ? (
-                <tr><td colSpan={7} className="px-6 py-4 text-center">Loading...</td></tr>
+                <tr><td colSpan={7} className="px-6 py-4 text-center">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
               ) : transactions.map((t: any) => (
                 <tr
                   key={t.id}
@@ -591,22 +897,23 @@ export default function TransactionsPage() {
                       (t.type || '').toLowerCase() === 'payable' ? 'bg-red-900/30 text-red-300 border-red-700/50' :
                       (t.type || '').toLowerCase() === 'payment' ? 'bg-indigo-900/30 text-indigo-300 border-indigo-700/50' :
                       'bg-surface text-muted border-border'
-                    }`}>
-                      {t.type}
+                    }`}
+                    title={getTransactionTypeHelp(t.type)}>
+                      {getTransactionTypeLabel(t.type)}
                     </span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-muted flex flex-col gap-1">
-                    <span>Firm: {t.firm?.name || t.firmId || t.firm_id}</span>
-                    <span>Flight: {t.flight?.flightNumber || t.flightId || t.flight_id}</span>
+                    <span>{tr('Firm', 'Firma')}: {t.firm?.name || t.firmId || t.firm_id}</span>
+                    <span>{tr('Flight', 'Reys')}: {t.flight?.flightNumber || t.flightId || t.flight_id}</span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground font-semibold">
                     {Number(t.originalAmount || t.original_amount).toFixed(2)} {t.currency}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-muted">
-                    {Number(t.baseAmount || t.base_amount).toFixed(2)} USD
+                    {Number(t.baseAmount || t.base_amount).toFixed(2)} UZS
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-muted capitalize">
-                    {t.paymentMethod || t.payment_method || '-'}
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-muted">
+                    {getPaymentMethodLabel(t.paymentMethod || t.payment_method)}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-muted">
                     {(() => {
@@ -620,7 +927,18 @@ export default function TransactionsPage() {
               {!loading && transactions.length === 0 && (
                 <tr>
                   <td colSpan={7} className="px-6 py-4 text-center text-sm text-muted">
-                    No transactions found.
+                    <div className="space-y-2">
+                      <div>{tr('No transactions found.', 'Tranzaksiyalar topilmadi.')}</div>
+                      {hasActiveFilters ? (
+                        <button
+                          type="button"
+                          onClick={clearFilters}
+                          className="px-3 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition border border-border text-sm font-medium"
+                        >
+                          {tr('Clear filters', 'Filtrlarni tozalash')}
+                        </button>
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
               )}
@@ -629,9 +947,20 @@ export default function TransactionsPage() {
         ) : (
           <div className="p-4">
             {loading ? (
-              <div className="py-6 text-center text-sm text-muted">Loading...</div>
+              <div className="py-6 text-center text-sm text-muted">{tr('Loading...', 'Yuklanmoqda...')}</div>
             ) : transactions.length === 0 ? (
-              <div className="py-6 text-center text-sm text-muted">No transactions found.</div>
+              <div className="py-6 text-center text-sm text-muted space-y-2">
+                <div>{tr('No transactions found.', 'Tranzaksiyalar topilmadi.')}</div>
+                {hasActiveFilters ? (
+                  <button
+                    type="button"
+                    onClick={clearFilters}
+                    className="px-3 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition border border-border text-sm font-medium"
+                  >
+                    {tr('Clear filters', 'Filtrlarni tozalash')}
+                  </button>
+                ) : null}
+              </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                 {transactions.map((t: any) => {
@@ -656,33 +985,36 @@ export default function TransactionsPage() {
                         <div className="text-sm text-muted">
                           {format(new Date(t.createdAt || t.created_at), 'PPP pp')}
                         </div>
-                        <span className={`px-2 py-1 rounded-full text-xs font-bold border ${typeClass}`}>
-                          {t.type}
+                        <span
+                          className={`px-2 py-1 rounded-full text-xs font-bold border ${typeClass}`}
+                          title={getTransactionTypeHelp(t.type)}
+                        >
+                          {getTransactionTypeLabel(t.type)}
                         </span>
                       </div>
 
                       <div className="mt-3 text-sm text-foreground space-y-1">
-                        <div>Firm: {t.firm?.name || t.firmId || t.firm_id}</div>
-                        <div>Flight: {t.flight?.flightNumber || t.flightId || t.flight_id}</div>
+                        <div>{tr('Firm', 'Firma')}: {t.firm?.name || t.firmId || t.firm_id}</div>
+                        <div>{tr('Flight', 'Reys')}: {t.flight?.flightNumber || t.flightId || t.flight_id}</div>
                       </div>
 
                       <div className="mt-3 text-sm text-foreground space-y-1">
                         <div className="flex items-center justify-between gap-3">
-                          <span className="text-muted">Amount</span>
+                          <span className="text-muted">{tr('Amount', 'Summa')}</span>
                           <span className="font-semibold text-foreground">
                             {Number(t.originalAmount || t.original_amount).toFixed(2)} {t.currency}
                           </span>
                         </div>
                         <div className="flex items-center justify-between gap-3">
-                          <span className="text-muted">Base</span>
-                          <span>{Number(t.baseAmount || t.base_amount).toFixed(2)} USD</span>
+                          <span className="text-muted">{tr('Base', 'Baza')}</span>
+                          <span>{Number(t.baseAmount || t.base_amount).toFixed(2)} UZS</span>
                         </div>
                         <div className="flex items-center justify-between gap-3">
-                          <span className="text-muted">Method</span>
-                          <span className="capitalize">{t.paymentMethod || t.payment_method || '-'}</span>
+                          <span className="text-muted">{tr('Method', 'Usul')}</span>
+                          <span>{getPaymentMethodLabel(t.paymentMethod || t.payment_method)}</span>
                         </div>
                         <div className="flex items-center justify-between gap-3">
-                          <span className="text-muted">Reference</span>
+                          <span className="text-muted">{tr('Reference', 'Izoh')}</span>
                           <span className="text-right truncate max-w-[14rem]">{ref ? String(ref) : '-'}</span>
                         </div>
                       </div>
@@ -698,15 +1030,34 @@ export default function TransactionsPage() {
         <div className="bg-surface-2 px-4 py-3 border-t border-border sm:px-6 flex items-center justify-between">
           <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
             <div>
-              <p className="text-sm text-muted">
-                Showing{' '}
-                <span className="font-medium text-foreground">{loading ? 0 : Math.min((page - 1) * limit + 1, total)}</span>
-                {' '}to{' '}
-                <span className="font-medium text-foreground">{Math.min(page * limit, total)}</span>
-                {' '}of{' '}
-                <span className="font-medium text-foreground">{total}</span>
-                {' '}results
-              </p>
+              {(() => {
+                const start = loading ? 0 : Math.min((page - 1) * limit + 1, total);
+                const end = Math.min(page * limit, total);
+                if (language === 'uz') {
+                  return (
+                    <p className="text-sm text-muted">
+                      <span className="font-medium text-foreground">{total}</span>
+                      {' '}{tr('results', 'ta natijadan')}{' '}
+                      <span className="font-medium text-foreground">{start}</span>
+                      {' '}{tr('to', 'dan')}{' '}
+                      <span className="font-medium text-foreground">{end}</span>
+                      {' '}{tr('showing', 'gacha ko\'rsatilmoqda')}
+                    </p>
+                  );
+                }
+
+                return (
+                  <p className="text-sm text-muted">
+                    {tr('Showing', 'Showing')}{' '}
+                    <span className="font-medium text-foreground">{start}</span>
+                    {' '}to{' '}
+                    <span className="font-medium text-foreground">{end}</span>
+                    {' '}of{' '}
+                    <span className="font-medium text-foreground">{total}</span>
+                    {' '}results
+                  </p>
+                );
+              })()}
             </div>
             <div>
               <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
@@ -718,7 +1069,7 @@ export default function TransactionsPage() {
                   <ChevronLeft className="h-5 w-5" />
                 </button>
                 <div className="relative inline-flex items-center px-4 py-2 border border-border bg-surface text-sm font-medium text-foreground">
-                  Page {page} of {totalPages}
+                  {tr('Page', 'Sahifa')} {page} {tr('of', ' / ')} {totalPages}
                 </div>
                 <button
                   onClick={() => setPage(p => Math.min(totalPages, p + 1))}

@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma } from '@prisma/client';
 
+const BASE_CURRENCY = 'UZS' as const;
+
 function normalizeRole(role: unknown): string {
   return String(role || '').toUpperCase();
 }
@@ -25,6 +27,36 @@ function parsePositiveInt(value: unknown): number | null {
 
 function normalizeCurrency(value: unknown): string {
   return String(value || '').trim().toUpperCase();
+}
+
+async function getLatestExchangeRateToBase(
+  tx: Prisma.TransactionClient,
+  currency: string,
+): Promise<Prisma.Decimal> {
+  if (currency === BASE_CURRENCY) return new Prisma.Decimal(1);
+
+  const direct = await tx.currencyRate.findFirst({
+    where: { baseCurrency: BASE_CURRENCY, targetCurrency: currency },
+    orderBy: { recordedAt: 'desc' },
+  });
+  if (direct) {
+    const d = new Prisma.Decimal(String(direct.rate));
+    if (!d.gt(0)) throw new Error('Invalid exchange rate');
+    return d;
+  }
+
+  // Backward-compat: some environments may have rates stored as { baseCurrency: <CURRENCY>, targetCurrency: UZS }
+  const inverse = await tx.currencyRate.findFirst({
+    where: { baseCurrency: currency, targetCurrency: BASE_CURRENCY },
+    orderBy: { recordedAt: 'desc' },
+  });
+  if (inverse) {
+    const d = new Prisma.Decimal(String(inverse.rate));
+    if (!d.gt(0)) throw new Error('Invalid exchange rate');
+    return d;
+  }
+
+  throw new Error(`Missing exchange rate for ${currency}`);
 }
 
 function parsePositiveDecimal(value: unknown): Prisma.Decimal | null {
@@ -264,29 +296,23 @@ export const confirmAllocation = async (req: Request, res: Response) => {
         });
 
         const currencies = Array.from(
-          new Set(tickets.map((t) => normalizeCurrency(t.currency)).filter((c) => c && c !== 'USD')),
+          new Set(tickets.map((t) => normalizeCurrency(t.currency)).filter((c) => c && c !== BASE_CURRENCY)),
         );
         const rateByCurrency = new Map<string, Prisma.Decimal>();
         for (const c of currencies) {
-          const rate = await tx.currencyRate.findFirst({
-            where: { baseCurrency: 'USD', targetCurrency: c },
-            orderBy: { recordedAt: 'desc' },
-          });
-          if (!rate) throw new Error(`Missing exchange rate for ${c}`);
-          const rateDecimal = new Prisma.Decimal(String(rate.rate));
-          if (!rateDecimal.gt(0)) throw new Error('Invalid exchange rate');
+          const rateDecimal = await getLatestExchangeRateToBase(tx, c);
           rateByCurrency.set(c, rateDecimal);
         }
 
         const transactionRows = tickets.map((t) => {
           const originalAmount = new Prisma.Decimal(String(t.price)).toDecimalPlaces(4);
           const currency = normalizeCurrency(t.currency);
-          const exchangeRate = currency === 'USD'
+          const exchangeRate = currency === BASE_CURRENCY
             ? new Prisma.Decimal(1)
             : (rateByCurrency.get(currency) as Prisma.Decimal);
           if (!exchangeRate || !exchangeRate.gt(0)) throw new Error('Invalid exchange rate');
 
-          const baseAmount = originalAmount.div(exchangeRate).toDecimalPlaces(4);
+          const baseAmount = originalAmount.mul(exchangeRate).toDecimalPlaces(4);
 
           return {
             firmId: ownFirmId,
@@ -336,17 +362,12 @@ export const confirmAllocation = async (req: Request, res: Response) => {
       const currency = normalizeCurrency(ticket.currency);
 
       let exchangeRate = new Prisma.Decimal(1);
-      if (currency !== 'USD') {
-        const rate = await tx.currencyRate.findFirst({
-          where: { baseCurrency: 'USD', targetCurrency: currency },
-          orderBy: { recordedAt: 'desc' },
-        });
-        if (!rate) throw new Error(`Missing exchange rate for ${currency}`);
-        exchangeRate = new Prisma.Decimal(String(rate.rate));
+      if (currency !== BASE_CURRENCY) {
+        exchangeRate = await getLatestExchangeRateToBase(tx, currency);
       }
       if (!exchangeRate.gt(0)) throw new Error('Invalid exchange rate');
 
-      const baseAmount = originalAmount.div(exchangeRate).toDecimalPlaces(4);
+      const baseAmount = originalAmount.mul(exchangeRate).toDecimalPlaces(4);
 
       await tx.ticket.update({
         where: { id: ticketId },
@@ -564,7 +585,7 @@ export const sellTicket = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'salePrice is required' });
   }
   if (!/^[A-Z]{3}$/.test(currency)) {
-    return res.status(400).json({ error: 'saleCurrency must be a 3-letter code (e.g. USD)' });
+    return res.status(400).json({ error: `saleCurrency must be a 3-letter code (e.g. ${BASE_CURRENCY})` });
   }
 
   const purchaserRaw = (req.body as any).purchaser ?? (req.body as any).purchaserInfo;
@@ -608,16 +629,11 @@ export const sellTicket = async (req: Request, res: Response) => {
         }
 
         let exchangeRate = new Prisma.Decimal(1);
-        if (currency !== 'USD') {
-          const rate = await tx.currencyRate.findFirst({
-            where: { baseCurrency: 'USD', targetCurrency: currency },
-            orderBy: { recordedAt: 'desc' },
-          });
-          if (!rate) throw new Error(`Missing exchange rate for ${currency}`);
-          exchangeRate = new Prisma.Decimal(String(rate.rate));
+        if (currency !== BASE_CURRENCY) {
+          exchangeRate = await getLatestExchangeRateToBase(tx, currency);
         }
         if (!exchangeRate.gt(0)) throw new Error('Invalid exchange rate');
-        const baseAmount = saleAmount.div(exchangeRate).toDecimalPlaces(4);
+        const baseAmount = saleAmount.mul(exchangeRate).toDecimalPlaces(4);
 
         const ticketIds = tickets.map((t) => String(t.id));
         await tx.ticket.updateMany({
@@ -683,18 +699,13 @@ export const sellTicket = async (req: Request, res: Response) => {
       if (!ticket.assignedFirmId) throw new Error('Ticket is missing assigned firm');
 
       let exchangeRate = new Prisma.Decimal(1);
-      if (currency !== 'USD') {
-        const rate = await tx.currencyRate.findFirst({
-          where: { baseCurrency: 'USD', targetCurrency: currency },
-          orderBy: { recordedAt: 'desc' },
-        });
-        if (!rate) throw new Error(`Missing exchange rate for ${currency}`);
-        exchangeRate = new Prisma.Decimal(String(rate.rate));
+      if (currency !== BASE_CURRENCY) {
+        exchangeRate = await getLatestExchangeRateToBase(tx, currency);
       }
 
       if (!exchangeRate.gt(0)) throw new Error('Invalid exchange rate');
 
-      const baseAmount = saleAmount.div(exchangeRate).toDecimalPlaces(4);
+      const baseAmount = saleAmount.mul(exchangeRate).toDecimalPlaces(4);
 
       await tx.ticket.update({
         where: { id: ticketId },
@@ -727,5 +738,323 @@ export const sellTicket = async (req: Request, res: Response) => {
     res.json({ success: true });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
+  }
+};
+
+export const cancelSale = async (req: Request, res: Response) => {
+  const { ticketId } = req.body;
+  const user = (req as any).user;
+  const actorUserId = user?.userId ? String(user.userId) : undefined;
+  const role = normalizeRole(user?.role);
+
+  if (!['SUPERADMIN', 'ADMIN'].includes(role)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  if (!ticketId || typeof ticketId !== 'string' || !ticketId.trim()) {
+    return res.status(400).json({ error: 'ticketId is required' });
+  }
+
+  const resolvedTicketId = ticketId.trim();
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const tickets: any[] = await tx.$queryRaw`SELECT * FROM "Ticket" WHERE id = ${resolvedTicketId} FOR UPDATE`;
+      if (tickets.length === 0) throw new Error('Ticket not found');
+      const ticket = tickets[0];
+
+      if (String(ticket.status || '') !== 'SOLD') throw new Error('Ticket is not sold');
+
+      const sale = await tx.transaction.findFirst({
+        where: {
+          ticketId: resolvedTicketId,
+          type: 'SALE',
+          baseAmount: { gt: new Prisma.Decimal(0) },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!sale) throw new Error('Missing SALE transaction for ticket');
+
+      const originalAmount = new Prisma.Decimal(String(sale.originalAmount)).mul(-1).toDecimalPlaces(4);
+      const exchangeRate = new Prisma.Decimal(String(sale.exchangeRate)).toDecimalPlaces(6);
+      const baseAmount = new Prisma.Decimal(String(sale.baseAmount)).mul(-1).toDecimalPlaces(4);
+
+      await tx.transaction.create({
+        data: {
+          firmId: String(sale.firmId),
+          flightId: String(sale.flightId),
+          ticketId: resolvedTicketId,
+          createdByUserId: actorUserId,
+          type: 'SALE',
+          originalAmount,
+          currency: String(sale.currency),
+          exchangeRate,
+          baseAmount,
+          metadata: {
+            note: 'Sale cancelled (admin), revenue reversed',
+            reversedTransactionId: String(sale.id),
+          },
+        },
+      });
+
+      await tx.ticket.update({
+        where: { id: resolvedTicketId },
+        data: {
+          status: 'ASSIGNED',
+          soldPrice: null,
+          soldCurrency: null,
+          purchaserInfo: Prisma.DbNull,
+        },
+      });
+    });
+
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+};
+
+export const createSaleCancellationRequest = async (req: Request, res: Response) => {
+  const { ticketId } = req.body;
+  const reasonRaw = (req.body as any)?.reason ?? (req.body as any)?.requestReason;
+  const user = (req as any).user;
+  const role = normalizeRole(user?.role);
+  const actorUserId = user?.userId ? String(user.userId) : '';
+
+  if (role !== 'FIRM') {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  const ownFirmId = user?.firmId ? String(user.firmId) : '';
+  if (!ownFirmId) {
+    return res.status(400).json({ error: 'Firm account is missing firmId' });
+  }
+
+  if (!actorUserId) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  if (!ticketId || typeof ticketId !== 'string' || !ticketId.trim()) {
+    return res.status(400).json({ error: 'ticketId is required' });
+  }
+
+  const reason = normalizeOptionalString(reasonRaw);
+  if (!reason) {
+    return res.status(400).json({ error: 'reason is required' });
+  }
+  if (reason.length > 500) {
+    return res.status(400).json({ error: 'reason is too long (max 500 chars)' });
+  }
+
+  const resolvedTicketId = ticketId.trim();
+
+  try {
+    const created = await prisma.$transaction(async (tx) => {
+      const tickets: any[] = await tx.$queryRaw`SELECT * FROM "Ticket" WHERE id = ${resolvedTicketId} FOR UPDATE`;
+      if (tickets.length === 0) throw new Error('Ticket not found');
+      const ticket = tickets[0];
+
+      if (String(ticket.status || '') !== 'SOLD') throw new Error('Ticket is not sold');
+      if (String(ticket.assignedFirmId || '') !== ownFirmId) throw new Error('Not your ticket');
+
+      const existing = await tx.saleCancellationRequest.findFirst({
+        where: { ticketId: resolvedTicketId, status: 'PENDING' },
+        select: { id: true },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (existing) throw new Error('Cancellation request already pending for this ticket');
+
+      return tx.saleCancellationRequest.create({
+        data: {
+          flightId: String(ticket.flightId),
+          ticketId: resolvedTicketId,
+          firmId: ownFirmId,
+          status: 'PENDING',
+          reason,
+          createdByUserId: actorUserId,
+        },
+        select: {
+          id: true,
+          ticketId: true,
+          status: true,
+          reason: true,
+          createdAt: true,
+        },
+      });
+    });
+
+    return res.json({ success: true, request: created });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+};
+
+export const listSaleCancellationRequests = async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const role = normalizeRole(user?.role);
+
+  if (!['SUPERADMIN', 'ADMIN', 'FIRM'].includes(role)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  const ownFirmId = user?.firmId ? String(user.firmId) : '';
+  if (role === 'FIRM' && !ownFirmId) {
+    return res.status(400).json({ error: 'Firm account is missing firmId' });
+  }
+
+  const { flightId, flight_id, status } = req.query as any;
+  const resolvedFlightId = (flightId || flight_id) && typeof (flightId || flight_id) === 'string'
+    ? String(flightId || flight_id).trim()
+    : '';
+
+  const rawStatus = typeof status === 'string' ? status.trim().toUpperCase() : 'PENDING';
+  const resolvedStatus = ['PENDING', 'APPROVED', 'REJECTED'].includes(rawStatus) ? rawStatus : 'PENDING';
+
+  const where: any = { status: resolvedStatus };
+  if (resolvedFlightId) where.flightId = resolvedFlightId;
+  if (role === 'FIRM') where.firmId = ownFirmId;
+
+  const requests = await prisma.saleCancellationRequest.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+    select: {
+      id: true,
+      flightId: true,
+      ticketId: true,
+      firmId: true,
+      status: true,
+      reason: true,
+      decisionReason: true,
+      createdAt: true,
+      decidedAt: true,
+      firm: { select: { id: true, name: true } },
+      createdBy: { select: { id: true, email: true } },
+      decidedBy: { select: { id: true, email: true } },
+    },
+  });
+
+  return res.json(requests);
+};
+
+export const approveSaleCancellationRequest = async (req: Request, res: Response) => {
+  const { requestId } = req.body as any;
+  const decisionReasonRaw = (req.body as any)?.decisionReason ?? (req.body as any)?.reason;
+  const user = (req as any).user;
+  const role = normalizeRole(user?.role);
+  const actorUserId = user?.userId ? String(user.userId) : '';
+
+  if (!['SUPERADMIN', 'ADMIN'].includes(role)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  if (!actorUserId) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  if (!requestId || typeof requestId !== 'string' || !requestId.trim()) {
+    return res.status(400).json({ error: 'requestId is required' });
+  }
+
+  const decisionReason = normalizeOptionalString(decisionReasonRaw);
+  if (!decisionReason) {
+    return res.status(400).json({ error: 'decisionReason is required' });
+  }
+  if (decisionReason.length > 500) {
+    return res.status(400).json({ error: 'decisionReason is too long (max 500 chars)' });
+  }
+
+  const resolvedRequestId = requestId.trim();
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const rows: any[] = await tx.$queryRaw`
+        SELECT *
+        FROM "SaleCancellationRequest"
+        WHERE id = ${resolvedRequestId}
+        FOR UPDATE
+      `;
+
+      if (rows.length === 0) throw new Error('Request not found');
+      const reqRow = rows[0];
+
+      if (String(reqRow.status || '') !== 'PENDING') throw new Error('Request is not pending');
+
+      const ticketId = String(reqRow.ticketId || '');
+      const firmId = String(reqRow.firmId || '');
+      const firmReason = String(reqRow.reason || '');
+
+      if (!ticketId) throw new Error('Invalid request: missing ticketId');
+      if (!firmId) throw new Error('Invalid request: missing firmId');
+
+      const tickets: any[] = await tx.$queryRaw`SELECT * FROM "Ticket" WHERE id = ${ticketId} FOR UPDATE`;
+      if (tickets.length === 0) throw new Error('Ticket not found');
+      const ticket = tickets[0];
+
+      if (String(ticket.status || '') !== 'SOLD') throw new Error('Ticket is not sold');
+      if (String(ticket.assignedFirmId || '') !== firmId) throw new Error('Ticket is not assigned to the request firm');
+
+      const sale = await tx.transaction.findFirst({
+        where: {
+          ticketId,
+          type: 'SALE',
+          baseAmount: { gt: new Prisma.Decimal(0) },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!sale) throw new Error('Missing SALE transaction for ticket');
+
+      if (String(sale.firmId) !== firmId) {
+        throw new Error('SALE transaction firm does not match request firm');
+      }
+
+      const originalAmount = new Prisma.Decimal(String(sale.originalAmount)).mul(-1).toDecimalPlaces(4);
+      const exchangeRate = new Prisma.Decimal(String(sale.exchangeRate)).toDecimalPlaces(6);
+      const baseAmount = new Prisma.Decimal(String(sale.baseAmount)).mul(-1).toDecimalPlaces(4);
+
+      await tx.transaction.create({
+        data: {
+          firmId,
+          flightId: String(sale.flightId),
+          ticketId,
+          createdByUserId: actorUserId,
+          type: 'SALE',
+          originalAmount,
+          currency: String(sale.currency),
+          exchangeRate,
+          baseAmount,
+          metadata: {
+            note: 'Sale cancelled after firm request, revenue reversed',
+            reversedTransactionId: String(sale.id),
+            saleCancellationRequestId: resolvedRequestId,
+            firmReason,
+            adminReason: decisionReason,
+          } as any,
+        },
+      });
+
+      await tx.ticket.update({
+        where: { id: ticketId },
+        data: {
+          status: 'ASSIGNED',
+          soldPrice: null,
+          soldCurrency: null,
+          purchaserInfo: Prisma.DbNull,
+        },
+      });
+
+      await tx.saleCancellationRequest.update({
+        where: { id: resolvedRequestId },
+        data: {
+          status: 'APPROVED',
+          decisionReason,
+          decidedByUserId: actorUserId,
+          decidedAt: new Date(),
+        },
+      });
+    });
+
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
   }
 };

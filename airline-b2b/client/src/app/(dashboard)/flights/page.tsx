@@ -1,18 +1,25 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
 import { Plane, Plus, Edit, Trash2, X } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
+import { useLanguage } from '@/contexts/LanguageContext';
 import type { AxiosError } from 'axios';
+import { useRouter } from 'next/navigation';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+
+// Assuming you exported from shared/types.ts earlier so let's import directly.
+// Actually, let's keep the internal type map for a moment, or use the global one.
+// Let's rely on internal one to avoid too many file replaces since we symlinked. Or I will just make it use useQuery.
 
 type ApiErrorResponse = {
   error?: string;
 };
 
-type Flight = {
+type LocalFlight = {
   id?: string;
   flight_id?: string;
   flightNumber?: string;
@@ -37,9 +44,19 @@ function isCancelledFlight(status?: string): boolean {
 }
 
 export default function FlightsPage() {
-  const [flights, setFlights] = useState<Flight[]>([]);
-  const [loading, setLoading] = useState(true);
+  const router = useRouter();
+  const queryClient = useQueryClient();
   const { user } = useAuth();
+  const { tr } = useLanguage();
+  
+  const { data: flights = [], isLoading: loading } = useQuery<LocalFlight[]>({
+    queryKey: ['flights'],
+    queryFn: async () => {
+      const res = await api.get('/flights');
+      return res.data;
+    }
+  });
+
   const [flightsView, setFlightsView] = useState<'boxes' | 'list'>('boxes');
   const [confirm, setConfirm] = useState<
     | null
@@ -67,23 +84,27 @@ export default function FlightsPage() {
     arrival: '',
     ticketCount: 10,
     ticketPrice: 500,
-    currency: 'USD'
+    currency: 'UZS'
   });
 
-  const fetchFlights = async () => {
+  useEffect(() => {
     try {
-      const res = await api.get('/flights');
-      setFlights(res.data);
+      const raw = localStorage.getItem('jetstream-flights-view');
+      if (raw === 'list' || raw === 'boxes') {
+        setFlightsView(raw);
+      }
     } catch {
-      toast.error('Failed to load flights');
-    } finally {
-      setLoading(false);
+      // ignore
     }
-  };
+  }, []);
 
   useEffect(() => {
-    fetchFlights();
-  }, []);
+    try {
+      localStorage.setItem('jetstream-flights-view', flightsView);
+    } catch {
+      // ignore
+    }
+  }, [flightsView]);
 
   const openCreateModal = () => {
     setModalMode('create');
@@ -93,16 +114,17 @@ export default function FlightsPage() {
       arrival: new Date(Date.now() + 86400000 + 7200000).toISOString().slice(0, 16),
       ticketCount: 10,
       ticketPrice: 500,
-      currency: 'USD'
+      currency: 'UZS'
     });
     setIsModalOpen(true);
   };
 
-  const openEditModal = (e: React.MouseEvent, flight: Flight) => {
+  const openEditModal = (e: React.MouseEvent, flight: LocalFlight) => {
     e.preventDefault();
+    e.stopPropagation();
     const flightId = flight.id ?? flight.flight_id;
     if (!flightId) {
-      toast.error('Invalid flight id');
+      toast.error(tr('Invalid flight id', 'Reys ID xato'));
       return;
     }
     setModalMode('edit');
@@ -113,7 +135,7 @@ export default function FlightsPage() {
       arrival: new Date(flight.arrival).toISOString().slice(0, 16),
       ticketCount: flight.ticketCount || 10,
       ticketPrice: flight.ticketPrice || 500,
-      currency: flight.currency || 'USD'
+      currency: flight.currency || 'UZS'
     });
     setIsModalOpen(true);
   };
@@ -121,7 +143,7 @@ export default function FlightsPage() {
   const handleModalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.flightNumber) {
-      toast.error("Flight Number is required");
+      toast.error(tr('Flight Number is required', 'Reys raqami kerak'));
       return;
     }
     
@@ -140,22 +162,28 @@ export default function FlightsPage() {
         return;
       } else {
         await api.put(`/flights/${currentFlightId}`, { flightNumber: formData.flightNumber });
-        toast.success('Flight updated!');
+        toast.success(tr('Flight updated!', 'Reys yangilandi!'));
       }
       setIsModalOpen(false);
-      fetchFlights();
+      queryClient.invalidateQueries({ queryKey: ["flights"] });
     } catch (error: unknown) {
-      toast.error(getApiErrorMessage(error) || (modalMode === 'create' ? 'Failed to create flight.' : 'Failed to update flight.'));
+      toast.error(
+        getApiErrorMessage(error) ||
+          (modalMode === 'create'
+            ? tr('Failed to create flight.', 'Reysni yaratib bo\'lmadi.')
+            : tr('Failed to update flight.', 'Reysni yangilab bo\'lmadi.'))
+      );
     }
   };
 
   const handleCancelFlight = async (e: React.MouseEvent, id: string) => {
     e.preventDefault();
+    e.stopPropagation();
     const flight = flights.find((f) => (f.id || f.flight_id) === id);
     setConfirm({
       kind: 'cancel',
       id,
-      label: flight?.flightNumber || `Flight ${id}`,
+      label: flight?.flightNumber || `${tr('Flight', 'Reys')} ${id}`,
     });
   };
 
@@ -175,18 +203,18 @@ export default function FlightsPage() {
     try {
       if (confirm.kind === 'create') {
         await api.post('/flights', confirm.payload);
-        toast.success('Flight created successfully!');
+        toast.success(tr('Flight created successfully!', 'Reys muvaffaqiyatli yaratildi!'));
       } else {
         await api.delete(`/flights/${confirm.id}`);
-        toast.success('Flight cancelled!');
+        toast.success(tr('Flight cancelled!', 'Reys bekor qilindi!'));
       }
       setConfirm(null);
-      fetchFlights();
+      queryClient.invalidateQueries({ queryKey: ["flights"] });
     } catch (error: unknown) {
       if (confirm.kind === 'create') {
-        toast.error(getApiErrorMessage(error) || 'Failed to create flight.');
+        toast.error(getApiErrorMessage(error) || tr('Failed to create flight.', 'Reysni yaratib bo\'lmadi.'));
       } else {
-        toast.error(getApiErrorMessage(error) || 'Failed to cancel flight.');
+        toast.error(getApiErrorMessage(error) || tr('Failed to cancel flight.', 'Reysni bekor qilib bo\'lmadi.'));
       }
       setConfirmBusy(false);
     }
@@ -195,18 +223,25 @@ export default function FlightsPage() {
   if (loading) {
     return (
       <div className="text-center text-muted">
-        <Plane className="mx-auto h-12 w-12 animate-pulse text-fuchsia-500" />
-        <p className="mt-2">Loading available flights...</p>
+        <Plane className="mx-auto h-12 w-12 animate-pulse text-blue-500" />
+        <p className="mt-2">{tr('Loading available flights...', 'Mavjud reyslar yuklanmoqda...')}</p>
       </div>
     );
   }
 
   const canEdit = ['SUPERADMIN', 'ADMIN'].includes(user?.role?.toUpperCase() || '');
 
+  const getStatusLabel = (status?: string) => {
+    const normalized = String(status || 'SCHEDULED').trim().toUpperCase();
+    if (normalized === 'CANCELLED') return tr('CANCELLED', 'BEKOR QILINGAN');
+    if (normalized === 'SCHEDULED') return tr('SCHEDULED', 'REJALASHTIRILGAN');
+    return normalized;
+  };
+
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
-        <h2 className="text-3xl font-bold text-foreground">Available Flights</h2>
+        <h2 className="text-3xl font-bold text-foreground">{tr('Available Flights', 'Mavjud reyslar')}</h2>
         <div className="flex items-center gap-3">
           <div className="inline-flex rounded-lg border border-border overflow-hidden">
             <button
@@ -218,7 +253,7 @@ export default function FlightsPage() {
                 : 'bg-surface text-muted hover:bg-surface-2'
               }`}
             >
-              List
+              {tr('List', "Ro'yxat")}
             </button>
             <button
               type="button"
@@ -229,16 +264,16 @@ export default function FlightsPage() {
                 : 'bg-surface text-muted hover:bg-surface-2'
               }`}
             >
-              Boxes
+              {tr('Boxes', 'Kartalar')}
             </button>
           </div>
           {canEdit && (
             <button
               onClick={openCreateModal}
-              className="flex items-center gap-2 px-4 py-2 bg-fuchsia-600 hover:bg-fuchsia-500 text-white rounded-lg font-medium transition"
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition"
             >
               <Plus size={18} />
-              Create Flight
+              {tr('Create Flight', 'Reys yaratish')}
             </button>
           )}
         </div>
@@ -246,20 +281,36 @@ export default function FlightsPage() {
 
       {flightsView === 'boxes' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {flights.map((flight: Flight) => (
-            <Link href={`/flights/detail?id=${flight.flight_id || flight.id}`} key={flight.flight_id || flight.id}>
-              <div className="bg-surface-2 border border-border rounded-lg shadow-lg hover:shadow-fuchsia-500/20 hover:border-fuchsia-700 transition-all duration-300 p-5 group">
+          {flights.map((flight: LocalFlight) => {
+            const flightId = flight.flight_id || flight.id;
+            if (!flightId) return null;
+
+            return (
+              <div
+                key={flightId}
+                role="button"
+                tabIndex={0}
+                onClick={() => router.push(`/flights/detail?id=${flightId}`)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    router.push(`/flights/detail?id=${flightId}`);
+                  }
+                }}
+                className="bg-surface-2 border border-border rounded-lg shadow-lg hover:shadow-blue-500/20 hover:border-blue-700 transition-all duration-300 p-5 group cursor-pointer"
+                aria-label={tr('Open flight details', 'Reys tafsilotlarini ochish')}
+              >
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-3">
-                    <Plane className="text-fuchsia-500" size={24} />
-                    <p className="text-lg font-bold text-foreground truncate group-hover:text-fuchsia-600">
-                      {flight.flightNumber || `Flight ${flight.flight_id || flight.id}`}
+                    <Plane className="text-blue-500" size={24} />
+                    <p className="text-lg font-bold text-foreground truncate group-hover:text-blue-600">
+                      {flight.flightNumber || `${tr('Flight', 'Reys')} ${flight.flight_id || flight.id}`}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
                     {(() => {
                       const cancelled = isCancelledFlight(flight.status);
-                      const label = (flight.status || 'SCHEDULED').toString();
+                      const label = getStatusLabel(flight.status);
                       return (
                         <p
                           className={
@@ -275,25 +326,27 @@ export default function FlightsPage() {
                     {canEdit && (
                       <>
                         <button
+                          type="button"
                           onClick={(e) => openEditModal(e, flight)}
                           disabled={isCancelledFlight(flight.status)}
-                          className="text-muted hover:text-fuchsia-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                          title="Edit"
+                          className="text-muted hover:text-blue-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={tr('Edit', 'Tahrirlash')}
                         >
                           <Edit size={16} />
                         </button>
                         <button
+                          type="button"
                           onClick={(e) => {
                             const flightId = flight.id ?? flight.flight_id;
                             if (!flightId) {
-                              toast.error('Invalid flight id');
+                              toast.error(tr('Invalid flight id', 'Reys ID xato'));
                               return;
                             }
                             handleCancelFlight(e, flightId);
                           }}
                           disabled={isCancelledFlight(flight.status)}
                           className="text-muted hover:text-red-400 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                          title="Cancel flight"
+                          title={tr('Cancel flight', 'Reysni bekor qilish')}
                         >
                           <Trash2 size={16} />
                         </button>
@@ -304,37 +357,67 @@ export default function FlightsPage() {
                 
                 <div className="text-sm text-foreground space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="font-medium text-muted">Departure:</span>
+                    <span className="font-medium text-muted">{tr('Departure', 'Jo\'nab ketish')}:</span>
                     <span>{new Date(flight.departure).toLocaleString()}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="font-medium text-muted">Arrival:</span>
+                    <span className="font-medium text-muted">{tr('Arrival', 'Yetib kelish')}:</span>
                     <span>{new Date(flight.arrival).toLocaleString()}</span>
                   </div>
                 </div>
 
                 <div className="mt-5 pt-4 border-t border-border grid grid-cols-3 gap-2 text-center">
                   <div className="text-muted">
-                    <p className="text-xs">Allocations</p>
-                    <p className="font-bold text-lg text-yellow-600">${Number(flight.total_allocated || 0).toLocaleString()}</p>
+                    <p className="text-xs">{tr('Allocations (UZS)', 'Ajratmalar (UZS)')}</p>
+                    <p className="font-bold text-lg text-yellow-600">{Number(flight.total_allocated || 0).toLocaleString()}</p>
                   </div>
                   <div className="text-muted">
-                    <p className="text-xs">Sales</p>
-                    <p className="font-bold text-lg text-green-600">${Number(flight.total_sales || 0).toLocaleString()}</p>
+                    <p className="text-xs">{tr('Sales (UZS)', 'Sotuvlar (UZS)')}</p>
+                    <p className="font-bold text-lg text-green-600">{Number(flight.total_sales || 0).toLocaleString()}</p>
                   </div>
                   <div className="text-muted">
-                    <p className="text-xs">Payments</p>
-                    <p className="font-bold text-lg text-fuchsia-600">${Number(flight.total_payments || 0).toLocaleString()}</p>
+                    <p className="text-xs">{tr('Payments (UZS)', "To'lovlar (UZS)")}</p>
+                    <p className="font-bold text-lg text-blue-600">{Number(flight.total_payments || 0).toLocaleString()}</p>
                   </div>
                 </div>
+
+                <div className="mt-4 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      router.push(`/transactions?flightId=${encodeURIComponent(flightId)}`);
+                    }}
+                    className="px-3 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition border border-border text-sm font-medium"
+                  >
+                    {tr('Transactions', 'Tranzaksiyalar')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      router.push(`/reports?flightId=${encodeURIComponent(flightId)}`);
+                    }}
+                    className="px-3 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition border border-border text-sm font-medium"
+                  >
+                    {tr('Reports', 'Hisobotlar')}
+                  </button>
+                </div>
               </div>
-            </Link>
-          ))}
+            );
+          })}
           {flights.length === 0 && (
             <div className="col-span-full text-center py-12 bg-surface-2 border border-dashed border-border rounded-lg">
               <Plane className="mx-auto h-12 w-12 text-muted" />
-              <h3 className="mt-2 text-lg font-medium text-foreground">No flights available</h3>
-              <p className="mt-1 text-sm text-muted">Check back later or contact an administrator to add new flights.</p>
+              <h3 className="mt-2 text-lg font-medium text-foreground">{tr('No flights available', 'Reyslar mavjud emas')}</h3>
+              <p className="mt-1 text-sm text-muted">
+                {tr(
+                  'Check back later or contact an administrator to add new flights.',
+                  "Keyinroq qayta tekshiring yoki admin bilan bog'lanib yangi reys qo'shing."
+                )}
+              </p>
             </div>
           )}
         </div>
@@ -343,30 +426,48 @@ export default function FlightsPage() {
           <table className="min-w-full divide-y divide-border">
             <thead className="bg-surface">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">Flight</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">Status</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">Departure</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">Arrival</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">Allocations</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">Sales</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">Payments</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Flight', 'Reys')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Status', 'Holat')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Departure', 'Jo\'nab ketish')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Arrival', 'Yetib kelish')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Allocations (UZS)', 'Ajratmalar (UZS)')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Sales (UZS)', 'Sotuvlar (UZS)')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Payments (UZS)', "To'lovlar (UZS)")}</th>
                 {canEdit && (
-                  <th className="px-4 py-3 text-right text-xs font-medium text-muted uppercase">Actions</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-muted uppercase">{tr('Actions', 'Amallar')}</th>
                 )}
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {flights.map((flight: Flight) => {
+              {flights.map((flight: LocalFlight) => {
                 const flightId = flight.flight_id || flight.id;
                 return (
                   <tr key={flightId} className="hover:bg-surface transition">
                     <td className="px-4 py-3 text-sm text-foreground font-medium">
                       {flightId ? (
-                        <Link href={`/flights/detail?id=${flightId}`} className="hover:text-fuchsia-600 transition">
-                          {flight.flightNumber || `Flight ${flightId}`}
-                        </Link>
+                        <div>
+                          <Link href={`/flights/detail?id=${flightId}`} className="hover:text-blue-600 transition">
+                            {flight.flightNumber || `Flight ${flightId}`}
+                          </Link>
+                          <div className="mt-2 flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => router.push(`/transactions?flightId=${encodeURIComponent(flightId)}`)}
+                              className="px-2 py-1 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition border border-border text-xs font-medium"
+                            >
+                              {tr('Transactions', 'Tranzaksiyalar')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => router.push(`/reports?flightId=${encodeURIComponent(flightId)}`)}
+                              className="px-2 py-1 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition border border-border text-xs font-medium"
+                            >
+                              {tr('Reports', 'Hisobotlar')}
+                            </button>
+                          </div>
+                        </div>
                       ) : (
-                        <span>{flight.flightNumber || 'Flight'}</span>
+                        <span>{flight.flightNumber || tr('Flight', 'Reys')}</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-sm">
@@ -377,36 +478,36 @@ export default function FlightsPage() {
                             : 'px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-900/50 text-green-300 border border-green-700'
                         }
                       >
-                        {(flight.status || 'SCHEDULED').toString()}
+                        {getStatusLabel(flight.status)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted whitespace-nowrap">{new Date(flight.departure).toLocaleString()}</td>
                     <td className="px-4 py-3 text-sm text-muted whitespace-nowrap">{new Date(flight.arrival).toLocaleString()}</td>
-                    <td className="px-4 py-3 text-sm text-yellow-600 font-medium whitespace-nowrap">${Number(flight.total_allocated || 0).toLocaleString()}</td>
-                    <td className="px-4 py-3 text-sm text-green-600 font-medium whitespace-nowrap">${Number(flight.total_sales || 0).toLocaleString()}</td>
-                    <td className="px-4 py-3 text-sm text-fuchsia-600 font-medium whitespace-nowrap">${Number(flight.total_payments || 0).toLocaleString()}</td>
+                    <td className="px-4 py-3 text-sm text-yellow-600 font-medium whitespace-nowrap">{Number(flight.total_allocated || 0).toLocaleString()}</td>
+                    <td className="px-4 py-3 text-sm text-green-600 font-medium whitespace-nowrap">{Number(flight.total_sales || 0).toLocaleString()}</td>
+                    <td className="px-4 py-3 text-sm text-blue-600 font-medium whitespace-nowrap">{Number(flight.total_payments || 0).toLocaleString()}</td>
                     {canEdit && (
                       <td className="px-4 py-3 text-right text-sm">
                         <div className="inline-flex items-center gap-3">
                           <button
                             onClick={(e) => openEditModal(e, flight)}
                             disabled={isCancelledFlight(flight.status)}
-                            className="text-muted hover:text-fuchsia-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                            title="Edit"
+                            className="text-muted hover:text-blue-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                            title={tr('Edit', 'Tahrirlash')}
                           >
                             <Edit size={16} />
                           </button>
                           <button
                             onClick={(e) => {
                               if (!flightId) {
-                                toast.error('Invalid flight id');
+                                toast.error(tr('Invalid flight id', 'Reys ID xato'));
                                 return;
                               }
                               handleCancelFlight(e, flightId);
                             }}
                             disabled={isCancelledFlight(flight.status)}
                             className="text-muted hover:text-red-400 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                            title="Cancel flight"
+                            title={tr('Cancel flight', 'Reysni bekor qilish')}
                           >
                             <Trash2 size={16} />
                           </button>
@@ -419,7 +520,7 @@ export default function FlightsPage() {
               {flights.length === 0 && (
                 <tr>
                   <td colSpan={canEdit ? 8 : 7} className="px-4 py-10 text-center text-sm text-muted">
-                    No flights available.
+                    {tr('No flights available.', 'Reyslar mavjud emas.')}
                   </td>
                 </tr>
               )}
@@ -433,7 +534,9 @@ export default function FlightsPage() {
           <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-md p-6">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-xl font-bold text-foreground">
-                {modalMode === 'create' ? 'Create New Flight' : 'Edit Flight'}
+                {modalMode === 'create'
+                  ? tr('Create New Flight', 'Yangi reys yaratish')
+                  : tr('Edit Flight', 'Reysni tahrirlash')}
               </h3>
               <button onClick={() => setIsModalOpen(false)} className="text-muted hover:text-foreground">
                 <X size={20} />
@@ -442,11 +545,11 @@ export default function FlightsPage() {
             
             <form onSubmit={handleModalSubmit} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-muted mb-1">Flight Number</label>
+                <label className="block text-sm font-medium text-muted mb-1">{tr('Flight Number', 'Reys raqami')}</label>
                 <input
                   type="text"
                   required
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-fuchsia-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
                   placeholder="e.g. B2B-999"
                   value={formData.flightNumber}
                   onChange={(e) => setFormData({...formData, flightNumber: e.target.value})}
@@ -457,21 +560,21 @@ export default function FlightsPage() {
                 <>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-sm font-medium text-muted mb-1">Departure</label>
+                      <label className="block text-sm font-medium text-muted mb-1">{tr('Departure', 'Jo\'nab ketish')}</label>
                       <input
                         type="datetime-local"
                         required
-                        className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-fuchsia-500 transition"
+                        className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-blue-500 transition"
                         value={formData.departure}
                         onChange={(e) => setFormData({...formData, departure: e.target.value})}
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-muted mb-1">Arrival</label>
+                      <label className="block text-sm font-medium text-muted mb-1">{tr('Arrival', 'Yetib kelish')}</label>
                       <input
                         type="datetime-local"
                         required
-                        className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-fuchsia-500 transition"
+                        className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-blue-500 transition"
                         value={formData.arrival}
                         onChange={(e) => setFormData({...formData, arrival: e.target.value})}
                       />
@@ -480,23 +583,23 @@ export default function FlightsPage() {
                   
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-sm font-medium text-muted mb-1">Ticket Count</label>
+                      <label className="block text-sm font-medium text-muted mb-1">{tr('Ticket Count', 'Chipta soni')}</label>
                       <input
                         type="number"
                         min="1"
                         required
-                        className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-fuchsia-500 transition"
+                        className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-blue-500 transition"
                         value={formData.ticketCount}
                         onChange={(e) => setFormData({...formData, ticketCount: Number(e.target.value)})}
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-muted mb-1">Ticket Price</label>
+                      <label className="block text-sm font-medium text-muted mb-1">{tr('Ticket Price', 'Chipta narxi')}</label>
                       <input
                         type="number"
                         min="0"
                         required
-                        className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-fuchsia-500 transition"
+                        className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-blue-500 transition"
                         value={formData.ticketPrice}
                         onChange={(e) => setFormData({...formData, ticketPrice: Number(e.target.value)})}
                       />
@@ -504,12 +607,13 @@ export default function FlightsPage() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-muted mb-1">Currency</label>
+                    <label className="block text-sm font-medium text-muted mb-1">{tr('Currency', 'Valyuta')}</label>
                     <select
-                      className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-fuchsia-500 transition"
+                      className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-blue-500 transition"
                       value={formData.currency}
                       onChange={(e) => setFormData({...formData, currency: e.target.value})}
                     >
+                        <option value="UZS">UZS</option>
                       <option value="USD">USD</option>
                       <option value="EUR">EUR</option>
                     </select>
@@ -523,13 +627,15 @@ export default function FlightsPage() {
                   onClick={() => setIsModalOpen(false)}
                   className="px-4 py-2 bg-surface-2 hover:bg-surface text-foreground rounded-lg transition"
                 >
-                  Cancel
+                  {tr('Cancel', 'Bekor qilish')}
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-fuchsia-600 hover:bg-fuchsia-500 text-white rounded-lg transition"
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition"
                 >
-                  {modalMode === 'create' ? 'Create Flight' : 'Save Changes'}
+                  {modalMode === 'create'
+                    ? tr('Create Flight', 'Reys yaratish')
+                    : tr('Save Changes', "O'zgarishlarni saqlash")}
                 </button>
               </div>
             </form>
@@ -542,9 +648,15 @@ export default function FlightsPage() {
           <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-md p-6">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-xl font-bold text-foreground">
-                {confirm.kind === 'create' ? 'Confirm flight creation' : 'Confirm cancellation'}
+                {confirm.kind === 'create'
+                  ? tr('Confirm flight creation', 'Reys yaratishni tasdiqlash')
+                  : tr('Confirm cancellation', 'Bekor qilishni tasdiqlash')}
               </h3>
-              <button onClick={closeConfirm} className="text-muted hover:text-foreground" aria-label="Close confirmation">
+              <button
+                onClick={closeConfirm}
+                className="text-muted hover:text-foreground"
+                aria-label={tr('Close confirmation', 'Tasdiqlashni yopish')}
+              >
                 <X size={20} />
               </button>
             </div>
@@ -552,39 +664,47 @@ export default function FlightsPage() {
             {confirm.kind === 'create' ? (
               <div className="space-y-3 text-sm text-foreground">
                 <p className="text-foreground">
-                  Create flight <span className="font-semibold text-foreground">{confirm.payload.flightNumber}</span>?
+                  {tr('Create flight', 'Reysni yaratish')}{' '}
+                  <span className="font-semibold text-foreground">{confirm.payload.flightNumber}</span>?
                 </p>
                 <div className="bg-surface-2 border border-border rounded-lg p-3 space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-muted">Departure</span>
+                    <span className="text-muted">{tr('Departure', 'Jo\'nab ketish')}</span>
                     <span className="text-foreground">{new Date(confirm.payload.departure).toLocaleString()}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-muted">Arrival</span>
+                    <span className="text-muted">{tr('Arrival', 'Yetib kelish')}</span>
                     <span className="text-foreground">{new Date(confirm.payload.arrival).toLocaleString()}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-muted">Tickets</span>
+                    <span className="text-muted">{tr('Tickets', 'Chiptalar')}</span>
                     <span className="text-foreground">{confirm.payload.ticketCount}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-muted">Price</span>
+                    <span className="text-muted">{tr('Price', 'Narx')}</span>
                     <span className="text-foreground">
                       {confirm.payload.ticketPrice} {confirm.payload.currency}
                     </span>
                   </div>
                 </div>
                 <p className="text-muted">
-                  This action will create the flight and generate its tickets.
+                  {tr(
+                    'This action will create the flight and generate its tickets.',
+                    'Bu amal reysni yaratadi va uning chiptalarini yaratadi.'
+                  )}
                 </p>
               </div>
             ) : (
               <div className="space-y-3 text-sm text-foreground">
                 <p className="text-foreground">
-                  Cancel <span className="font-semibold text-foreground">{confirm.label}</span>?
+                  {tr('Cancel', 'Bekor qilish')}{' '}
+                  <span className="font-semibold text-foreground">{confirm.label}</span>?
                 </p>
                 <p className="text-muted">
-                  This marks the flight as CANCELLED and keeps historical tickets and transactions.
+                  {tr(
+                    'This marks the flight as CANCELLED and keeps historical tickets and transactions.',
+                    'Bu reysni CANCELLED deb belgilaydi va tarixiy chiptalar hamda tranzaksiyalarni saqlab qoladi.'
+                  )}
                 </p>
               </div>
             )}
@@ -596,7 +716,7 @@ export default function FlightsPage() {
                 disabled={confirmBusy}
                 className="px-4 py-2 bg-surface-2 hover:bg-surface text-foreground rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {confirm.kind === 'create' ? 'Back' : 'Cancel'}
+                {confirm.kind === 'create' ? tr('Back', 'Orqaga') : tr('Cancel', 'Bekor qilish')}
               </button>
               <button
                 type="button"
@@ -605,10 +725,14 @@ export default function FlightsPage() {
                 className={
                   confirm.kind === 'cancel'
                     ? 'px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed'
-                    : 'px-4 py-2 bg-fuchsia-600 hover:bg-fuchsia-500 text-white rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed'
+                    : 'px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed'
                 }
               >
-                {confirmBusy ? 'Please wait...' : confirm.kind === 'create' ? 'Confirm create' : 'Cancel flight'}
+                {confirmBusy
+                  ? tr('Please wait...', 'Iltimos kuting...')
+                  : confirm.kind === 'create'
+                    ? tr('Confirm create', 'Yaratishni tasdiqlash')
+                    : tr('Cancel flight', 'Reysni bekor qilish')}
               </button>
             </div>
           </div>

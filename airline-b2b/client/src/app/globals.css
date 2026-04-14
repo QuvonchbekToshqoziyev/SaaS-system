@@ -1,22 +1,23 @@
 @import "tailwindcss";
 
-:root {
-  /* Default theme: dark */
-  --background: #0f172a;
-  --foreground: #f8fafc;
-  --surface: #020617;
-  --surface-2: #1e293b;
-  --border: #1e293b;
-  --muted: #94a3b8;
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root[data-theme="light"], :root {
+  --background: #fafafa;
+  --foreground: #171717;
+  --surface: #ffffff;
+  --surface-2: #f5f5f5;
+  --border: #e5e5e5;
+  --muted: #737373;
 }
 
-:root[data-theme="light"] {
-  --background: #f8fafc;
-  --foreground: #0f172a;
-  --surface: #ffffff;
-  --surface-2: #f1f5f9;
-  --border: #e2e8f0;
-  --muted: #475569;
+:root[data-theme="dark"] {
+  --background: #000000;
+  --foreground: #ededed;
+  --surface: #0a0a0a;
+  --surface-2: #171717;
+  --border: #262626;
+  --muted: #a3a3a3;
 }
 
 @theme inline {
@@ -26,12 +27,44 @@
   --color-surface-2: var(--surface-2);
   --color-border: var(--border);
   --color-muted: var(--muted);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
 }
 
 body {
-  background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--background);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.scroller-minimal::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scroller-minimal::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroller-minimal::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 150, 0.2);
+  border-radius: 10px;
+}
+.scroller-minimal::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 150, 150, 0.4);
+}
+
+.scroller-hide::-webkit-scrollbar {
+  display: none;
+}
+.scroller-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@keyframes flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.animate-flash {
+  animation: flash 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }

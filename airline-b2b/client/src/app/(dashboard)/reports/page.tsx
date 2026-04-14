@@ -5,6 +5,9 @@ import { useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
+import { useLanguage } from '@/contexts/LanguageContext';
+import CollapsibleCard from '@/components/ui/CollapsibleCard';
+import { useSearchParams } from 'next/navigation';
 
 type FlightOption = {
   id: string;
@@ -25,8 +28,27 @@ function toISODateOrNull(dateValue: string): string | null {
   return d.toISOString();
 }
 
+type ReportsScopePrefs = {
+  selectedFlightId?: string;
+  selectedFirmId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+};
+
+const REPORTS_SCOPE_PREFS_KEY = 'jetstream-reports-scope';
+
+function normalizeDateParam(value: string): string {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match?.[1] || '';
+}
+
 export default function ReportsPage() {
+  const searchParams = useSearchParams();
   const { user } = useAuth();
+  const { tr } = useLanguage();
 
   const role = String(user?.role || '').toLowerCase();
   const isFirm = role === 'firm';
@@ -56,6 +78,9 @@ export default function ReportsPage() {
   const [loadingTransactionsReport, setLoadingTransactionsReport] = useState(false);
   const [loadingInteractionsReport, setLoadingInteractionsReport] = useState(false);
 
+  const [prefsReady, setPrefsReady] = useState(false);
+  const [lastAppliedQuery, setLastAppliedQuery] = useState('');
+
   const dateParams = useMemo(() => {
     const fromISO = toISODateOrNull(dateFrom);
     const toISO = toISODateOrNull(dateTo);
@@ -65,10 +90,94 @@ export default function ReportsPage() {
     };
   }, [dateFrom, dateTo]);
 
+  const getTransactionTypeLabel = (type?: string) => {
+    const normalized = String(type || '').trim().toUpperCase();
+    if (normalized === 'SALE') return tr('SALE', 'SOTUV');
+    if (normalized === 'PAYABLE') return tr('PAYABLE', 'QARZDORLIK');
+    if (normalized === 'PAYMENT') return tr('PAYMENT', "TO'LOV");
+    if (normalized === 'ADJUSTMENT') return tr('ADJUSTMENT', 'KORREKSIYA');
+    return normalized || String(type || '');
+  };
+
+  const getPaymentMethodLabel = (method?: string) => {
+    const normalized = String(method || '').trim().toLowerCase();
+    if (normalized === 'cash') return tr('Cash', 'Naqd');
+    if (normalized === 'card') return tr('Card', 'Karta');
+    return method ? String(method) : '-';
+  };
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(REPORTS_SCOPE_PREFS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as ReportsScopePrefs;
+
+      if (typeof parsed.selectedFlightId === 'string') setSelectedFlightId(parsed.selectedFlightId);
+      if (isAdmin && typeof parsed.selectedFirmId === 'string') setSelectedFirmId(parsed.selectedFirmId);
+      if (typeof parsed.dateFrom === 'string') setDateFrom(parsed.dateFrom);
+      if (typeof parsed.dateTo === 'string') setDateTo(parsed.dateTo);
+    } catch {
+      // ignore
+    } finally {
+      setPrefsReady(true);
+    }
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (!prefsReady) return;
+    const signature = searchParams.toString();
+    if (signature === lastAppliedQuery) return;
+    setLastAppliedQuery(signature);
+
+    const flightId = (searchParams.get('flightId') || searchParams.get('flight_id') || '').trim();
+    const firmId = (searchParams.get('firmId') || searchParams.get('firm_id') || '').trim();
+    const qDateFrom = normalizeDateParam(searchParams.get('dateFrom') || '');
+    const qDateTo = normalizeDateParam(searchParams.get('dateTo') || '');
+
+    if (flightId) setSelectedFlightId(flightId);
+    if (isAdmin && firmId) setSelectedFirmId(firmId);
+    if (qDateFrom) setDateFrom(qDateFrom);
+    if (qDateTo) setDateTo(qDateTo);
+  }, [isAdmin, lastAppliedQuery, prefsReady, searchParams]);
+
+  useEffect(() => {
+    if (!prefsReady) return;
+    try {
+      const prefs: ReportsScopePrefs = {
+        selectedFlightId,
+        selectedFirmId: isAdmin ? selectedFirmId : '',
+        dateFrom,
+        dateTo,
+      };
+      localStorage.setItem(REPORTS_SCOPE_PREFS_KEY, JSON.stringify(prefs));
+    } catch {
+      // ignore
+    }
+  }, [dateFrom, dateTo, isAdmin, prefsReady, selectedFirmId, selectedFlightId]);
+
+  useEffect(() => {
+    if (!prefsReady) return;
+    if (flights.length === 0) return;
+    if (selectedFlightId && flights.some((f) => f.id === selectedFlightId)) return;
+    setSelectedFlightId(flights[0].id);
+  }, [flights, prefsReady, selectedFlightId]);
+
+  useEffect(() => {
+    if (!prefsReady) return;
+    if (!isAdmin) return;
+    if (firms.length === 0) return;
+    if (selectedFirmId && firms.some((f) => f.id === selectedFirmId)) return;
+    setSelectedFirmId(firms[0].id);
+  }, [firms, isAdmin, prefsReady, selectedFirmId]);
+
   useEffect(() => {
     const fetchMeta = async () => {
       if (!canAccess) {
         setLoadingMeta(false);
+        return;
+      }
+
+      if (!prefsReady) {
         return;
       }
 
@@ -100,7 +209,7 @@ export default function ReportsPage() {
         if (!selectedFlightId && flightOptions.length > 0) setSelectedFlightId(flightOptions[0].id);
         if (isAdmin && !selectedFirmId && firmOptions.length > 0) setSelectedFirmId(firmOptions[0].id);
       } catch (error: any) {
-        toast.error(error?.response?.data?.error || 'Failed to load report options');
+        toast.error(error?.response?.data?.error || tr('Failed to load report options', 'Hisobot parametrlarini yuklab bo\'lmadi'));
       } finally {
         setLoadingMeta(false);
       }
@@ -108,11 +217,11 @@ export default function ReportsPage() {
 
     fetchMeta();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canAccess, isAdmin]);
+  }, [canAccess, isAdmin, prefsReady]);
 
   const loadFlightReport = async () => {
     if (!selectedFlightId) {
-      toast.error('Select a flight');
+      toast.error(tr('Select a flight', 'Reysni tanlang'));
       return;
     }
     try {
@@ -120,7 +229,7 @@ export default function ReportsPage() {
       const res = await api.get(`/reports/flight?flightId=${encodeURIComponent(selectedFlightId)}`);
       setFlightReport(res.data);
     } catch (error: any) {
-      toast.error(error?.response?.data?.error || 'Failed to load flight report');
+      toast.error(error?.response?.data?.error || tr('Failed to load flight report', 'Reys hisoboti yuklab bo\'lmadi'));
     } finally {
       setLoadingFlightReport(false);
     }
@@ -132,7 +241,7 @@ export default function ReportsPage() {
       const query = new URLSearchParams();
       if (isAdmin) {
         if (!selectedFirmId) {
-          toast.error('Select a firm');
+          toast.error(tr('Select a firm', 'Firmani tanlang'));
           return;
         }
         query.set('firmId', selectedFirmId);
@@ -143,7 +252,7 @@ export default function ReportsPage() {
       const res = await api.get(`/reports/firm?${query.toString()}`);
       setFirmReport(res.data);
     } catch (error: any) {
-      toast.error(error?.response?.data?.error || 'Failed to load firm report');
+      toast.error(error?.response?.data?.error || tr('Failed to load firm report', 'Firma hisoboti yuklab bo\'lmadi'));
     } finally {
       setLoadingFirmReport(false);
     }
@@ -161,7 +270,7 @@ export default function ReportsPage() {
       const res = await api.get(`/reports/payments?${query.toString()}`);
       setPaymentsReport(res.data);
     } catch (error: any) {
-      toast.error(error?.response?.data?.error || 'Failed to load payments report');
+      toast.error(error?.response?.data?.error || tr('Failed to load payments report', 'To\'lovlar hisoboti yuklab bo\'lmadi'));
     } finally {
       setLoadingPaymentsReport(false);
     }
@@ -179,7 +288,7 @@ export default function ReportsPage() {
       const res = await api.get(`/reports/transactions?${query.toString()}`);
       setTransactionsReport(res.data);
     } catch (error: any) {
-      toast.error(error?.response?.data?.error || 'Failed to load transactions report');
+      toast.error(error?.response?.data?.error || tr('Failed to load transactions report', 'Tranzaksiyalar hisoboti yuklab bo\'lmadi'));
     } finally {
       setLoadingTransactionsReport(false);
     }
@@ -187,7 +296,7 @@ export default function ReportsPage() {
 
   const loadInteractionsReport = async () => {
     if (!isSuperadmin) {
-      toast.error('Superadmin only');
+      toast.error(tr('Superadmin only', 'Faqat superadmin'));
       return;
     }
     try {
@@ -199,7 +308,7 @@ export default function ReportsPage() {
       const res = await api.get(`/reports/interactions?${query.toString()}`);
       setInteractionsReport(res.data);
     } catch (error: any) {
-      toast.error(error?.response?.data?.error || 'Failed to load interactions report');
+      toast.error(error?.response?.data?.error || tr('Failed to load interactions report', 'O\'zaro aloqalar hisoboti yuklab bo\'lmadi'));
     } finally {
       setLoadingInteractionsReport(false);
     }
@@ -208,8 +317,8 @@ export default function ReportsPage() {
   if (!canAccess) {
     return (
       <div className="text-foreground">
-        <h2 className="text-3xl font-bold text-foreground">Reports</h2>
-        <p className="mt-2 text-muted">You do not have access to reports.</p>
+        <h2 className="text-3xl font-bold text-foreground">{tr('Reports', 'Hisobotlar')}</h2>
+        <p className="mt-2 text-muted">{tr('You do not have access to reports.', 'Hisobotlarga kirish huquqingiz yo\'q.')}</p>
       </div>
     );
   }
@@ -220,24 +329,29 @@ export default function ReportsPage() {
   return (
     <div className="space-y-8 text-foreground">
       <div>
-        <h2 className="text-3xl font-bold">Reports</h2>
+        <h2 className="text-3xl font-bold">{tr('Reports', 'Hisobotlar')}</h2>
         <p className="mt-1 text-sm text-muted">
           {isFirm
-            ? 'Your firm-scoped performance and finance reports.'
-            : 'Flight, firm, payments, transactions — plus superadmin interaction overview.'}
+            ? tr('Your firm-scoped performance and finance reports.', 'Firmangiz bo\'yicha natija va moliyaviy hisobotlar.')
+            : tr('Flight, firm, payments, transactions — plus superadmin interaction overview.', 'Reys, firma, to\'lovlar, tranzaksiyalar — va superadmin uchun o\'zaro aloqalar ko\'rinishi.')}
         </p>
       </div>
 
-      <div className="bg-surface-2 border border-border rounded-xl p-6 space-y-4">
-        <h3 className="text-lg font-semibold">Scope</h3>
+      <CollapsibleCard
+        title={tr('Scope', 'Qamrov')}
+        defaultOpen
+        storageKey="jetstream-reports-scope-open"
+        className="rounded-xl"
+        contentClassName="p-6 space-y-4"
+      >
         <div className={`grid grid-cols-1 ${isAdmin ? 'md:grid-cols-4' : 'md:grid-cols-3'} gap-4`}>
           <div>
-            <label className="block text-sm font-medium text-muted mb-1">Flight</label>
+            <label className="block text-sm font-medium text-muted mb-1">{tr('Flight', 'Reys')}</label>
             <select
               value={selectedFlightId}
               onChange={(e) => setSelectedFlightId(e.target.value)}
               disabled={flightOptionsDisabled}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-fuchsia-500 transition disabled:opacity-50"
+              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-blue-500 transition disabled:opacity-50"
             >
               {flights.map((f) => (
                 <option key={f.id} value={f.id}>
@@ -249,12 +363,12 @@ export default function ReportsPage() {
 
           {isAdmin && (
             <div>
-              <label className="block text-sm font-medium text-muted mb-1">Firm</label>
+              <label className="block text-sm font-medium text-muted mb-1">{tr('Firm', 'Firma')}</label>
               <select
                 value={selectedFirmId}
                 onChange={(e) => setSelectedFirmId(e.target.value)}
                 disabled={firmOptionsDisabled}
-                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-fuchsia-500 transition disabled:opacity-50"
+                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-blue-500 transition disabled:opacity-50"
               >
                 {firms.map((f) => (
                   <option key={f.id} value={f.id}>
@@ -266,73 +380,77 @@ export default function ReportsPage() {
           )}
 
           <div>
-            <label className="block text-sm font-medium text-muted mb-1">Date from</label>
+            <label className="block text-sm font-medium text-muted mb-1">{tr('Date from', 'Sana (dan)')}</label>
             <input
               type="date"
               value={dateFrom}
               onChange={(e) => setDateFrom(e.target.value)}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-fuchsia-500 transition"
+              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-blue-500 transition"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-muted mb-1">Date to</label>
+            <label className="block text-sm font-medium text-muted mb-1">{tr('Date to', 'Sana (gacha)')}</label>
             <input
               type="date"
               value={dateTo}
               onChange={(e) => setDateTo(e.target.value)}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-fuchsia-500 transition"
+              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-blue-500 transition"
             />
           </div>
         </div>
 
         {loadingMeta && (
-          <p className="text-sm text-muted">Loading report options...</p>
+          <p className="text-sm text-muted">{tr('Loading report options...', 'Hisobot parametrlari yuklanmoqda...')}</p>
         )}
-      </div>
+      </CollapsibleCard>
 
       {/* Flight report */}
-      <div className="bg-surface-2 border border-border rounded-xl p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold">{isFirm ? 'Flight report (your firm)' : 'Flight report'}</h3>
+      <CollapsibleCard
+        title={isFirm ? tr('Flight report (your firm)', 'Reys hisoboti (firmangiz)') : tr('Flight report', 'Reys hisoboti')}
+        defaultOpen={false}
+        storageKey="jetstream-reports-flight-report-open"
+        className="rounded-xl"
+        contentClassName="p-6 space-y-4"
+        headerRight={
           <button
             type="button"
             onClick={loadFlightReport}
             disabled={loadingFlightReport || !selectedFlightId}
-            className="px-4 py-2 bg-fuchsia-600 hover:bg-fuchsia-500 text-white rounded-lg transition disabled:opacity-50"
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition disabled:opacity-50"
           >
-            {loadingFlightReport ? 'Loading…' : 'Load'}
+            {loadingFlightReport ? tr('Loading…', 'Yuklanmoqda…') : tr('Load', 'Yuklash')}
           </button>
-        </div>
-
+        }
+      >
         {flightReport && (
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
               <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">Debt (Payable)</p>
-                <p className="text-2xl font-bold text-yellow-600">${Number(flightReport.debt || 0).toFixed(2)}</p>
+                <p className="text-xs text-muted">{tr('Debt (Payable, UZS)', 'Qarz (PAYABLE, UZS)')}</p>
+                <p className="text-2xl font-bold text-yellow-600">{Number(flightReport.debt || 0).toFixed(2)}</p>
               </div>
               <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">Revenue (Sales)</p>
-                <p className="text-2xl font-bold text-green-600">${Number(flightReport.revenue || 0).toFixed(2)}</p>
+                <p className="text-xs text-muted">{tr('Revenue (Sales, UZS)', 'Tushum (SOTUV, UZS)')}</p>
+                <p className="text-2xl font-bold text-green-600">{Number(flightReport.revenue || 0).toFixed(2)}</p>
               </div>
               <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">Payments</p>
-                <p className="text-2xl font-bold text-fuchsia-600">${Number(flightReport.paid || 0).toFixed(2)}</p>
+                <p className="text-xs text-muted">{tr('Payments (UZS)', "To'lovlar (UZS)")}</p>
+                <p className="text-2xl font-bold text-blue-600">{Number(flightReport.paid || 0).toFixed(2)}</p>
               </div>
               <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">Outstanding</p>
-                <p className="text-2xl font-bold">${Number(flightReport.outstanding || 0).toFixed(2)}</p>
+                <p className="text-xs text-muted">{tr('Outstanding (UZS)', 'Qoldiq (UZS)')}</p>
+                <p className="text-2xl font-bold">{Number(flightReport.outstanding || 0).toFixed(2)}</p>
               </div>
               <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">Profit</p>
-                <p className="text-2xl font-bold text-indigo-600">${Number(flightReport.profit || 0).toFixed(2)}</p>
+                <p className="text-xs text-muted">{tr('Profit (UZS)', 'Foyda (UZS)')}</p>
+                <p className="text-2xl font-bold text-indigo-600">{Number(flightReport.profit || 0).toFixed(2)}</p>
               </div>
             </div>
 
             {flightReport.tickets && (
               <div className="text-sm text-muted">
-                Tickets: total {flightReport.tickets.total}, available {flightReport.tickets.available}, assigned {flightReport.tickets.assigned}, sold {flightReport.tickets.sold}
+                {tr('Tickets', 'Biletlar')}: {tr('total', 'jami')} {flightReport.tickets.total}, {tr('available', 'mavjud')} {flightReport.tickets.available}, {tr('assigned', 'biriktirilgan')} {flightReport.tickets.assigned}, {tr('sold', 'sotilgan')} {flightReport.tickets.sold}
               </div>
             )}
 
@@ -341,13 +459,13 @@ export default function ReportsPage() {
                 <table className="min-w-full divide-y divide-border">
                   <thead className="bg-surface">
                     <tr>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">Firm</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">Tickets</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">Sold</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">Debt</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">Revenue</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">Paid</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">Outstanding</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Firm', 'Firma')}</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Tickets', 'Biletlar')}</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Sold', 'Sotilgan')}</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Debt', 'Qarz')}</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Revenue', 'Tushum')}</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Paid', "To'langan")}</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Outstanding', 'Qoldiq')}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -365,7 +483,7 @@ export default function ReportsPage() {
                     {(flightReport.firms || []).length === 0 && (
                       <tr>
                         <td colSpan={7} className="px-4 py-4 text-center text-sm text-muted">
-                          No firm activity for this flight yet.
+                          {tr('No firm activity for this flight yet.', "Bu reys bo'yicha hali firma faoliyati yo'q.")}
                         </td>
                       </tr>
                     )}
@@ -374,85 +492,89 @@ export default function ReportsPage() {
               </div>
             ) : (
               <div className="text-sm text-muted">
-                Your firm breakdown: {(flightReport.firms || []).length > 0 ? (
+                {tr('Your firm breakdown', 'Firmangiz bo\'yicha')}: {(flightReport.firms || []).length > 0 ? (
                   <span>
-                    tickets {(flightReport.firms?.[0]?.ticketsAssigned ?? 0)} / sold {(flightReport.firms?.[0]?.ticketsSold ?? 0)}
+                    {tr('tickets', 'biletlar')} {(flightReport.firms?.[0]?.ticketsAssigned ?? 0)} / {tr('sold', 'sotilgan')} {(flightReport.firms?.[0]?.ticketsSold ?? 0)}
                   </span>
                 ) : (
-                  <span className="text-muted">No activity for this flight yet.</span>
+                  <span className="text-muted">{tr('No activity for this flight yet.', "Bu reys bo'yicha hali faoliyat yo'q.")}</span>
                 )}
               </div>
             )}
           </div>
         )}
-      </div>
+      </CollapsibleCard>
 
       {/* Firm report */}
-      <div className="bg-surface-2 border border-border rounded-xl p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold">{isFirm ? 'My firm report' : 'Firm report'}</h3>
+      <CollapsibleCard
+        title={isFirm ? tr('My firm report', 'Firmam hisoboti') : tr('Firm report', 'Firma hisoboti')}
+        defaultOpen={false}
+        storageKey="jetstream-reports-firm-report-open"
+        className="rounded-xl"
+        contentClassName="p-6 space-y-4"
+        headerRight={
           <button
             type="button"
             onClick={loadFirmReport}
             disabled={loadingFirmReport || (isAdmin && !selectedFirmId)}
-            className="px-4 py-2 bg-fuchsia-600 hover:bg-fuchsia-500 text-white rounded-lg transition disabled:opacity-50"
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition disabled:opacity-50"
           >
-            {loadingFirmReport ? 'Loading…' : 'Load'}
+            {loadingFirmReport ? tr('Loading…', 'Yuklanmoqda…') : tr('Load', 'Yuklash')}
           </button>
-        </div>
-
+        }
+      >
         {firmReport && (
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
               <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">Debt</p>
-                <p className="text-2xl font-bold text-yellow-600">${Number(firmReport.totals?.debt || 0).toFixed(2)}</p>
+                <p className="text-xs text-muted">{tr('Debt (UZS)', 'Qarz (UZS)')}</p>
+                <p className="text-2xl font-bold text-yellow-600">{Number(firmReport.totals?.debt || 0).toFixed(2)}</p>
               </div>
               <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">Revenue</p>
-                <p className="text-2xl font-bold text-green-600">${Number(firmReport.totals?.revenue || 0).toFixed(2)}</p>
+                <p className="text-xs text-muted">{tr('Revenue (UZS)', 'Tushum (UZS)')}</p>
+                <p className="text-2xl font-bold text-green-600">{Number(firmReport.totals?.revenue || 0).toFixed(2)}</p>
               </div>
               <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">Paid</p>
-                <p className="text-2xl font-bold text-fuchsia-600">${Number(firmReport.totals?.paid || 0).toFixed(2)}</p>
+                <p className="text-xs text-muted">{tr('Paid (UZS)', "To'langan (UZS)")}</p>
+                <p className="text-2xl font-bold text-blue-600">{Number(firmReport.totals?.paid || 0).toFixed(2)}</p>
               </div>
               <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">Outstanding</p>
-                <p className="text-2xl font-bold">${Number(firmReport.totals?.outstanding || 0).toFixed(2)}</p>
+                <p className="text-xs text-muted">{tr('Outstanding (UZS)', 'Qoldiq (UZS)')}</p>
+                <p className="text-2xl font-bold">{Number(firmReport.totals?.outstanding || 0).toFixed(2)}</p>
               </div>
               <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">Profit</p>
-                <p className="text-2xl font-bold text-indigo-600">${Number(firmReport.totals?.profit || 0).toFixed(2)}</p>
+                <p className="text-xs text-muted">{tr('Profit (UZS)', 'Foyda (UZS)')}</p>
+                <p className="text-2xl font-bold text-indigo-600">{Number(firmReport.totals?.profit || 0).toFixed(2)}</p>
               </div>
             </div>
 
             <div className="text-sm text-muted">
-              Tickets: assigned {firmReport.tickets?.assigned || 0}, sold {firmReport.tickets?.sold || 0}, unsold {firmReport.tickets?.unsold || 0}
+              {tr('Tickets', 'Biletlar')}: {tr('assigned', 'biriktirilgan')} {firmReport.tickets?.assigned || 0}, {tr('sold', 'sotilgan')} {firmReport.tickets?.sold || 0}, {tr('unsold', 'sotilmagan')} {firmReport.tickets?.unsold || 0}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="bg-surface border border-border rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-foreground mb-2">Transactions by type</h4>
+                <h4 className="text-sm font-semibold text-foreground mb-2">{tr('Transactions by type', 'Tranzaksiyalar (turi bo\'yicha)')}</h4>
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-border">
                     <thead className="bg-surface-2">
                       <tr>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Type</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Count</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Total (USD)</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Type', 'Turi')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total (UZS)', 'Jami (UZS)')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
                       {(firmReport.transactionsByType || []).map((r: any) => (
                         <tr key={r.type}>
-                          <td className="px-3 py-2 text-sm text-foreground">{r.type}</td>
+                          <td className="px-3 py-2 text-sm text-foreground">{getTransactionTypeLabel(r.type)}</td>
                           <td className="px-3 py-2 text-sm text-foreground">{r.count}</td>
                           <td className="px-3 py-2 text-sm text-foreground">{Number(r.totalBaseAmount || 0).toFixed(2)}</td>
                         </tr>
                       ))}
                       {(firmReport.transactionsByType || []).length === 0 && (
                         <tr>
-                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">No data</td>
+                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">{tr('No data', "Ma'lumot yo'q")}</td>
                         </tr>
                       )}
                     </tbody>
@@ -461,27 +583,27 @@ export default function ReportsPage() {
               </div>
 
               <div className="bg-surface border border-border rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-foreground mb-2">Payments by method</h4>
+                <h4 className="text-sm font-semibold text-foreground mb-2">{tr('Payments by method', "To'lovlar (usul bo\'yicha)")}</h4>
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-border">
                     <thead className="bg-surface-2">
                       <tr>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Method</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Count</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Total (USD)</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Method', 'Usul')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total (UZS)', 'Jami (UZS)')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
                       {(firmReport.paymentsByMethod || []).map((r: any) => (
                         <tr key={r.method}>
-                          <td className="px-3 py-2 text-sm text-foreground capitalize">{r.method}</td>
+                          <td className="px-3 py-2 text-sm text-foreground">{getPaymentMethodLabel(r.method)}</td>
                           <td className="px-3 py-2 text-sm text-foreground">{r.count}</td>
                           <td className="px-3 py-2 text-sm text-foreground">{Number(r.totalBaseAmount || 0).toFixed(2)}</td>
                         </tr>
                       ))}
                       {(firmReport.paymentsByMethod || []).length === 0 && (
                         <tr>
-                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">No data</td>
+                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">{tr('No data', "Ma'lumot yo'q")}</td>
                         </tr>
                       )}
                     </tbody>
@@ -491,18 +613,18 @@ export default function ReportsPage() {
             </div>
 
             <div className="bg-surface border border-border rounded-lg p-4">
-              <h4 className="text-sm font-semibold text-foreground mb-2">By flight</h4>
+              <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By flight', 'Reys bo\'yicha')}</h4>
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-border">
                   <thead className="bg-surface-2">
                     <tr>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Flight</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Debt</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Revenue</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Paid</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Outstanding</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Tickets</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Sold</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Flight', 'Reys')}</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Debt', 'Qarz')}</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Revenue', 'Tushum')}</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Paid', "To'langan")}</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Outstanding', 'Qoldiq')}</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Tickets', 'Biletlar')}</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Sold', 'Sotilgan')}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -519,7 +641,7 @@ export default function ReportsPage() {
                     ))}
                     {(firmReport.byFlight || []).length === 0 && (
                       <tr>
-                        <td colSpan={7} className="px-3 py-3 text-center text-sm text-muted">No data</td>
+                        <td colSpan={7} className="px-3 py-3 text-center text-sm text-muted">{tr('No data', "Ma'lumot yo'q")}</td>
                       </tr>
                     )}
                   </tbody>
@@ -528,51 +650,55 @@ export default function ReportsPage() {
             </div>
           </div>
         )}
-      </div>
+      </CollapsibleCard>
 
       {/* Payments report */}
-      <div className="bg-surface-2 border border-border rounded-xl p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold">{isFirm ? 'My payments report' : 'Payments report'}</h3>
+      <CollapsibleCard
+        title={isFirm ? tr('My payments report', "To'lovlarim hisoboti") : tr('Payments report', "To'lovlar hisoboti")}
+        defaultOpen={false}
+        storageKey="jetstream-reports-payments-report-open"
+        className="rounded-xl"
+        contentClassName="p-6 space-y-4"
+        headerRight={
           <button
             type="button"
             onClick={loadPaymentsReport}
             disabled={loadingPaymentsReport}
             className="px-4 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition disabled:opacity-50"
           >
-            {loadingPaymentsReport ? 'Loading…' : 'Load'}
+            {loadingPaymentsReport ? tr('Loading…', 'Yuklanmoqda…') : tr('Load', 'Yuklash')}
           </button>
-        </div>
-
+        }
+      >
         {paymentsReport && (
           <div className="space-y-4">
             <div className="text-sm text-muted">
-              Total payments: {paymentsReport.totals?.count || 0} — ${Number(paymentsReport.totals?.totalBaseAmount || 0).toFixed(2)} USD
+              {tr('Total payments', "Jami to'lovlar")}: {paymentsReport.totals?.count || 0} — {Number(paymentsReport.totals?.totalBaseAmount || 0).toFixed(2)} UZS
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="bg-surface border border-border rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-foreground mb-2">By method</h4>
+                <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By method', 'Usul bo\'yicha')}</h4>
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-border">
                     <thead className="bg-surface-2">
                       <tr>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Method</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Count</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Total (USD)</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Method', 'Usul')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total (UZS)', 'Jami (UZS)')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
                       {(paymentsReport.byMethod || []).map((r: any) => (
                         <tr key={r.method}>
-                          <td className="px-3 py-2 text-sm text-foreground capitalize">{r.method}</td>
+                          <td className="px-3 py-2 text-sm text-foreground">{getPaymentMethodLabel(r.method)}</td>
                           <td className="px-3 py-2 text-sm text-foreground">{r.count}</td>
                           <td className="px-3 py-2 text-sm text-foreground">{Number(r.totalBaseAmount || 0).toFixed(2)}</td>
                         </tr>
                       ))}
                       {(paymentsReport.byMethod || []).length === 0 && (
                         <tr>
-                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">No data</td>
+                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">{tr('No data', "Ma'lumot yo'q")}</td>
                         </tr>
                       )}
                     </tbody>
@@ -581,14 +707,14 @@ export default function ReportsPage() {
               </div>
 
               <div className="bg-surface border border-border rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-foreground mb-2">By currency</h4>
+                <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By currency', 'Valyuta bo\'yicha')}</h4>
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-border">
                     <thead className="bg-surface-2">
                       <tr>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Currency</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Count</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Total (USD)</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Currency', 'Valyuta')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total (UZS)', 'Jami (UZS)')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
@@ -601,7 +727,7 @@ export default function ReportsPage() {
                       ))}
                       {(paymentsReport.byCurrency || []).length === 0 && (
                         <tr>
-                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">No data</td>
+                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">{tr('No data', "Ma'lumot yo'q")}</td>
                         </tr>
                       )}
                     </tbody>
@@ -611,51 +737,55 @@ export default function ReportsPage() {
             </div>
           </div>
         )}
-      </div>
+      </CollapsibleCard>
 
       {/* Transactions report */}
-      <div className="bg-surface-2 border border-border rounded-xl p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold">{isFirm ? 'My transactions report' : 'Transactions report'}</h3>
+      <CollapsibleCard
+        title={isFirm ? tr('My transactions report', 'Tranzaksiyalarim hisoboti') : tr('Transactions report', 'Tranzaksiyalar hisoboti')}
+        defaultOpen={false}
+        storageKey="jetstream-reports-transactions-report-open"
+        className="rounded-xl"
+        contentClassName="p-6 space-y-4"
+        headerRight={
           <button
             type="button"
             onClick={loadTransactionsReport}
             disabled={loadingTransactionsReport}
             className="px-4 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition disabled:opacity-50"
           >
-            {loadingTransactionsReport ? 'Loading…' : 'Load'}
+            {loadingTransactionsReport ? tr('Loading…', 'Yuklanmoqda…') : tr('Load', 'Yuklash')}
           </button>
-        </div>
-
+        }
+      >
         {transactionsReport && (
           <div className="space-y-4">
             <div className="text-sm text-muted">
-              Total transactions: {transactionsReport.totals?.count || 0} — ${Number(transactionsReport.totals?.totalBaseAmount || 0).toFixed(2)} USD
+              {tr('Total transactions', 'Jami tranzaksiyalar')}: {transactionsReport.totals?.count || 0} — {Number(transactionsReport.totals?.totalBaseAmount || 0).toFixed(2)} UZS
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="bg-surface border border-border rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-foreground mb-2">By type</h4>
+                <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By type', 'Turi bo\'yicha')}</h4>
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-border">
                     <thead className="bg-surface-2">
                       <tr>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Type</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Count</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Total (USD)</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Type', 'Turi')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total (UZS)', 'Jami (UZS)')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
                       {(transactionsReport.byType || []).map((r: any) => (
                         <tr key={r.type}>
-                          <td className="px-3 py-2 text-sm text-foreground">{r.type}</td>
+                          <td className="px-3 py-2 text-sm text-foreground">{getTransactionTypeLabel(r.type)}</td>
                           <td className="px-3 py-2 text-sm text-foreground">{r.count}</td>
                           <td className="px-3 py-2 text-sm text-foreground">{Number(r.totalBaseAmount || 0).toFixed(2)}</td>
                         </tr>
                       ))}
                       {(transactionsReport.byType || []).length === 0 && (
                         <tr>
-                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">No data</td>
+                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">{tr('No data', "Ma'lumot yo'q")}</td>
                         </tr>
                       )}
                     </tbody>
@@ -664,14 +794,14 @@ export default function ReportsPage() {
               </div>
 
               <div className="bg-surface border border-border rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-foreground mb-2">By currency</h4>
+                <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By currency', 'Valyuta bo\'yicha')}</h4>
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-border">
                     <thead className="bg-surface-2">
                       <tr>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Currency</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Count</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Total (USD)</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Currency', 'Valyuta')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total (UZS)', 'Jami (UZS)')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
@@ -684,7 +814,7 @@ export default function ReportsPage() {
                       ))}
                       {(transactionsReport.byCurrency || []).length === 0 && (
                         <tr>
-                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">No data</td>
+                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">{tr('No data', "Ma'lumot yo'q")}</td>
                         </tr>
                       )}
                     </tbody>
@@ -694,39 +824,43 @@ export default function ReportsPage() {
             </div>
           </div>
         )}
-      </div>
+      </CollapsibleCard>
 
       {/* Superadmin interactions */}
       {isSuperadmin && (
-        <div className="bg-surface-2 border border-border rounded-xl p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold">Admin ↔ Firm interactions (superadmin)</h3>
+        <CollapsibleCard
+          title={tr('Admin ↔ Firm interactions (superadmin)', 'Admin ↔ Firma aloqalari (superadmin)')}
+          defaultOpen={false}
+          storageKey="jetstream-reports-interactions-open"
+          className="rounded-xl"
+          contentClassName="p-6 space-y-4"
+          headerRight={
             <button
               type="button"
               onClick={loadInteractionsReport}
               disabled={loadingInteractionsReport}
               className="px-4 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition disabled:opacity-50"
             >
-              {loadingInteractionsReport ? 'Loading…' : 'Load'}
+              {loadingInteractionsReport ? tr('Loading…', 'Yuklanmoqda…') : tr('Load', 'Yuklash')}
             </button>
-          </div>
-
+          }
+        >
           {interactionsReport && (
             <div className="space-y-4">
               <div className="text-sm text-muted">
-                Invites: {interactionsReport.totals?.invitesSent || 0} — Allocations ${Number(interactionsReport.totals?.allocationsBaseAmount || 0).toFixed(2)} — Payments ${Number(interactionsReport.totals?.paymentsBaseAmount || 0).toFixed(2)}
+                {tr('Invites', 'Takliflar')}: {interactionsReport.totals?.invitesSent || 0} — {tr('Allocations', 'Ajratmalar')} {Number(interactionsReport.totals?.allocationsBaseAmount || 0).toFixed(2)} UZS — {tr('Payments', "To'lovlar")} {Number(interactionsReport.totals?.paymentsBaseAmount || 0).toFixed(2)} UZS
               </div>
 
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-border">
                   <thead className="bg-surface">
                     <tr>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Admin</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Firm</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Invites</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Allocations (USD)</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Payments (USD)</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">Sales (USD)</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Admin', 'Admin')}</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Firm', 'Firma')}</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Invites', 'Takliflar')}</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Allocations (UZS)', 'Ajratmalar (UZS)')}</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Payments (UZS)', "To'lovlar (UZS)")}</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Sales (UZS)', 'Sotuv (UZS)')}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -742,7 +876,7 @@ export default function ReportsPage() {
                     ))}
                     {(interactionsReport.pairs || []).length === 0 && (
                       <tr>
-                        <td colSpan={6} className="px-3 py-3 text-center text-sm text-muted">No interactions in this period</td>
+                        <td colSpan={6} className="px-3 py-3 text-center text-sm text-muted">{tr('No interactions in this period', 'Ushbu davrda aloqa qayd etilmadi')}</td>
                       </tr>
                     )}
                   </tbody>
@@ -750,11 +884,11 @@ export default function ReportsPage() {
               </div>
 
               <p className="text-xs text-muted">
-                Note: allocations/payments/sales are counted only when the acting user was an admin/superadmin.
+                {tr('Note: allocations/payments/sales are counted only when the acting user was an admin/superadmin.', 'Eslatma: ajratmalar/to\'lovlar/sotuvlar faqat amalni bajargan foydalanuvchi admin/superadmin bo\'lganda hisoblanadi.')}
               </p>
             </div>
           )}
-        </div>
+        </CollapsibleCard>
       )}
     </div>
   );

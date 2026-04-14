@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma, Role } from '@prisma/client';
 
+const BASE_CURRENCY = 'UZS' as const;
+
 type AuthUser = {
   userId?: string;
   role?: Role | string;
@@ -145,7 +147,7 @@ export const processPayment = async (req: Request, res: Response) => {
       const dayKey = dayStart.toISOString().slice(0, 10);
 
       let exchangeRate = new Prisma.Decimal(1);
-      if (currency !== 'USD') {
+      if (currency !== BASE_CURRENCY) {
         if (manualExchangeRate) {
           if (!manualExchangeRate.gt(0)) {
             throw new Error('Invalid exchange rate');
@@ -154,7 +156,7 @@ export const processPayment = async (req: Request, res: Response) => {
 
           const existing = await tx.currencyRate.findFirst({
             where: {
-              baseCurrency: 'USD',
+              baseCurrency: BASE_CURRENCY,
               targetCurrency: currency,
               recordedAt: { gte: dayStart, lt: dayEnd },
               rate: manualExchangeRate,
@@ -165,7 +167,7 @@ export const processPayment = async (req: Request, res: Response) => {
           if (!existing) {
             await tx.currencyRate.create({
               data: {
-                baseCurrency: 'USD',
+                baseCurrency: BASE_CURRENCY,
                 targetCurrency: currency,
                 rate: manualExchangeRate.toDecimalPlaces(6),
                 source: 'manual',
@@ -176,16 +178,29 @@ export const processPayment = async (req: Request, res: Response) => {
         } else {
           const rate = await tx.currencyRate.findFirst({
             where: {
-              baseCurrency: 'USD',
+              baseCurrency: BASE_CURRENCY,
               targetCurrency: currency,
               recordedAt: { gte: dayStart, lt: dayEnd },
             },
             orderBy: { recordedAt: 'desc' },
           });
-          if (!rate) {
+
+          const legacyRate = rate
+            ? null
+            : await tx.currencyRate.findFirst({
+                where: {
+                  baseCurrency: currency,
+                  targetCurrency: BASE_CURRENCY,
+                  recordedAt: { gte: dayStart, lt: dayEnd },
+                },
+                orderBy: { recordedAt: 'desc' },
+              });
+
+          const resolved = rate ?? legacyRate;
+          if (!resolved) {
             throw new Error(`Missing exchange rate for ${currency} on ${dayKey}`);
           }
-          exchangeRate = new Prisma.Decimal(String(rate.rate));
+          exchangeRate = new Prisma.Decimal(String(resolved.rate));
         }
       }
 
@@ -193,7 +208,7 @@ export const processPayment = async (req: Request, res: Response) => {
         throw new Error('Invalid exchange rate');
       }
 
-      const baseAmount = amount.div(exchangeRate).toDecimalPlaces(4);
+      const baseAmount = amount.mul(exchangeRate).toDecimalPlaces(4);
 
       await tx.transaction.create({
         data: {

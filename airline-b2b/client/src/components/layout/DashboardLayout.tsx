@@ -1,24 +1,39 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
+/* eslint-disable react-hooks/set-state-in-effect */
 "use client";
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useLanguage } from '@/contexts/LanguageContext';
 import { usePathname, useRouter } from 'next/navigation';
-import { PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3 } from 'lucide-react';
+import { PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, ChevronLeft, ChevronRight } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { user, logout, isLoading } = useAuth();
+  const { language, toggleLanguage, t, tr } = useLanguage();
   const pathname = usePathname();
   const router = useRouter();
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [theme, setTheme] = useState<'dark' | 'light'>('light');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useEffect(() => {
     try {
       const current = document.documentElement.dataset.theme;
       setTheme(current === 'light' ? 'light' : 'dark');
     } catch {
-      setTheme('dark');
+      setTheme('light');
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('jetstream-sidebar-collapsed');
+      if (raw === '1' || raw === 'true') setSidebarCollapsed(true);
+      if (raw === '0' || raw === 'false') setSidebarCollapsed(false);
+    } catch {
+      // ignore
     }
   }, []);
 
@@ -27,11 +42,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       const next = prev === 'light' ? 'dark' : 'light';
       try {
         localStorage.setItem('jetstream-theme', next);
+        document.documentElement.dataset.theme = next;
+        document.documentElement.style.colorScheme = next;
       } catch {
         // ignore
       }
-      document.documentElement.dataset.theme = next;
-      document.documentElement.style.colorScheme = next;
       return next;
     });
   };
@@ -40,8 +55,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return (
       <div className="min-h-screen flex items-center justify-center bg-background text-foreground">
         <div className="flex items-center gap-3">
-          <PlaneTakeoff className="animate-pulse" />
-          <span>Authenticating...</span>
+          <div className="w-8 h-8 border-[3px] border-blue-600/20 border-t-blue-600 rounded-full animate-spin"></div>
+          <span className="text-sm font-medium">Authenticating...</span>
         </div>
       </div>
     );
@@ -52,174 +67,205 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   const navLinks = user.role === 'firm' ? [
-    { name: 'Dashboard', href: '/firm', icon: LayoutDashboard },
-    { name: 'Flights', href: '/flights', icon: PlaneTakeoff },
-    { name: 'Transactions', href: '/transactions', icon: ArrowRightLeft },
-    { name: 'Reports', href: '/reports', icon: BarChart3 },
+    { key: 'navDashboard' as const, href: '/firm', icon: LayoutDashboard },
+    { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
+    { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
+    { key: 'navReports' as const, href: '/reports', icon: BarChart3 },
+    { key: 'navSettings' as const, href: '/settings', icon: Settings },
   ] : [
-    { name: 'Admin Dashboard', href: '/admin', icon: LayoutDashboard },
-    { name: 'Firms', href: '/firms', icon: UserCircle },
-    { name: 'Flights', href: '/flights', icon: PlaneTakeoff },
-    { name: 'Transactions', href: '/transactions', icon: ArrowRightLeft },
-    { name: 'Reports', href: '/reports', icon: BarChart3 },
+    { key: 'navAdminDashboard' as const, href: '/admin', icon: LayoutDashboard },
+    { key: 'navFirms' as const, href: '/firms', icon: UserCircle },
+    { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
+    { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
+    { key: 'navReports' as const, href: '/reports', icon: BarChart3 },
+    { key: 'navSettings' as const, href: '/settings', icon: Settings },
   ];
 
-  const pageTitle = pathname.startsWith('/settings')
-    ? 'Settings'
-    : (navLinks.find(link => pathname.startsWith(link.href))?.name || 'Dashboard');
+  const activeNavLink = navLinks.find((link) => {
+    const isTopLevel = link.href === '/firm' || link.href === '/admin';
+    if (pathname === link.href) return true;
+    if (!isTopLevel && pathname.startsWith(link.href)) return true;
+    return false;
+  });
+
+  const pageTitle = t(activeNavLink?.key ?? navLinks[0].key);
 
   return (
-    <div className="flex min-h-screen md:h-screen bg-background text-foreground w-full font-sans">
+    <div className="flex min-h-screen md:h-screen bg-background text-foreground w-full font-sans overflow-hidden">
       {/* Sidebar (desktop) */}
-      <div className="hidden md:flex w-64 bg-surface text-foreground flex-col h-full overflow-y-auto border-r border-border shadow-[5px_0_15px_rgba(192,38,211,0.1)]">
-        <div className="p-5 flex items-center gap-3 border-b border-border">
-          <div className="bg-gradient-to-br from-fuchsia-600 to-yellow-500 p-2 rounded-lg">
-            <PlaneTakeoff size={24} />
+      <div
+        className={`hidden md:flex flex-col h-full overflow-visible bg-surface transition-all duration-300 border-r border-border z-30 ${sidebarCollapsed ? 'w-20' : 'w-64'}`}
+      >
+        {/* Sidebar Header */}
+        <div className="h-[72px] px-5 flex items-center gap-3 border-b border-border shrink-0 relative">
+          <div className="w-[34px] h-[34px] shrink-0 bg-blue-600 rounded-lg flex items-center justify-center text-white text-[12px] font-bold tracking-widest shadow-sm">
+            ADO
           </div>
-          <h1 className="text-xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-yellow-500">JetStream B2B</h1>
+          {!sidebarCollapsed && (
+            <h1 className="text-[15px] font-semibold text-foreground tracking-tight select-none">
+              ADO B2B
+            </h1>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setSidebarCollapsed((v) => {
+              const next = !v;
+              try { localStorage.setItem('jetstream-sidebar-collapsed', next ? '1' : '0'); } catch {}
+              return next;
+            })}
+            className="absolute -right-3 top-1/2 -translate-y-1/2 flex items-center justify-center h-6 w-6 rounded-full bg-surface hover:bg-surface-2 text-muted shadow-sm border border-border hover:text-foreground  transition-colors z-40"
+            aria-label="Toggle Sidebar"
+          >
+            {sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+          </button>
         </div>
-        <div className="flex-1 px-4 space-y-2 mt-6">
-          <div className="mb-4 px-2 text-xs font-semibold text-muted uppercase tracking-wider">
-            {user.role === 'firm' ? 'Agency Portal' : 'Admin Console'}
-          </div>
+
+        {/* Sidebar Nav */}
+        <div className={`flex-1 py-6 flex flex-col gap-1.5 ${sidebarCollapsed ? 'px-3' : 'px-4'}`}>
+          {!sidebarCollapsed && (
+            <div className="px-3 mb-2 text-[10px] font-bold text-muted uppercase tracking-widest select-none">
+              {user.role === 'firm' ? 'Agency Portal' : 'Admin Console'}
+            </div>
+          )}
           {navLinks.map((link) => {
             const isActive = pathname === link.href || (link.href !== '/firm' && link.href !== '/admin' && pathname.startsWith(link.href));
             return (
               <Link
-                key={link.name}
+                key={link.href}
                 href={link.href}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-md transition-all duration-200 text-sm font-medium ${
+                aria-label={t(link.key)}
+                className={`flex items-center ${sidebarCollapsed ? 'justify-center' : 'gap-3'} px-3 py-2.5 rounded-[10px] transition-all duration-200 text-[13px] ${
                   isActive 
-                    ? 'bg-gradient-to-r from-fuchsia-600 to-fuchsia-800 text-white shadow-lg' 
-                    : 'text-muted hover:bg-surface-2 hover:text-foreground'
+                    ? 'bg-blue-50 text-blue-700 font-semibold dark:bg-blue-500/10 dark:text-blue-400' 
+                    : 'text-muted font-medium hover:bg-surface-2 hover:text-foreground'
                 }`}
               >
-                <link.icon size={18} />
-                <span>{link.name}</span>
+                <link.icon size={18} className={isActive ? 'text-blue-600 dark:text-blue-400' : ''} />
+                {!sidebarCollapsed && <span className="tracking-wide">{t(link.key)}</span>}
               </Link>
             )
           })}
         </div>
-        <div className="p-4 border-t border-border mt-auto">
+
+        {/* Sidebar Footer User Info */}
+        <div className="p-4 border-t border-border mt-auto shrink-0 bg-surface-2/50">
           <button
             type="button"
             onClick={() => setIsAccountModalOpen(true)}
-            className="w-full flex items-center justify-between gap-2 p-2 rounded-md text-muted hover:bg-surface-2 transition-colors"
+            className={`w-full flex items-center ${sidebarCollapsed ? 'justify-center' : 'justify-between'} gap-2 rounded-xl text-muted hover:text-foreground transition-colors`}
             aria-haspopup="dialog"
             aria-expanded={isAccountModalOpen}
+            title={user.email}
           >
-            <span className="flex items-center gap-2 min-w-0">
-              <UserCircle size={24} className="text-yellow-400 shrink-0" />
-              <span className="text-sm font-medium truncate">{user.email}</span>
+            <span className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/40 flex items-center justify-center shrink-0">
+                 <UserCircle size={18} className="text-blue-600 dark:text-blue-400" />
+              </div>
+              {!sidebarCollapsed && <span className="text-[13px] font-semibold truncate tracking-wide text-foreground">{user.email}</span>}
             </span>
-            <span className="text-xs text-muted">Account</span>
           </button>
         </div>
       </div>
 
       {isAccountModalOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
         >
-          <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-sm p-6">
-            <h3 className="text-lg font-bold text-foreground">Account</h3>
+          <div className="bg-surface border border-border rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] w-full max-w-sm p-8 m-4">
+            <h3 className="text-lg font-semibold tracking-tight text-foreground">{t('account')}</h3>
             <p className="mt-1 text-sm text-muted truncate">{user.email}</p>
 
-            <div className="mt-6 space-y-3">
+            <div className="mt-8 space-y-3">
               <button
                 type="button"
-                onClick={() => {
-                  setIsAccountModalOpen(false);
-                  router.push('/settings');
-                }}
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2 bg-surface-2 hover:bg-surface text-foreground rounded-lg transition"
+                onClick={() => { setIsAccountModalOpen(false); logout(); }}
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 font-semibold text-sm rounded-xl transition-colors"
               >
-                <Settings size={18} />
-                Settings
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setIsAccountModalOpen(false);
-                  logout();
-                }}
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2 bg-red-600/80 hover:bg-red-600 text-white rounded-lg transition"
-              >
-                <LogOut size={18} />
-                Sign out
+                <LogOut size={16} />
+                {t('signOut')}
               </button>
 
               <button
                 type="button"
                 onClick={() => setIsAccountModalOpen(false)}
-                className="w-full px-4 py-2 bg-transparent hover:bg-surface-2 text-muted rounded-lg transition border border-border"
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-surface-2 text-foreground hover:bg-black/5 dark:hover:bg-white/5 font-semibold text-sm rounded-xl transition-colors"
               >
-                Cancel
+                {t('cancel')}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="bg-surface backdrop-blur-sm shadow-lg border-b border-border shrink-0 px-4 md:px-8 py-3 md:py-0 md:h-16 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <div className="flex w-full items-center justify-between gap-3 min-h-10 md:min-h-0">
-            <h2 className="text-xl font-semibold text-foreground truncate">
+      {/* Main Container */}
+      <div className="flex-1 flex flex-col overflow-hidden relative">
+        {/* Top Header */}
+        <header className="h-[72px] px-6 md:px-12 flex items-center justify-between gap-4 bg-surface/80 backdrop-blur-xl border-b border-border shrink-0 sticky top-0 z-20 transition-all duration-300">
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg md:text-[20px] font-semibold text-foreground tracking-tight">
               {pageTitle}
             </h2>
-
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={toggleTheme}
-                className="px-3 py-2 bg-surface-2 hover:bg-surface text-foreground rounded-lg transition border border-border text-sm font-medium"
-                aria-label="Toggle theme"
-              >
-                {theme === 'dark' ? 'Light mode' : 'Dark mode'}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setIsAccountModalOpen(true)}
-                className="md:hidden px-3 py-2 bg-surface-2 hover:bg-surface text-foreground rounded-lg transition border border-border"
-                aria-label="Account"
-              >
-                <UserCircle size={18} />
-              </button>
-            </div>
           </div>
+          
+          <div className="flex items-center gap-3">
+            <button
+              onClick={toggleTheme}
+              className="p-2 bg-surface-2 hover:bg-black/5 dark:hover:bg-white/5 text-muted rounded-full transition-colors"
+              aria-label={'Toggle theme'}
+            >
+              {theme === 'light' ? '🌙' : '☀️'}
+            </button>
 
-          {/* Mobile nav */}
-          <nav className="md:hidden -mx-4 px-4 overflow-x-auto pb-1">
-            <div className="flex items-center gap-2 min-w-max">
-              {navLinks.map((link) => {
-                const isActive = pathname === link.href || (link.href !== '/firm' && link.href !== '/admin' && pathname.startsWith(link.href));
-                return (
-                  <Link
-                    key={link.name}
-                    href={link.href}
-                    className={`inline-flex items-center gap-2 px-3 py-2 rounded-md transition-all duration-200 text-sm font-medium border ${
-                      isActive
-                        ? 'bg-gradient-to-r from-fuchsia-600 to-fuchsia-800 text-white border-transparent shadow-lg'
-                        : 'bg-surface-2 text-muted hover:bg-surface hover:text-foreground border-border'
-                    }`}
-                  >
-                    <link.icon size={16} />
-                    <span className="whitespace-nowrap">{link.name}</span>
-                  </Link>
-                );
-              })}
-            </div>
-          </nav>
+            <button
+              onClick={toggleLanguage}
+              className="px-3 py-1.5 bg-surface-2 hover:bg-black/5 dark:hover:bg-white/5 text-foreground rounded-full transition-colors text-[11px] uppercase tracking-widest font-bold"
+              aria-label={t('toggleLanguageAria')}
+            >
+              {language === 'en' ? 'UZ' : 'EN'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsAccountModalOpen(true)}
+              className="md:hidden p-2 bg-surface-2 hover:bg-black/5 dark:hover:bg-white/5 text-muted rounded-full transition-colors"
+              aria-label={t('account')}
+            >
+              <UserCircle size={18} />
+            </button>
+          </div>
         </header>
-        <main className="flex-1 overflow-y-auto p-4 md:p-8 bg-background">
-          <div className="bg-surface p-4 md:p-6 rounded-xl border border-border shadow-2xl">
-            {children}
+
+        {/* Mobile Nav Scroller (Optional but keeping for consistency) */}
+        <nav className="md:hidden shrink-0 bg-surface border-b border-border px-4 py-2 overflow-x-auto scroller-hide">
+          <div className="flex items-center gap-2 min-w-max">
+            {navLinks.map((link) => {
+              const isActive = pathname === link.href || (link.href !== '/firm' && link.href !== '/admin' && pathname.startsWith(link.href));
+              return (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg transition-colors text-[13px] font-semibold ${
+                    isActive
+                      ? 'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400'
+                      : 'bg-transparent text-muted hover:bg-surface-2'
+                  }`}
+                >
+                  <link.icon size={16} />
+                  <span className="whitespace-nowrap tracking-wide">{t(link.key)}</span>
+                </Link>
+              );
+            })}
           </div>
+        </nav>
+
+        {/* Content Area */}
+        <main className="flex-1 overflow-y-auto w-full px-4 py-6 md:px-12 md:py-10 scroller-minimal text-foreground">
+           <div className="max-w-screen-2xl mx-auto w-full flex flex-col gap-8 md:gap-12">
+             {children}
+           </div>
         </main>
       </div>
     </div>

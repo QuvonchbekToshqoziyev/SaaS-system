@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useEffect, useState } from 'react';
@@ -6,6 +7,8 @@ import toast from 'react-hot-toast';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import DashboardCalendar from '@/components/dashboard/DashboardCalendar';
+import CollapsibleCard from '@/components/ui/CollapsibleCard';
+import { useLanguage } from '@/contexts/LanguageContext';
 
 type MonthlyReportRow = {
   month: string;
@@ -52,12 +55,13 @@ type DashboardReport = {
 };
 
 export default function AdminDashboard() {
+  const { tr } = useLanguage();
   const [report, setReport] = useState<MonthlyReportRow[] | null>(null);
   const [dashboard, setDashboard] = useState<DashboardReport | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [rateDate, setRateDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
-  const [rateTargetCurrency, setRateTargetCurrency] = useState<string>('UZS');
+  const [rateTargetCurrency, setRateTargetCurrency] = useState<string>('USD');
   const [rateValue, setRateValue] = useState<string>('');
   const [savingRate, setSavingRate] = useState(false);
 
@@ -101,7 +105,7 @@ export default function AdminDashboard() {
     try {
       setSavingRate(true);
       await api.post('/currency-rates', {
-        baseCurrency: 'USD',
+        baseCurrency: 'UZS',
         targetCurrency,
         rate,
         date: rateDate,
@@ -117,7 +121,7 @@ export default function AdminDashboard() {
     }
   };
 
-  if (loading) return <div>Loading reports...</div>;
+  if (loading) return <div>{tr('Loading reports...', 'Hisobotlar yuklanmoqda...')}</div>;
 
   const dueFirms = dashboard?.duePayments?.byFirm || [];
   const pending = dashboard?.pendingAllocations?.byFirmFlight || [];
@@ -127,44 +131,85 @@ export default function AdminDashboard() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-3xl font-bold text-foreground">Admin Overview</h2>
-          <p className="mt-1 text-sm text-muted">Quick links and monthly reports.</p>
+          <h2 className="text-3xl font-bold text-foreground">{tr('Admin Overview', "Admin ko'rinishi")}</h2>
+          <p className="mt-1 text-sm text-muted">{tr('Quick links and monthly reports.', 'Tezkor havolalar va oylik hisobotlar.')}</p>
         </div>
         <Link
           href="/firms"
-          className="inline-flex items-center justify-center px-4 py-2 bg-fuchsia-600 hover:bg-fuchsia-500 text-white rounded-lg font-medium transition"
+          className="inline-flex items-center justify-center px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition"
         >
-          Firms
+          {tr('Firms', 'Firmalar')}
         </Link>
       </div>
+
+      <CollapsibleCard
+        title={tr('Start here', 'Boshlash')}
+        description={tr('A quick checklist for the daily flow.', 'Kundalik jarayon uchun tezkor ro\'yxat.')}
+        defaultOpen={false}
+        storageKey="jetstream-admin-start-here-open"
+        className="shadow sm:rounded-lg"
+      >
+        <ol className="space-y-2 text-sm text-foreground list-decimal list-inside">
+          <li>
+            <Link href="/firms" className="hover:underline">
+              {tr('Create a firm invite', 'Firma taklifini yarating')}
+            </Link>
+            <span className="text-muted"> — {tr('generate a one-time link.', 'bir martalik havola yarating.')}</span>
+          </li>
+          <li>
+            <Link href="/flights" className="hover:underline">
+              {tr('Create a flight', 'Reys yarating')}
+            </Link>
+            <span className="text-muted"> — {tr('then open it to allocate tickets.', 'so\'ng chiptalarni ajratish uchun oching.')}</span>
+          </li>
+          <li>
+            <Link href="/transactions" className="hover:underline">
+              {tr('Record payments', "To'lovlarni qayd eting")}
+            </Link>
+            <span className="text-muted"> — {tr('keep balances accurate.', 'balansni aniq saqlang.')}</span>
+          </li>
+          <li>
+            <Link href="/reports" className="hover:underline">
+              {tr('Review reports', 'Hisobotlarni ko\'ring')}
+            </Link>
+            <span className="text-muted"> — {tr('check performance and debt.', 'natija va qarzni tekshiring.')}</span>
+          </li>
+        </ol>
+      </CollapsibleCard>
+
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
         {/* Placeholder summary cards until we process monthly real data */}
         <div className="bg-surface-2 border border-border overflow-hidden rounded-lg px-4 py-5 sm:p-6">
-          <dt className="text-sm font-medium text-muted truncate">Total Reporting Periods</dt>
+          <dt className="text-sm font-medium text-muted truncate">{tr('Total Reporting Periods', 'Hisobot davrlari soni')}</dt>
           <dd className="mt-1 text-3xl font-semibold text-foreground">{report?.length || 0}</dd>
         </div>
       </div>
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        <div className="bg-surface-2 border border-border overflow-hidden rounded-lg px-4 py-5 sm:p-6">
-          <h3 className="text-lg font-semibold text-foreground">Todo</h3>
-          <div className="mt-3 space-y-2">
+        <CollapsibleCard
+          title={tr('Todo', 'Vazifalar')}
+          defaultOpen={false}
+          storageKey="jetstream-admin-todo-open"
+          className="overflow-hidden"
+          contentClassName="px-4 py-5 sm:p-6"
+        >
+          <div className="space-y-2">
             {todos.map((t) => (
               <div key={t.key} className="flex items-center justify-between text-sm text-foreground">
                 <span>{t.label}</span>
                 <span className="font-semibold">
-                  {typeof t.amount === 'number' ? `${t.amount.toFixed(2)} USD` : t.count}
+                  {typeof t.amount === 'number' ? `${t.amount.toFixed(2)} UZS` : t.count}
                 </span>
               </div>
             ))}
             {todos.length === 0 && (
-              <div className="text-sm text-muted">No todos</div>
+              <div className="text-sm text-muted">{tr('No todos', "Vazifalar yo'q")}</div>
             )}
           </div>
 
           {pending.length > 0 && (
             <div className="mt-4 border-t border-border pt-3">
-              <div className="text-sm font-semibold text-foreground">Pending confirmations</div>
+              <div className="text-sm font-semibold text-foreground">{tr('Pending confirmations', 'Kutilayotgan tasdiqlar')}</div>
               <div className="mt-2 space-y-2">
                 {pending.slice(0, 6).map((p) => (
                   <div key={`${p.firmId}:${p.flightId}`} className="text-sm text-foreground">
@@ -180,20 +225,24 @@ export default function AdminDashboard() {
                   </div>
                 ))}
                 {pending.length > 6 && (
-                  <div className="text-xs text-muted">+{pending.length - 6} more</div>
+                  <div className="text-xs text-muted">{tr(`+${pending.length - 6} more`, `+${pending.length - 6} ta yana`)}</div>
                 )}
               </div>
             </div>
           )}
-        </div>
+        </CollapsibleCard>
 
-        <div className="bg-surface-2 border border-border overflow-hidden rounded-lg px-4 py-5 sm:p-6">
-          <h3 className="text-lg font-semibold text-foreground">Exchange rate</h3>
-          <p className="mt-1 text-sm text-muted">Save the daily USD→currency rate.</p>
-
-          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+        <CollapsibleCard
+          title={tr('Exchange rate', 'Valyuta kursi')}
+          description={tr('Save the daily currency→UZS rate (UZS per 1 currency).', 'Kundalik valyuta→UZS kursini saqlang (1 valyuta uchun UZS).')}
+          defaultOpen={false}
+          storageKey="jetstream-admin-exchange-rate-open"
+          className="overflow-hidden"
+          contentClassName="px-4 py-5 sm:p-6"
+        >
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
             <div>
-              <label className="block text-sm font-medium text-muted">Date</label>
+              <label className="block text-sm font-medium text-muted">{tr('Date', 'Sana')}</label>
               <input
                 type="date"
                 value={rateDate}
@@ -202,16 +251,16 @@ export default function AdminDashboard() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-muted">Target</label>
+              <label className="block text-sm font-medium text-muted">{tr('Currency', 'Valyuta')}</label>
               <input
                 value={rateTargetCurrency}
                 onChange={(e) => setRateTargetCurrency(e.target.value)}
-                placeholder="UZS"
+                placeholder="USD"
                 className="mt-1 w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground placeholder:text-muted"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-muted">Rate</label>
+              <label className="block text-sm font-medium text-muted">{tr('Rate', 'Kurs')}</label>
               <input
                 type="number"
                 step="0.000001"
@@ -229,77 +278,93 @@ export default function AdminDashboard() {
               type="button"
               onClick={submitRate}
               disabled={savingRate}
-              className="px-4 py-2 bg-fuchsia-600 hover:bg-fuchsia-500 text-white rounded-lg font-medium transition disabled:opacity-50"
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition disabled:opacity-50"
             >
-              {savingRate ? 'Saving…' : 'Save rate'}
+              {savingRate ? tr('Saving…', 'Saqlanmoqda…') : tr('Save rate', 'Kursni saqlash')}
             </button>
           </div>
-        </div>
+        </CollapsibleCard>
       </div>
 
-      <div className="bg-surface-2 border border-border max-w-full overflow-x-auto rounded-lg">
-        <div className="px-4 py-4 border-b border-border">
-          <h3 className="text-lg font-semibold text-foreground">Due payments</h3>
-          <p className="mt-1 text-sm text-muted">Firms with outstanding balance (USD).</p>
+      <CollapsibleCard
+        title={tr('Due payments', "To'lanishi kerak")}
+        description={tr('Firms with outstanding balance (UZS).', 'Qoldiq qarzi bor firmalar (UZS).')}
+        defaultOpen={false}
+        storageKey="jetstream-admin-due-payments-open"
+        contentClassName="p-0"
+      >
+        <div className="max-w-full overflow-x-auto">
+          <table className="min-w-full divide-y divide-border">
+            <thead className="bg-surface">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Firm', 'Firma')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Debt', 'Qarz')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Paid', "To'langan")}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Outstanding', 'Qoldiq')}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {dueFirms.slice(0, 12).map((f) => (
+                <tr key={f.firmId}>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{f.firmName || f.firmId}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(f.debt || 0).toFixed(2)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(f.paid || 0).toFixed(2)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground font-semibold">{Number(f.outstanding || 0).toFixed(2)}</td>
+                </tr>
+              ))}
+              {dueFirms.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="px-6 py-4 text-center text-sm text-muted">{tr('No due payments', "Qarz to'lovlari yo'q")}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
-        <table className="min-w-full divide-y divide-border">
-          <thead className="bg-surface">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Firm</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Debt</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Paid</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Outstanding</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {dueFirms.slice(0, 12).map((f) => (
-              <tr key={f.firmId}>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{f.firmName || f.firmId}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(f.debt || 0).toFixed(2)}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(f.paid || 0).toFixed(2)}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground font-semibold">{Number(f.outstanding || 0).toFixed(2)}</td>
-              </tr>
-            ))}
-            {dueFirms.length === 0 && (
-              <tr>
-                <td colSpan={4} className="px-6 py-4 text-center text-sm text-muted">No due payments</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      </CollapsibleCard>
 
-      <DashboardCalendar title="Activity calendar" reloadKey={calendarReloadKey} />
-      
-      <div className="bg-surface-2 border border-border max-w-full overflow-x-auto rounded-lg">
-        <table className="min-w-full divide-y divide-border">
-          <thead className="bg-surface">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Month</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Allocations (Debt)</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Sales (Revenue)</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">Payments</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {report?.map((r, idx: number) => (
-              <tr key={idx}>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{r.month}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(r.allocations).toFixed(2)}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(r.sales).toFixed(2)}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(r.payments).toFixed(2)}</td>
-              </tr>
-            ))}
-            {(!report || report.length === 0) && (
+      <DashboardCalendar
+        title={tr('Activity calendar', 'Faollik taqvimi')}
+        reloadKey={calendarReloadKey}
+        defaultOpen={false}
+        storageKey="jetstream-admin-calendar-open"
+      />
+
+      <CollapsibleCard
+        title={tr('Monthly report', 'Oylik hisobot')}
+        defaultOpen={false}
+        storageKey="jetstream-admin-monthly-open"
+        contentClassName="p-0"
+      >
+        <div className="max-w-full overflow-x-auto">
+          <table className="min-w-full divide-y divide-border">
+            <thead className="bg-surface">
               <tr>
-                <td colSpan={4} className="px-6 py-4 text-center text-sm text-muted">
-                  No data available yet
-                </td>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Month', 'Oy')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Allocations (Debt)', 'Ajratmalar (Qarz)')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Sales (Revenue)', 'Sotuvlar (Daromad)')}</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Payments', "To'lovlar")}</th>
               </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {report?.map((r, idx: number) => (
+                <tr key={idx}>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{r.month}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(r.allocations).toFixed(2)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(r.sales).toFixed(2)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">{Number(r.payments).toFixed(2)}</td>
+                </tr>
+              ))}
+              {(!report || report.length === 0) && (
+                <tr>
+                  <td colSpan={4} className="px-6 py-4 text-center text-sm text-muted">
+                    {tr('No data available yet', "Hali ma'lumot yo'q")}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </CollapsibleCard>
     </div>
   );
 }
