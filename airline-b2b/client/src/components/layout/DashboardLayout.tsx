@@ -69,9 +69,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     : (navLinks.find(link => pathname.startsWith(link.href))?.name || 'Dashboard');
 
   return (
-    <div className="flex h-screen bg-background text-foreground w-full font-sans">
-      {/* Sidebar */}
-      <div className="w-64 bg-surface text-foreground flex flex-col h-full overflow-y-auto border-r border-border shadow-[5px_0_15px_rgba(192,38,211,0.1)]">
+    <div className="flex min-h-screen md:h-screen bg-background text-foreground w-full font-sans">
+      {/* Sidebar (desktop) */}
+      <div className="hidden md:flex w-64 bg-surface text-foreground flex-col h-full overflow-y-auto border-r border-border shadow-[5px_0_15px_rgba(192,38,211,0.1)]">
         <div className="p-5 flex items-center gap-3 border-b border-border">
           <div className="bg-gradient-to-br from-fuchsia-600 to-yellow-500 p-2 rounded-lg">
             <PlaneTakeoff size={24} />
@@ -166,23 +166,58 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="bg-surface backdrop-blur-sm shadow-lg h-16 flex items-center justify-between px-8 border-b border-border shrink-0">
-          <h2 className="text-xl font-semibold text-foreground">
-            {pageTitle}
-          </h2>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={toggleTheme}
-              className="px-3 py-2 bg-surface-2 hover:bg-surface text-foreground rounded-lg transition border border-border text-sm font-medium"
-              aria-label="Toggle theme"
-            >
-              {theme === 'dark' ? 'Light mode' : 'Dark mode'}
-            </button>
+        <header className="bg-surface backdrop-blur-sm shadow-lg border-b border-border shrink-0 px-4 md:px-8 py-3 md:py-0 md:h-16 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div className="flex w-full items-center justify-between gap-3 min-h-10 md:min-h-0">
+            <h2 className="text-xl font-semibold text-foreground truncate">
+              {pageTitle}
+            </h2>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={toggleTheme}
+                className="px-3 py-2 bg-surface-2 hover:bg-surface text-foreground rounded-lg transition border border-border text-sm font-medium"
+                aria-label="Toggle theme"
+              >
+                {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsAccountModalOpen(true)}
+                className="md:hidden px-3 py-2 bg-surface-2 hover:bg-surface text-foreground rounded-lg transition border border-border"
+                aria-label="Account"
+              >
+                <UserCircle size={18} />
+              </button>
+            </div>
           </div>
+
+          {/* Mobile nav */}
+          <nav className="md:hidden -mx-4 px-4 overflow-x-auto pb-1">
+            <div className="flex items-center gap-2 min-w-max">
+              {navLinks.map((link) => {
+                const isActive = pathname === link.href || (link.href !== '/firm' && link.href !== '/admin' && pathname.startsWith(link.href));
+                return (
+                  <Link
+                    key={link.name}
+                    href={link.href}
+                    className={`inline-flex items-center gap-2 px-3 py-2 rounded-md transition-all duration-200 text-sm font-medium border ${
+                      isActive
+                        ? 'bg-gradient-to-r from-fuchsia-600 to-fuchsia-800 text-white border-transparent shadow-lg'
+                        : 'bg-surface-2 text-muted hover:bg-surface hover:text-foreground border-border'
+                    }`}
+                  >
+                    <link.icon size={16} />
+                    <span className="whitespace-nowrap">{link.name}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          </nav>
         </header>
-        <main className="flex-1 overflow-y-auto p-8 bg-background">
-          <div className="bg-surface p-6 rounded-xl border border-border shadow-2xl">
+        <main className="flex-1 overflow-y-auto p-4 md:p-8 bg-background">
+          <div className="bg-surface p-4 md:p-6 rounded-xl border border-border shadow-2xl">
             {children}
           </div>
         </main>
