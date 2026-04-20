@@ -15,15 +15,15 @@ export default function LoginLoading() {
         
         <div className="absolute top-10 left-10 flex items-center gap-4 z-10">
            <div className="w-12 h-12 bg-white/10 backdrop-blur-md flex items-center justify-center rounded-xl border border-white/20">
-             <span className="text-white text-xl font-bold tracking-widest">ADO</span>
+             <span className="text-foreground text-xl font-bold tracking-widest">ADO</span>
            </div>
            <div className="h-4 w-px bg-white/30"></div>
-           <span className="text-white/80 text-xs font-semibold tracking-[0.2em] uppercase">B2B Platform</span>
+           <span className="text-muted text-xs font-semibold tracking-[0.2em] uppercase">B2B Platform</span>
         </div>
       </div>
 
       <div className="flex w-full flex-col justify-center bg-white px-8 py-16 lg:w-1/2 xl:w-1/3 relative border-l border-gray-100 items-center">
-         <div className="w-10 h-10 border-[3px] border-blue-600/20 border-t-blue-600 rounded-full animate-spin mb-4"></div>
+         <div className="w-10 h-10 border-[3px] border-primary/20 border-t-blue-600 rounded-full animate-spin mb-4"></div>
          <p className="text-gray-500 text-sm font-medium">Tizim yuklanmoqda...</p>
       </div>
     </div>

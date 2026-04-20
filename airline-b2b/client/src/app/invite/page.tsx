@@ -7,6 +7,7 @@ import toast from 'react-hot-toast';
 import type { AxiosError } from 'axios';
 import { useAuth } from '@/contexts/AuthContext';
 import { ShieldCheck } from 'lucide-react';
+import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
 
 type ApiErrorResponse = { error?: string; };
 type AcceptInviteResponse = { success?: boolean; message?: string; token?: string; user?: unknown; };
@@ -78,21 +79,26 @@ function InviteContent() {
         
         <div className="absolute top-10 left-10 flex items-center gap-4 z-10 transition-opacity duration-1000">
            <div className="w-12 h-12 bg-white/10 backdrop-blur-md flex items-center justify-center rounded-xl border border-white/20 shadow-2xl">
-             <span className="text-white text-xl font-bold tracking-widest">ADO</span>
+             <span className="text-foreground text-xl font-bold tracking-widest">ADO</span>
            </div>
            <div className="h-4 w-px bg-white/30"></div>
-           <span className="text-white/80 text-xs font-semibold tracking-[0.2em] uppercase">B2B Platform</span>
+           <span className="text-muted text-xs font-semibold tracking-[0.2em] uppercase">B2B Platform</span>
         </div>
 
         <div className="absolute bottom-12 left-10 right-10 z-10">
-          <h2 className="text-4xl font-light text-white mb-3 tracking-tight">Secure Onboarding.</h2>
-          <p className="text-white/60 text-sm font-light max-w-md leading-relaxed">
+          <h2 className="text-4xl font-light text-foreground mb-3 tracking-tight">Secure Onboarding.</h2>
+          <p className="text-muted text-sm font-light max-w-md leading-relaxed">
             Welcome to the closed B2B distribution network. Please secure your account to proceed.
           </p>
         </div>
       </div>
 
       <div className="flex w-full flex-col justify-center bg-white px-8 py-16 lg:w-1/2 xl:w-1/3 relative border-l border-gray-100">
+        {/* Top Right Controls */}
+        <div className="absolute top-6 right-6 z-20">
+          <ThemeLanguageSwitcher />
+        </div>
+
         <div className="mx-auto w-full max-w-sm">
           <div className="text-left mb-12">
             <h1 className="text-3xl font-semibold text-gray-900 tracking-tight">
@@ -113,7 +119,7 @@ function InviteContent() {
                 name="password"
                 type="password"
                 required
-                className="block w-full rounded-lg border border-gray-200 bg-gray-50/50 px-4 py-3.5 text-gray-900 placeholder-gray-400 focus:bg-white focus:outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all sm:text-sm"
+                className="block w-full rounded-lg border border-gray-200 bg-gray-50/50 px-4 py-3.5 text-gray-900 placeholder-gray-400 focus:bg-white focus:outline-none focus:border-primary focus:ring-4 focus:ring-blue-600/10 transition-all sm:text-sm"
                 placeholder="••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -129,7 +135,7 @@ function InviteContent() {
                 name="confirmPassword"
                 type="password"
                 required
-                className="block w-full rounded-lg border border-gray-200 bg-gray-50/50 px-4 py-3.5 text-gray-900 placeholder-gray-400 focus:bg-white focus:outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all sm:text-sm"
+                className="block w-full rounded-lg border border-gray-200 bg-gray-50/50 px-4 py-3.5 text-gray-900 placeholder-gray-400 focus:bg-white focus:outline-none focus:border-primary focus:ring-4 focus:ring-blue-600/10 transition-all sm:text-sm"
                 placeholder="••••••••"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
@@ -139,7 +145,7 @@ function InviteContent() {
             <button
               type="submit"
               disabled={loading}
-              className="mt-4 w-full flex items-center justify-center gap-2 rounded-lg bg-blue-600 py-3.5 px-4 text-sm font-semibold text-white shadow-md shadow-blue-600/20 hover:bg-blue-700 hover:shadow-lg hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-2 disabled:opacity-70 transition-all duration-200"
+              className="mt-4 w-full flex items-center justify-center gap-2 rounded-lg bg-primary py-3.5 px-4 text-sm font-semibold text-foreground shadow-md shadow-blue-600/20 hover:bg-blue-700 hover:shadow-lg hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-2 disabled:opacity-70 transition-all duration-200"
             >
               <ShieldCheck size={18} />
               {loading ? 'Tasdiqlanmoqda...' : 'Tasdiqlash va Kirish'}
@@ -163,7 +169,7 @@ export default function InviteAcceptPage() {
       <div className="flex min-h-screen bg-white">
         <div className="hidden lg:flex lg:w-1/2 xl:w-2/3 bg-[#0a0a0a]"></div>
         <div className="flex w-full lg:w-1/2 xl:w-1/3 flex-col items-center justify-center bg-white border-l border-gray-100">
-          <div className="w-10 h-10 border-[3px] border-blue-600/20 border-t-blue-600 rounded-full animate-spin mb-4"></div>
+          <div className="w-10 h-10 border-[3px] border-primary/20 border-t-blue-600 rounded-full animate-spin mb-4"></div>
         </div>
       </div>
     }>

@@ -3,36 +3,64 @@
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 :root[data-theme="light"], :root {
-  --background: #fafafa;
-  --foreground: #171717;
-  --surface: #ffffff;
-  --surface-2: #f5f5f5;
-  --border: #e5e5e5;
-  --muted: #737373;
+  --background: #f8fafc;      /* slate-50 bright clean background */
+  --foreground: #0f172a;      /* slate-900 high contrast dark text */
+  --surface: #ffffff;         /* pure white cards/sidebar */
+  --surface-2: #e2e8f0;       /* slate-200 for proper separated panels/hover contrast */
+  --border: #cbd5e1;          /* slate-300 for clearer borders */
+  --muted: #475569;           /* slate-600 legible muted text */
+  --primary: #e11d48;         /* vivid red accent */
+  --primary-hover: #be123c;   /* darker red */
 }
 
 :root[data-theme="dark"] {
-  --background: #000000;
-  --foreground: #ededed;
-  --surface: #0a0a0a;
-  --surface-2: #171717;
-  --border: #262626;
-  --muted: #a3a3a3;
+  --background: #000000;      /* deep black bg */
+  --foreground: #ffffff;      /* pure white text */
+  --surface: #121212;         /* dark gray card surface */
+  --surface-2: #1e1e1e;       /* dark panel */
+  --border: #27272a;          /* dark border */
+  --muted: #a1a1aa;           /* silver text */
+  --primary: #e11d48;         /* vivid red accent */
+  --primary-hover: #f43f5e;   /* lighter red */
 }
 
 @theme inline {
+  --color-ink: #000000;
+  --color-deep: #121212;
+  --color-panel: #1e1e1e;
+  --color-border-accent: #27272a;
+  --color-muted-accent: #3f3f46;
+  --color-smoke: #71717a;
+  --color-silver: #a1a1aa;
+  --color-light: #e4e4e7;
+  --color-white: #ffffff;
+  --color-gold: #fbbf24;
+  --color-gold2: #fcd34d;
+  --color-sky: #38bdf8;
+  --color-sky2: #7dd3fc;
+  --color-red: #e11d48;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
   --color-border: var(--border);
   --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+
+  --font-sans: var(--font-outfit), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-playfair), ui-serif, Georgia, serif;
+  --font-mono: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  
+  --font-outfit: var(--font-outfit);
+  --font-playfair: var(--font-playfair);
 }
 
 body {
   color: var(--foreground);
   background: var(--background);
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-family: var(--font-outfit), 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

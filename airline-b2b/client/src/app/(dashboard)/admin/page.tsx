@@ -136,7 +136,7 @@ export default function AdminDashboard() {
         </div>
         <Link
           href="/firms"
-          className="inline-flex items-center justify-center px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition"
+          className="inline-flex items-center justify-center px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg font-medium transition"
         >
           {tr('Firms', 'Firmalar')}
         </Link>
@@ -278,7 +278,7 @@ export default function AdminDashboard() {
               type="button"
               onClick={submitRate}
               disabled={savingRate}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition disabled:opacity-50"
+              className="px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg font-medium transition disabled:opacity-50"
             >
               {savingRate ? tr('Saving…', 'Saqlanmoqda…') : tr('Save rate', 'Kursni saqlash')}
             </button>

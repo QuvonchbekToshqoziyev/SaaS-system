@@ -351,7 +351,7 @@ export default function ReportsPage() {
               value={selectedFlightId}
               onChange={(e) => setSelectedFlightId(e.target.value)}
               disabled={flightOptionsDisabled}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-blue-500 transition disabled:opacity-50"
+              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary transition disabled:opacity-50"
             >
               {flights.map((f) => (
                 <option key={f.id} value={f.id}>
@@ -368,7 +368,7 @@ export default function ReportsPage() {
                 value={selectedFirmId}
                 onChange={(e) => setSelectedFirmId(e.target.value)}
                 disabled={firmOptionsDisabled}
-                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-blue-500 transition disabled:opacity-50"
+                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary transition disabled:opacity-50"
               >
                 {firms.map((f) => (
                   <option key={f.id} value={f.id}>
@@ -385,7 +385,7 @@ export default function ReportsPage() {
               type="date"
               value={dateFrom}
               onChange={(e) => setDateFrom(e.target.value)}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-blue-500 transition"
+              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary transition"
             />
           </div>
 
@@ -395,7 +395,7 @@ export default function ReportsPage() {
               type="date"
               value={dateTo}
               onChange={(e) => setDateTo(e.target.value)}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-blue-500 transition"
+              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary transition"
             />
           </div>
         </div>
@@ -417,7 +417,7 @@ export default function ReportsPage() {
             type="button"
             onClick={loadFlightReport}
             disabled={loadingFlightReport || !selectedFlightId}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition disabled:opacity-50"
+            className="px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg transition disabled:opacity-50"
           >
             {loadingFlightReport ? tr('Loading…', 'Yuklanmoqda…') : tr('Load', 'Yuklash')}
           </button>
@@ -436,7 +436,7 @@ export default function ReportsPage() {
               </div>
               <div className="bg-surface border border-border rounded-lg p-4">
                 <p className="text-xs text-muted">{tr('Payments (UZS)', "To'lovlar (UZS)")}</p>
-                <p className="text-2xl font-bold text-blue-600">{Number(flightReport.paid || 0).toFixed(2)}</p>
+                <p className="text-2xl font-bold text-primary">{Number(flightReport.paid || 0).toFixed(2)}</p>
               </div>
               <div className="bg-surface border border-border rounded-lg p-4">
                 <p className="text-xs text-muted">{tr('Outstanding (UZS)', 'Qoldiq (UZS)')}</p>
@@ -517,7 +517,7 @@ export default function ReportsPage() {
             type="button"
             onClick={loadFirmReport}
             disabled={loadingFirmReport || (isAdmin && !selectedFirmId)}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition disabled:opacity-50"
+            className="px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg transition disabled:opacity-50"
           >
             {loadingFirmReport ? tr('Loading…', 'Yuklanmoqda…') : tr('Load', 'Yuklash')}
           </button>
@@ -536,7 +536,7 @@ export default function ReportsPage() {
               </div>
               <div className="bg-surface border border-border rounded-lg p-4">
                 <p className="text-xs text-muted">{tr('Paid (UZS)', "To'langan (UZS)")}</p>
-                <p className="text-2xl font-bold text-blue-600">{Number(firmReport.totals?.paid || 0).toFixed(2)}</p>
+                <p className="text-2xl font-bold text-primary">{Number(firmReport.totals?.paid || 0).toFixed(2)}</p>
               </div>
               <div className="bg-surface border border-border rounded-lg p-4">
                 <p className="text-xs text-muted">{tr('Outstanding (UZS)', 'Qoldiq (UZS)')}</p>

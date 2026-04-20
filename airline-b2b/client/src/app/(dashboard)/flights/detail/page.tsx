@@ -493,7 +493,7 @@ function FlightDetailContent() {
   if (loading) {
     return (
       <div className="text-center text-muted py-12">
-        <Plane className="mx-auto h-12 w-12 animate-pulse text-blue-500" />
+        <Plane className="mx-auto h-12 w-12 animate-pulse text-primary" />
         <p className="mt-2">{tr('Loading flight details...', 'Reys tafsilotlari yuklanmoqda...')}</p>
       </div>
     );
@@ -570,7 +570,7 @@ function FlightDetailContent() {
         </div>
 
         <div className="bg-surface-2 border border-border rounded-lg p-5">
-          <div className="flex items-center gap-2 text-blue-600 mb-2">
+          <div className="flex items-center gap-2 text-primary mb-2">
             <CheckCircle size={16} />
             <span className="text-sm font-medium">{tr('Total Payments (UZS)', 'Jami to\'lovlar (UZS)')}</span>
           </div>
@@ -654,7 +654,7 @@ function FlightDetailContent() {
                 type="button"
                 onClick={openSellBatchModal}
                 disabled={flightCancelled}
-                className="px-3 py-1 bg-blue-600/20 text-blue-400 hover:bg-blue-600/40 rounded transition border border-blue-600/50 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-3 py-1 bg-primary/20 text-primary hover:bg-primary/40 rounded transition border border-primary/50 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {tr('Sell tickets', 'Chiptalarni sotish')}
               </button>
@@ -686,7 +686,7 @@ function FlightDetailContent() {
                       <span className={`px-3 py-1 rounded-full text-xs font-bold inline-block border ${
                         ticket.status === 'AVAILABLE' ? 'bg-green-900/30 text-green-400 border-green-700/50' :
                         ticket.status === 'PENDING' ? 'bg-yellow-900/30 text-yellow-400 border-yellow-700/50' :
-                        ticket.status === 'ASSIGNED' ? 'bg-blue-900/30 text-blue-300 border-blue-700/50' :
+                        ticket.status === 'ASSIGNED' ? 'bg-blue-900/30 text-blue-300 border-primary/50' :
                         'bg-surface text-muted border-border'
                       }`}>
                         {getTicketStatusLabel(ticket.status)}
@@ -724,7 +724,7 @@ function FlightDetailContent() {
                         <button
                           onClick={() => openSellConfirm(ticket)} 
                           disabled={flightCancelled}
-                          className="px-3 py-1 bg-blue-600/20 text-blue-400 hover:bg-blue-600/40 rounded transition border border-blue-600/50 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="px-3 py-1 bg-primary/20 text-primary hover:bg-primary/40 rounded transition border border-primary/50 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           {tr('Mark Sold', 'Sotildi deb belgilash')}
                         </button>
@@ -799,7 +799,7 @@ function FlightDetailContent() {
                       <span className={`px-3 py-1 rounded-full text-xs font-bold inline-block border ${
                         ticket.status === 'AVAILABLE' ? 'bg-green-900/30 text-green-400 border-green-700/50' :
                         ticket.status === 'PENDING' ? 'bg-yellow-900/30 text-yellow-400 border-yellow-700/50' :
-                        ticket.status === 'ASSIGNED' ? 'bg-blue-900/30 text-blue-300 border-blue-700/50' :
+                        ticket.status === 'ASSIGNED' ? 'bg-blue-900/30 text-blue-300 border-primary/50' :
                         'bg-surface text-muted border-border'
                       }`}>
                         {getTicketStatusLabel(ticket.status)}
@@ -843,7 +843,7 @@ function FlightDetailContent() {
                         <button
                           onClick={() => openSellConfirm(ticket)}
                           disabled={flightCancelled}
-                          className="px-3 py-1 bg-blue-600/20 text-blue-400 hover:bg-blue-600/40 rounded transition border border-blue-600/50 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="px-3 py-1 bg-primary/20 text-primary hover:bg-primary/40 rounded transition border border-primary/50 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           {tr('Mark Sold', 'Sotildi deb belgilash')}
                         </button>
@@ -907,7 +907,7 @@ function FlightDetailContent() {
                 <label className="block text-sm font-medium text-muted mb-2">{tr('Select Firm', 'Firmani tanlang')}</label>
                 {firms.length > 0 ? (
                   <select
-                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground outline-none focus:border-blue-500 transition"
+                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground outline-none focus:border-primary transition"
                     value={selectedFirmId}
                     onChange={(e) => setSelectedFirmId(e.target.value)}
                     required
@@ -923,7 +923,7 @@ function FlightDetailContent() {
                   <input
                     type="text"
                     required
-                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                     placeholder={tr('Enter Firm UUID', 'Firma UUID kiriting')}
                     value={selectedFirmId}
                     onChange={(e) => setSelectedFirmId(e.target.value)}
@@ -939,7 +939,7 @@ function FlightDetailContent() {
                     min={1}
                     step={1}
                     required
-                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground outline-none focus:border-blue-500 transition"
+                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground outline-none focus:border-primary transition"
                     placeholder="1"
                     value={allocateQuantity}
                     onChange={(e) => setAllocateQuantity(e.target.value)}
@@ -995,7 +995,7 @@ function FlightDetailContent() {
                   value={sellPrice}
                   onChange={(e) => setSellPrice(e.target.value)}
                   disabled={sellBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                   placeholder="0.00"
                   required
                 />
@@ -1007,7 +1007,7 @@ function FlightDetailContent() {
                   value={sellCurrency}
                   onChange={(e) => setSellCurrency(e.target.value as any)}
                   disabled={sellBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-blue-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
                 >
                   <option value="UZS">UZS</option>
                   <option value="USD">USD</option>
@@ -1022,7 +1022,7 @@ function FlightDetailContent() {
                     value={sellOtherCurrency}
                     onChange={(e) => setSellOtherCurrency(e.target.value)}
                     disabled={sellBusy}
-                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                     placeholder="e.g. EUR"
                   />
                 </div>
@@ -1034,7 +1034,7 @@ function FlightDetailContent() {
                   value={sellPurchaserName}
                   onChange={(e) => setSellPurchaserName(e.target.value)}
                   disabled={sellBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                   placeholder="e.g. John Doe"
                   required
                 />
@@ -1046,7 +1046,7 @@ function FlightDetailContent() {
                   value={sellPurchaserIdNumber}
                   onChange={(e) => setSellPurchaserIdNumber(e.target.value)}
                   disabled={sellBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                   placeholder="ID number"
                   required
                 />
@@ -1058,7 +1058,7 @@ function FlightDetailContent() {
                   value={sellPurchaserPhone}
                   onChange={(e) => setSellPurchaserPhone(e.target.value)}
                   disabled={sellBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                   placeholder="+998…"
                 />
               </div>
@@ -1069,7 +1069,7 @@ function FlightDetailContent() {
                   value={sellPurchaserEmail}
                   onChange={(e) => setSellPurchaserEmail(e.target.value)}
                   disabled={sellBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                   placeholder="email@example.com"
                 />
               </div>
@@ -1080,7 +1080,7 @@ function FlightDetailContent() {
                   value={sellPurchaserNotes}
                   onChange={(e) => setSellPurchaserNotes(e.target.value)}
                   disabled={sellBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                   rows={2}
                   placeholder={tr('Any extra info', "Qo'shimcha ma'lumot")}
                 />
@@ -1100,7 +1100,7 @@ function FlightDetailContent() {
                 type="button"
                 onClick={confirmSell}
                 disabled={sellBusy}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {sellBusy ? tr('Selling…', 'Sotilmoqda…') : tr('Confirm', 'Tasdiqlash')}
               </button>
@@ -1164,7 +1164,7 @@ function FlightDetailContent() {
                 min={1}
                 step={1}
                 required
-                className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground outline-none focus:border-blue-500 transition"
+                className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground outline-none focus:border-primary transition"
                 value={confirmBatchQuantity}
                 onChange={(e) => setConfirmBatchQuantity(e.target.value)}
                 disabled={confirmBatchBusy}
@@ -1254,7 +1254,7 @@ function FlightDetailContent() {
                 value={saleCancelRequestReason}
                 onChange={(e) => setSaleCancelRequestReason(e.target.value)}
                 disabled={saleCancelRequestBusy}
-                className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition disabled:opacity-50"
+                className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition disabled:opacity-50"
                 rows={3}
                 placeholder={tr('e.g. Sold wrong ticket number to customer', 'masalan: mijozga noto‘g‘ri chipta raqami sotildi')}
               />
@@ -1309,7 +1309,7 @@ function FlightDetailContent() {
                   value={saleCancelDecisionReason}
                   onChange={(e) => setSaleCancelDecisionReason(e.target.value)}
                   disabled={saleCancelApproveBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition disabled:opacity-50"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition disabled:opacity-50"
                   rows={3}
                   placeholder={tr('Why is this cancellation approved?', 'Nega bu bekor qilish tasdiqlandi?')}
                 />
@@ -1360,7 +1360,7 @@ function FlightDetailContent() {
                 min={1}
                 step={1}
                 required
-                className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground outline-none focus:border-blue-500 transition"
+                className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground outline-none focus:border-primary transition"
                 value={sellBatchQuantity}
                 onChange={(e) => setSellBatchQuantity(e.target.value)}
                 disabled={sellBatchBusy}
@@ -1383,7 +1383,7 @@ function FlightDetailContent() {
                   value={sellBatchPrice}
                   onChange={(e) => setSellBatchPrice(e.target.value)}
                   disabled={sellBatchBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                   placeholder="0.00"
                   required
                 />
@@ -1395,7 +1395,7 @@ function FlightDetailContent() {
                   value={sellBatchCurrency}
                   onChange={(e) => setSellBatchCurrency(e.target.value as any)}
                   disabled={sellBatchBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-blue-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
                 >
                   <option value="UZS">UZS</option>
                   <option value="USD">USD</option>
@@ -1410,7 +1410,7 @@ function FlightDetailContent() {
                     value={sellBatchOtherCurrency}
                     onChange={(e) => setSellBatchOtherCurrency(e.target.value)}
                     disabled={sellBatchBusy}
-                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                     placeholder="e.g. EUR"
                   />
                 </div>
@@ -1422,7 +1422,7 @@ function FlightDetailContent() {
                   value={sellBatchPurchaserName}
                   onChange={(e) => setSellBatchPurchaserName(e.target.value)}
                   disabled={sellBatchBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                   placeholder="e.g. John Doe"
                   required
                 />
@@ -1434,7 +1434,7 @@ function FlightDetailContent() {
                   value={sellBatchPurchaserIdNumber}
                   onChange={(e) => setSellBatchPurchaserIdNumber(e.target.value)}
                   disabled={sellBatchBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                   placeholder="ID number"
                   required
                 />
@@ -1446,7 +1446,7 @@ function FlightDetailContent() {
                   value={sellBatchPurchaserPhone}
                   onChange={(e) => setSellBatchPurchaserPhone(e.target.value)}
                   disabled={sellBatchBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                   placeholder="+998…"
                 />
               </div>
@@ -1457,7 +1457,7 @@ function FlightDetailContent() {
                   value={sellBatchPurchaserEmail}
                   onChange={(e) => setSellBatchPurchaserEmail(e.target.value)}
                   disabled={sellBatchBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                   placeholder="email@example.com"
                 />
               </div>
@@ -1468,7 +1468,7 @@ function FlightDetailContent() {
                   value={sellBatchPurchaserNotes}
                   onChange={(e) => setSellBatchPurchaserNotes(e.target.value)}
                   disabled={sellBatchBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition"
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                   rows={2}
                   placeholder={tr('Any extra info', "Qo'shimcha ma'lumot")}
                 />
@@ -1488,7 +1488,7 @@ function FlightDetailContent() {
                 type="button"
                 onClick={confirmSellBatch}
                 disabled={sellBatchBusy}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {sellBatchBusy ? tr('Selling…', 'Sotilmoqda…') : tr('Confirm', 'Tasdiqlash')}
               </button>
@@ -1504,7 +1504,7 @@ export default function FlightDetailsPage() {
   return (
     <Suspense fallback={
       <div className="text-center text-muted py-12">
-        <Plane className="mx-auto h-12 w-12 animate-pulse text-blue-500" />
+        <Plane className="mx-auto h-12 w-12 animate-pulse text-primary" />
       </div>
     }>
       <FlightDetailContent />

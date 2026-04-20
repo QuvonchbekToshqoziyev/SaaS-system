@@ -126,7 +126,7 @@ export default function SettingsPage() {
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}
               type="password"
-              className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-blue-500 transition placeholder:text-muted"
+              className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition placeholder:text-muted"
               placeholder="••••••••"
               required
             />
@@ -138,7 +138,7 @@ export default function SettingsPage() {
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               type="password"
-              className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-blue-500 transition placeholder:text-muted"
+              className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition placeholder:text-muted"
               placeholder={tr('At least 6 characters', 'Kamida 6 ta belgi')}
               required
             />
@@ -150,7 +150,7 @@ export default function SettingsPage() {
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               type="password"
-              className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-blue-500 transition placeholder:text-muted"
+              className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition placeholder:text-muted"
               placeholder={tr('Repeat new password', 'Yangi parolni qayta kiriting')}
               required
             />
@@ -159,7 +159,7 @@ export default function SettingsPage() {
           <button
             type="submit"
             disabled={submitting}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting ? tr('Updating...', 'Yangilanmoqda...') : tr('Update password', 'Parolni yangilash')}
           </button>

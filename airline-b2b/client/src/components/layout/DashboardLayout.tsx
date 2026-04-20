@@ -8,24 +8,15 @@ import { usePathname, useRouter } from 'next/navigation';
 import { PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, ChevronLeft, ChevronRight } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { user, logout, isLoading } = useAuth();
-  const { language, toggleLanguage, t, tr } = useLanguage();
+  const { language, t, tr } = useLanguage();
   const pathname = usePathname();
   const router = useRouter();
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
-  const [theme, setTheme] = useState<'dark' | 'light'>('light');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-
-  useEffect(() => {
-    try {
-      const current = document.documentElement.dataset.theme;
-      setTheme(current === 'light' ? 'light' : 'dark');
-    } catch {
-      setTheme('light');
-    }
-  }, []);
 
   useEffect(() => {
     try {
@@ -37,25 +28,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
   }, []);
 
-  const toggleTheme = () => {
-    setTheme((prev) => {
-      const next = prev === 'light' ? 'dark' : 'light';
-      try {
-        localStorage.setItem('jetstream-theme', next);
-        document.documentElement.dataset.theme = next;
-        document.documentElement.style.colorScheme = next;
-      } catch {
-        // ignore
-      }
-      return next;
-    });
-  };
-
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background text-foreground">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 border-[3px] border-blue-600/20 border-t-blue-600 rounded-full animate-spin"></div>
+          <div className="w-8 h-8 border-[3px] border-primary/20 border-t-primary rounded-full animate-spin"></div>
           <span className="text-sm font-medium">Authenticating...</span>
         </div>
       </div>
@@ -94,17 +71,22 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     <div className="flex min-h-screen md:h-screen bg-background text-foreground w-full font-sans overflow-hidden">
       {/* Sidebar (desktop) */}
       <div
-        className={`hidden md:flex flex-col h-full overflow-visible bg-surface transition-all duration-300 border-r border-border z-30 ${sidebarCollapsed ? 'w-20' : 'w-64'}`}
+        className={`hidden md:flex flex-col h-full overflow-visible bg-surface transition-all duration-300 border-r border-border z-30 shadow-[4px_0_24px_rgba(0,0,0,0.02)] ${sidebarCollapsed ? 'w-20' : 'w-[260px]'}`}
       >
         {/* Sidebar Header */}
-        <div className="h-[72px] px-5 flex items-center gap-3 border-b border-border shrink-0 relative">
-          <div className="w-[34px] h-[34px] shrink-0 bg-blue-600 rounded-lg flex items-center justify-center text-white text-[12px] font-bold tracking-widest shadow-sm">
-            ADO
+        <div className="h-[72px] px-6 flex items-center gap-3 shrink-0 relative border-b border-border">
+          <div className="w-[38px] h-[38px] shrink-0 bg-transparent flex items-center justify-center rounded-xl overflow-hidden shadow-sm shadow-primary/20">
+            <img src="/logo.png" alt="ADO Logo" className="w-full h-full object-contain p-1" />
           </div>
           {!sidebarCollapsed && (
-            <h1 className="text-[15px] font-semibold text-foreground tracking-tight select-none">
-              ADO B2B
-            </h1>
+            <div className="flex flex-col justify-center">
+              <h1 className="text-[17px] font-bold text-foreground tracking-tight select-none leading-none mb-[2px]">
+                ADO Financial
+              </h1>
+              <span className="text-[10px] text-muted uppercase tracking-[0.05em] select-none leading-none font-medium">
+                Accounting & Carrier
+              </span>
+            </div>
           )}
 
           <button
@@ -114,7 +96,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               try { localStorage.setItem('jetstream-sidebar-collapsed', next ? '1' : '0'); } catch {}
               return next;
             })}
-            className="absolute -right-3 top-1/2 -translate-y-1/2 flex items-center justify-center h-6 w-6 rounded-full bg-surface hover:bg-surface-2 text-muted shadow-sm border border-border hover:text-foreground  transition-colors z-40"
+            className="absolute -right-3 top-1/2 -translate-y-1/2 flex items-center justify-center h-6 w-6 rounded-full bg-surface text-muted shadow-md border border-border hover:text-primary transition-all z-40 outline-none"
             aria-label="Toggle Sidebar"
           >
             {sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
@@ -122,10 +104,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
 
         {/* Sidebar Nav */}
-        <div className={`flex-1 py-6 flex flex-col gap-1.5 ${sidebarCollapsed ? 'px-3' : 'px-4'}`}>
+        <div className={`flex-1 py-6 flex flex-col gap-2 ${sidebarCollapsed ? 'px-3' : 'px-5'}`}>
           {!sidebarCollapsed && (
-            <div className="px-3 mb-2 text-[10px] font-bold text-muted uppercase tracking-widest select-none">
-              {user.role === 'firm' ? 'Agency Portal' : 'Admin Console'}
+            <div className="px-2 mb-2 text-[10px] text-muted uppercase tracking-widest font-semibold select-none">
+              {user.role === 'firm' ? 'Agency Actions' : 'Platform Setup'}
             </div>
           )}
           {navLinks.map((link) => {
@@ -135,102 +117,64 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 key={link.href}
                 href={link.href}
                 aria-label={t(link.key)}
-                className={`flex items-center ${sidebarCollapsed ? 'justify-center' : 'gap-3'} px-3 py-2.5 rounded-[10px] transition-all duration-200 text-[13px] ${
+                className={`flex items-center ${sidebarCollapsed ? 'justify-center' : 'gap-3'} px-3 py-2.5 rounded-lg transition-all duration-200 text-[14px] font-medium tracking-wide ${
                   isActive 
-                    ? 'bg-blue-50 text-blue-700 font-semibold dark:bg-blue-500/10 dark:text-blue-400' 
-                    : 'text-muted font-medium hover:bg-surface-2 hover:text-foreground'
+                    ? 'bg-primary/5 text-primary shadow-inner' 
+                    : 'text-muted hover:bg-surface-2 hover:text-foreground'
                 }`}
               >
-                <link.icon size={18} className={isActive ? 'text-blue-600 dark:text-blue-400' : ''} />
-                {!sidebarCollapsed && <span className="tracking-wide">{t(link.key)}</span>}
+                <link.icon size={20} strokeWidth={isActive ? 2.5 : 2} className="shrink-0" />
+                {!sidebarCollapsed && <span>{t(link.key)}</span>}
               </Link>
-            )
+            );
           })}
         </div>
 
-        {/* Sidebar Footer User Info */}
-        <div className="p-4 border-t border-border mt-auto shrink-0 bg-surface-2/50">
-          <button
-            type="button"
-            onClick={() => setIsAccountModalOpen(true)}
-            className={`w-full flex items-center ${sidebarCollapsed ? 'justify-center' : 'justify-between'} gap-2 rounded-xl text-muted hover:text-foreground transition-colors`}
-            aria-haspopup="dialog"
-            aria-expanded={isAccountModalOpen}
-            title={user.email}
-          >
-            <span className="flex items-center gap-2.5 min-w-0">
-              <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/40 flex items-center justify-center shrink-0">
-                 <UserCircle size={18} className="text-blue-600 dark:text-blue-400" />
+        {/* User Info / Logout */}
+        <div className={`p-5 mb-2 mt-auto border-t border-border shrink-0 flex flex-col gap-3 ${sidebarCollapsed ? 'items-center' : ''}`}>
+          {!sidebarCollapsed ? (
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-surface-2 border border-border flex items-center justify-center shadow-inner shrink-0">
+                <UserCircle size={22} className="text-muted" />
               </div>
-              {!sidebarCollapsed && <span className="text-[13px] font-semibold truncate tracking-wide text-foreground">{user.email}</span>}
-            </span>
+              <div className="overflow-hidden w-full px-2">
+                <p className="text-[14px] font-bold text-foreground truncate">{user.email}</p>
+                <p className="text-[12px] text-muted truncate uppercase tracking-widest">{user.role}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="w-10 h-10 rounded-full bg-surface-2 border border-border flex items-center justify-center shadow-inner shrink-0 mb-2">
+              <UserCircle size={22} className="text-muted" />
+            </div>
+          )}
+
+          <button
+            onClick={logout}
+            className={`flex items-center justify-center gap-2 w-full py-2 bg-surface-2 hover:bg-primary text-foreground hover:text-white rounded-lg transition-all border border-border hover:border-primary shadow-sm text-[13px] font-semibold uppercase tracking-wide ${sidebarCollapsed ? 'px-0' : 'px-4'}`}
+          >
+            <LogOut size={16} />
+            {!sidebarCollapsed && <span>{t('signOut')}</span>}
           </button>
         </div>
       </div>
 
-      {isAccountModalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="bg-surface border border-border rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] w-full max-w-sm p-8 m-4">
-            <h3 className="text-lg font-semibold tracking-tight text-foreground">{t('account')}</h3>
-            <p className="mt-1 text-sm text-muted truncate">{user.email}</p>
-
-            <div className="mt-8 space-y-3">
-              <button
-                type="button"
-                onClick={() => { setIsAccountModalOpen(false); logout(); }}
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 font-semibold text-sm rounded-xl transition-colors"
-              >
-                <LogOut size={16} />
-                {t('signOut')}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setIsAccountModalOpen(false)}
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-surface-2 text-foreground hover:bg-black/5 dark:hover:bg-white/5 font-semibold text-sm rounded-xl transition-colors"
-              >
-                {t('cancel')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Main Container */}
-      <div className="flex-1 flex flex-col overflow-hidden relative">
+      <div className="flex-1 flex flex-col overflow-hidden relative bg-surface-2/30">
         {/* Top Header */}
-        <header className="h-[72px] px-6 md:px-12 flex items-center justify-between gap-4 bg-surface/80 backdrop-blur-xl border-b border-border shrink-0 sticky top-0 z-20 transition-all duration-300">
-          <div className="flex items-center gap-3">
-            <h2 className="text-lg md:text-[20px] font-semibold text-foreground tracking-tight">
+        <header className="h-[72px] px-6 lg:px-10 flex items-center justify-between gap-4 bg-surface/80 backdrop-blur-xl border-b border-border shrink-0 sticky top-0 z-20 shadow-[0_2px_12px_rgba(0,0,0,0.02)]">
+          <div className="flex items-center gap-4">
+            <h2 className="text-xl md:text-2xl font-bold tracking-tight text-foreground">
               {pageTitle}
             </h2>
           </div>
           
-          <div className="flex items-center gap-3">
-            <button
-              onClick={toggleTheme}
-              className="p-2 bg-surface-2 hover:bg-black/5 dark:hover:bg-white/5 text-muted rounded-full transition-colors"
-              aria-label={'Toggle theme'}
-            >
-              {theme === 'light' ? '🌙' : '☀️'}
-            </button>
-
-            <button
-              onClick={toggleLanguage}
-              className="px-3 py-1.5 bg-surface-2 hover:bg-black/5 dark:hover:bg-white/5 text-foreground rounded-full transition-colors text-[11px] uppercase tracking-widest font-bold"
-              aria-label={t('toggleLanguageAria')}
-            >
-              {language === 'en' ? 'UZ' : 'EN'}
-            </button>
+          <div className="flex items-center gap-4">
+            <ThemeLanguageSwitcher />
 
             <button
               type="button"
               onClick={() => setIsAccountModalOpen(true)}
-              className="md:hidden p-2 bg-surface-2 hover:bg-black/5 dark:hover:bg-white/5 text-muted rounded-full transition-colors"
+              className="md:hidden p-2 bg-surface-2 border border-border hover:border-primary text-muted rounded-full transition-all shadow-sm"
               aria-label={t('account')}
             >
               <UserCircle size={18} />
@@ -238,36 +182,61 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
         </header>
 
-        {/* Mobile Nav Scroller (Optional but keeping for consistency) */}
-        <nav className="md:hidden shrink-0 bg-surface border-b border-border px-4 py-2 overflow-x-auto scroller-hide">
-          <div className="flex items-center gap-2 min-w-max">
-            {navLinks.map((link) => {
-              const isActive = pathname === link.href || (link.href !== '/firm' && link.href !== '/admin' && pathname.startsWith(link.href));
-              return (
-                <Link
-                  key={link.href}
-                  href={link.href}
-                  className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg transition-colors text-[13px] font-semibold ${
-                    isActive
-                      ? 'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400'
-                      : 'bg-transparent text-muted hover:bg-surface-2'
-                  }`}
-                >
-                  <link.icon size={16} />
-                  <span className="whitespace-nowrap tracking-wide">{t(link.key)}</span>
-                </Link>
-              );
-            })}
+        {/* Scrollable Page Content */}
+        <main className="flex-1 overflow-y-auto scroller-minimal p-4 md:p-8 lg:p-10 relative">
+          <div className="max-w-[1600px] mx-auto w-full relative z-10 h-full">
+            {children}
           </div>
-        </nav>
-
-        {/* Content Area */}
-        <main className="flex-1 overflow-y-auto w-full px-4 py-6 md:px-12 md:py-10 scroller-minimal text-foreground">
-           <div className="max-w-screen-2xl mx-auto w-full flex flex-col gap-8 md:gap-12">
-             {children}
-           </div>
         </main>
       </div>
+
+      {/* Mobile Account Modal - Hidden on desktop mostly */}
+      {isAccountModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4 sm:p-0 md:hidden">
+          <div className="bg-surface border border-border w-full sm:w-[400px] rounded-[24px] rounded-b-none sm:rounded-[24px] shadow-2xl p-6 animate-in slide-in-from-bottom-8 sm:slide-in-from-bottom-0 sm:fade-in-0 duration-200">
+            <div className="flex justify-between items-center mb-6 border-b border-border pb-4">
+              <h3 className="text-xl font-bold text-foreground">{t('account')}</h3>
+              <button 
+                onClick={() => setIsAccountModalOpen(false)}
+                className="w-8 h-8 flex items-center justify-center rounded-full bg-surface-2 text-muted hover:text-foreground hover:bg-border transition-colors font-medium"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="flex items-center gap-4 mb-6">
+              <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center text-primary text-xl border border-primary/20 shadow-inner">
+                {user.email.charAt(0).toUpperCase()}
+              </div>
+              <div>
+                <p className="font-bold text-lg text-foreground leading-tight truncate max-w-[200px]">{user.email}</p>
+                <p className="text-sm text-primary font-medium mt-1 uppercase tracking-wide">{user.role}</p>
+              </div>
+            </div>
+            
+            <div className="bg-surface-2 rounded-xl p-4 mb-6 border border-border shadow-sm">
+              <p className="text-xs text-muted uppercase tracking-wider font-semibold mb-1">Email</p>
+              <p className="font-mono text-sm text-foreground overflow-hidden text-ellipsis">{user.email}</p>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={logout}
+                className="w-full flex items-center justify-center gap-2 bg-red-500/10 text-red-600 hover:bg-red-500/20 py-3.5 px-4 rounded-xl font-bold uppercase tracking-wider transition-colors border border-red-500/20"
+              >
+                <LogOut size={18} />
+                {t('signOut')}
+              </button>
+              <button
+                onClick={() => setIsAccountModalOpen(false)}
+                className="w-full bg-surface-2 text-muted hover:text-foreground py-3.5 px-4 rounded-xl font-bold uppercase tracking-wider transition-colors border border-border"
+              >
+                {t('cancel')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

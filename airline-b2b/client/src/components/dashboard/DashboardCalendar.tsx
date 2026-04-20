@@ -261,7 +261,7 @@ export default function DashboardCalendar({
                     className={
                       `text-left rounded-lg border p-2 min-h-[92px] transition ` +
                       (isSelected
-                        ? 'border-blue-500 bg-blue-500/10'
+                        ? 'border-primary bg-primary/100/10'
                         : 'border-border bg-surface hover:bg-surface-2') +
                       (inMonth ? '' : ' opacity-50')
                     }

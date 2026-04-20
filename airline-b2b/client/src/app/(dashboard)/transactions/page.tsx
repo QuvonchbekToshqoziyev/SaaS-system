@@ -529,7 +529,7 @@ export default function TransactionsPage() {
                 id="payFirm"
                 value={payFirmId}
                 onChange={(e) => setPayFirmId(e.target.value)}
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
+                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-primary transition sm:text-sm"
                 required
               >
                 <option value="">{tr('Select', 'Tanlang')}</option>
@@ -546,7 +546,7 @@ export default function TransactionsPage() {
               id="payFlight"
               value={payFlightId}
               onChange={(e) => setPayFlightId(e.target.value)}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-primary transition sm:text-sm"
               required
             >
               <option value="">{tr('Select', 'Tanlang')}</option>
@@ -572,7 +572,7 @@ export default function TransactionsPage() {
               value={payAmount}
               onChange={(e) => setPayAmount(e.target.value)}
               placeholder="0.00"
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition sm:text-sm"
               required
             />
           </div>
@@ -586,7 +586,7 @@ export default function TransactionsPage() {
                 setPayCurrency(e.target.value as any);
                 setPayExchangeRate('');
               }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-primary transition sm:text-sm"
               required
             >
               <option value="UZS">UZS</option>
@@ -603,7 +603,7 @@ export default function TransactionsPage() {
                 value={payOtherCurrency}
                 onChange={(e) => setPayOtherCurrency(e.target.value)}
                 placeholder={tr('e.g. EUR', 'masalan, EUR')}
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition sm:text-sm"
+                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition sm:text-sm"
                 required
               />
             </div>
@@ -624,7 +624,7 @@ export default function TransactionsPage() {
                 placeholder={payCurrency === 'OTHER'
                   ? tr('Required', 'Majburiy')
                   : tr('Optional if rate is already saved for that day', 'Agar kurs shu kunga saqlangan bo\'lsa ixtiyoriy')}
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition sm:text-sm"
+                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition sm:text-sm"
                 required={payCurrency === 'OTHER'}
               />
               <p className="mt-1 text-xs text-muted">
@@ -642,7 +642,7 @@ export default function TransactionsPage() {
               id="payMethod"
               value={payMethod}
               onChange={(e) => setPayMethod(e.target.value as any)}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-primary transition sm:text-sm"
               required
             >
               <option value="cash">{tr('Cash', 'Naqd')}</option>
@@ -657,7 +657,7 @@ export default function TransactionsPage() {
               value={payReference}
               onChange={(e) => setPayReference(e.target.value)}
               placeholder={tr('Receipt / note', 'Kvitansiya / izoh')}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition sm:text-sm"
             />
           </div>
 
@@ -669,7 +669,7 @@ export default function TransactionsPage() {
                 type="date"
                 value={payCashDate}
                 onChange={(e) => setPayCashDate(e.target.value)}
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
+                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-primary transition sm:text-sm"
                 required
               />
             </div>
@@ -684,7 +684,7 @@ export default function TransactionsPage() {
                   value={payCardProvider}
                   onChange={(e) => setPayCardProvider(e.target.value)}
                   placeholder={tr('e.g. Visa / Stripe', 'masalan, Visa / Stripe')}
-                  className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition sm:text-sm"
+                  className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition sm:text-sm"
                   required
                 />
               </div>
@@ -696,7 +696,7 @@ export default function TransactionsPage() {
                   value={payCardReference}
                   onChange={(e) => setPayCardReference(e.target.value)}
                   placeholder={tr('Bank / gateway reference', 'Bank / to\'lov tizimi raqami')}
-                  className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition sm:text-sm"
+                  className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition sm:text-sm"
                   required
                 />
               </div>
@@ -756,7 +756,7 @@ export default function TransactionsPage() {
               type="date"
               value={dateFrom}
               onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-primary transition sm:text-sm"
             />
           </div>
 
@@ -767,7 +767,7 @@ export default function TransactionsPage() {
               type="date"
               value={dateTo}
               onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-primary transition sm:text-sm"
             />
           </div>
 
@@ -778,7 +778,7 @@ export default function TransactionsPage() {
                 id="firm"
                 value={filterFirmId}
                 onChange={(e) => { setFilterFirmId(e.target.value); setPage(1); }}
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
+                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-primary transition sm:text-sm"
               >
                 <option value="">{tr('All', 'Barchasi')}</option>
                 {firmOptions.map((f) => (
@@ -794,7 +794,7 @@ export default function TransactionsPage() {
               id="flight"
               value={filterFlightId}
               onChange={(e) => { setFilterFlightId(e.target.value); setPage(1); }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-primary transition sm:text-sm"
             >
               <option value="">{tr('All', 'Barchasi')}</option>
               {flightOptions.map((f) => {
@@ -815,7 +815,7 @@ export default function TransactionsPage() {
               id="type"
               value={filterType}
               onChange={(e) => { setFilterType(e.target.value); setPage(1); }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-blue-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-primary transition sm:text-sm"
             >
               <option value="">{tr('All', 'Barchasi')}</option>
               <option value="sale">{tr('Sale', 'Sotuv')}</option>
@@ -832,7 +832,7 @@ export default function TransactionsPage() {
               value={filterCurrency}
               onChange={(e) => { setFilterCurrency(e.target.value); setPage(1); }}
               placeholder={tr('e.g. USD', 'masalan, USD')}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-blue-500 transition sm:text-sm"
+              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition sm:text-sm"
             />
           </div>
         </div>
