@@ -128,7 +128,7 @@ export default function DashboardPage() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Package size={18} style={{ color: '#F59E0B' }} />
+                      <Package size={18} style={{ color: '#FF6427' }} />
                       <span style={{ color: 'var(--text-secondary)', fontSize: 14 }}>Mahsulotlar</span>
                     </div>
                     <span className="text-mono" style={{ fontWeight: 600 }}>{stats?.inventoryCount || 0}</span>
