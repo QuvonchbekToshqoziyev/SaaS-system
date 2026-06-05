@@ -1,0 +1,187 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  SUPERADMIN
+  ADMIN
+  FIRM
+}
+
+enum FlightSettlementStatus {
+  OPEN
+  CLOSING
+  CLOSED
+}
+
+enum TicketStatus {
+  AVAILABLE
+  ALLOCATED
+  SOLD
+  CANCELLED
+  REFUNDED
+}
+
+enum FirmStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum TransactionType {
+  ALLOCATION
+  SALE
+  PAYMENT
+  REFUND
+  ADJUSTMENT
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  BANK_TRANSFER
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+}
+
+enum ReconciliationStatus {
+  PENDING
+  MATCHED
+  FAILED
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  role      Role     @default(FIRM)
+  firmId    String?
+  firm      Firm?    @relation(fields: [firmId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Firm {
+  id           String      @id @default(uuid())
+  name         String
+  creditLimit  Decimal     @default(0) @db.Decimal(12, 4)
+  currency     String      @default("USD")
+  status       FirmStatus  @default(ACTIVE)
+  users        User[]
+  tickets      Ticket[]
+  transactions Transaction[]
+  payments     Payment[]
+  invitations  Invitation[]
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+}
+
+model Invitation {
+  id        String   @id @default(uuid())
+  email     String
+  firmId    String?
+  firm      Firm?    @relation(fields: [firmId], references: [id])
+  role      Role     @default(FIRM)
+  token     String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([firmId])
+  @@index([createdBy])
+  @@index([expiresAt])
+  @@index([usedAt])
+}
+
+model Flight {
+  id               String                @id @default(uuid())
+  route            String
+  flightNumber     String
+  departureTime    DateTime
+  arrivalTime      DateTime?
+  currency         String
+  settlementStatus FlightSettlementStatus @default(OPEN)
+  tickets          Ticket[]
+  transactions     Transaction[]
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+}
+
+model Ticket {
+  id              String       @id @default(uuid())
+  flightId        String
+  flight          Flight       @relation(fields: [flightId], references: [id])
+  status          TicketStatus @default(AVAILABLE)
+  basePrice       Decimal      @db.Decimal(12, 4)
+  allocatedFirmId String?
+  allocatedFirm   Firm?        @relation(fields: [allocatedFirmId], references: [id])
+  soldPrice       Decimal?     @db.Decimal(12, 4)
+  soldCurrency    String?
+  purchaserInfo   Json?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([flightId, status])
+  @@index([allocatedFirmId, status])
+  @@index([flightId, allocatedFirmId])
+}
+
+model Transaction {
+  id             String          @id @default(uuid())
+  type           TransactionType
+  firmId         String
+  firm           Firm            @relation(fields: [firmId], references: [id])
+  flightId       String?
+  flight         Flight?         @relation(fields: [flightId], references: [id])
+  idempotencyKey String          @unique
+  metadata       Json?
+  ledgerEntries  LedgerEntry[]
+  createdAt      DateTime        @default(now())
+
+  @@index([firmId, createdAt])
+  @@index([flightId, createdAt])
+  @@index([type, createdAt])
+}
+
+model LedgerEntry {
+  id                    String      @id @default(uuid())
+  transactionId         String
+  transaction           Transaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  debitAccount          String
+  creditAccount         String
+  amount                Decimal     @db.Decimal(12, 4)
+  currency              String
+  exchangeRateSnapshot  Decimal     @db.Decimal(12, 6)
+  createdAt             DateTime    @default(now())
+
+  @@index([transactionId])
+  @@index([debitAccount])
+  @@index([creditAccount])
+  @@index([createdAt])
+}
+
+model Payment {
+  id                   String               @id @default(uuid())
+  firmId               String
+  firm                 Firm                 @relation(fields: [firmId], references: [id])
+  amount               Decimal              @db.Decimal(12, 4)
+  method               PaymentMethod
+  reference            String?
+  status               PaymentStatus        @default(PENDING)
+  reconciliationStatus ReconciliationStatus @default(PENDING)
+  createdAt            DateTime             @default(now())
+
+  @@index([firmId, status])
+  @@index([reconciliationStatus])
+  @@index([createdAt])
+}

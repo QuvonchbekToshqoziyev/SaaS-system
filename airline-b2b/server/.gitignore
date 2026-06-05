@@ -1,0 +1,11 @@
+node_modules
+# Keep environment variables out of version control
+.env
+
+# Build output
+dist/
+
+# Accidental Next.js artifacts (shouldn't be in backend, but can appear if build run from wrong cwd)
+.next/
+
+/generated/prisma
