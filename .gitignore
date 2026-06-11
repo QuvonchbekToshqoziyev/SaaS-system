@@ -9,45 +9,8 @@ desktop.ini
 *.swp
 *.swo
 *~
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
 
-# Misc
-nul
-*.log
-
-# Runtime logs / process outputs
-nohup.out
-*.pid
-*.pid.lock
-
-# Environment & secrets (never commit)
-.env
-.env.*
-!.env.example
-!.env.sample
-!.env.template
-!.env.local.example
-
-server_credentials.md
-
-# Credentials / keys
-*.pem
-*.key
-*.p12
-*.pfx
-*.crt
-*.cer
-*.der
-
-# Package manager auth
-.npmrc
-.yarnrc
-.yarnrc.yml
-
-# Node / frontend build artifacts
+# Node.js
 node_modules/
 dist/
 build/
@@ -57,33 +20,57 @@ out/
 .vercel/
 coverage/
 *.tsbuildinfo
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+nohup.out
+*.tail
 
-# Local DB / Prisma generated
-*.sqlite
-*.db
-prisma/dev.db
-**/generated/prisma/
-
-# Local scratch / one-off scripts
+# Scratch Scripts
 test-*.js
 test-*.ts
+test-*.mjs
+scratch/
 
-# Copilot / editor local debug logs
-**/.next/trace
-**/.next/trace-build
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+server_credentials.md
 
-# VS Code Copilot customizations (keep local unless explicitly needed)
-/.github/agents/
-/.github/hooks/
+# Credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
 
-# Non-product instruction docs
+# Database
+prisma/dev.db
+**/generated/prisma/
+*.db
+*.sqlite
+
+# Legacy / Scratch (Root directories to be ignored)
+/client/
+/server/
+/frontend/
+/backend/
+/scratch/
+
+# Testing
+/e2e-tests/
+
+# Documentation / Agent context
 **/AGENTS.md
 **/CLAUDE.md
 
-# Local-only test workspace
-/e2e-tests/
-
-# Legacy projects (kept on main; excluded from product branch)
-/backend/
-/frontend/
-
+# Keep .github configurations
+!/.github/agents/
+!/.github/hooks/
+!/.github/workflows/

@@ -21,6 +21,8 @@ enum FlightSettlementStatus {
 
 enum TicketStatus {
   AVAILABLE
+  PENDING
+  ASSIGNED
   ALLOCATED
   SOLD
   CANCELLED
@@ -38,6 +40,7 @@ enum TransactionType {
   PAYMENT
   REFUND
   ADJUSTMENT
+  PAYABLE
 }
 
 enum PaymentMethod {
@@ -65,6 +68,7 @@ model User {
   role      Role     @default(FIRM)
   firmId    String?
   firm      Firm?    @relation(fields: [firmId], references: [id])
+  createdTransactions Transaction[] @relation("TransactionCreatedBy")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -107,10 +111,11 @@ model Flight {
   id               String                @id @default(uuid())
   route            String
   flightNumber     String
-  departureTime    DateTime
-  arrivalTime      DateTime?
+  departure        DateTime
+  arrival          DateTime?
   currency         String
   settlementStatus FlightSettlementStatus @default(OPEN)
+  status           String?
   tickets          Ticket[]
   transactions     Transaction[]
   createdAt        DateTime              @default(now())
@@ -123,8 +128,10 @@ model Ticket {
   flight          Flight       @relation(fields: [flightId], references: [id])
   status          TicketStatus @default(AVAILABLE)
   basePrice       Decimal      @db.Decimal(12, 4)
+  currency        String
   allocatedFirmId String?
-  allocatedFirm   Firm?        @relation(fields: [allocatedFirmId], references: [id])
+  assignedFirmId  String?
+  assignedFirm    Firm?        @relation(fields: [assignedFirmId], references: [id])
   soldPrice       Decimal?     @db.Decimal(12, 4)
   soldCurrency    String?
   purchaserInfo   Json?
@@ -136,14 +143,31 @@ model Ticket {
   @@index([flightId, allocatedFirmId])
 }
 
+model CurrencyRate {
+  id             String   @id @default(uuid())
+  baseCurrency   String
+  targetCurrency String
+  rate           Decimal  @db.Decimal(12, 6)
+  source         String
+  recordedAt     DateTime @default(now())
+}
+
 model Transaction {
   id             String          @id @default(uuid())
   type           TransactionType
   firmId         String
   firm           Firm            @relation(fields: [firmId], references: [id])
-  flightId       String?
-  flight         Flight?         @relation(fields: [flightId], references: [id])
-  idempotencyKey String          @unique
+  flightId       String
+  flight         Flight          @relation(fields: [flightId], references: [id])
+  ticketId       String?
+  createdByUserId String?
+  createdBy      User?           @relation("TransactionCreatedBy", fields: [createdByUserId], references: [id])
+  originalAmount Decimal         @db.Decimal(12, 4)
+  currency       String
+  exchangeRate   Decimal         @db.Decimal(12, 6)
+  baseAmount     Decimal         @db.Decimal(12, 4)
+  paymentMethod  String?
+  idempotencyKey String?         @unique
   metadata       Json?
   ledgerEntries  LedgerEntry[]
   createdAt      DateTime        @default(now())
@@ -151,6 +175,9 @@ model Transaction {
   @@index([firmId, createdAt])
   @@index([flightId, createdAt])
   @@index([type, createdAt])
+  @@index([currency, createdAt])
+  @@index([paymentMethod, createdAt])
+  @@index([createdByUserId, createdAt])
 }
 
 model LedgerEntry {
@@ -184,4 +211,13 @@ model Payment {
   @@index([firmId, status])
   @@index([reconciliationStatus])
   @@index([createdAt])
+}
+
+model SaleCancellationRequest {
+  id        String   @id @default(uuid())
+  ticketId  String
+  firmId    String
+  status    String   @default("PENDING")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

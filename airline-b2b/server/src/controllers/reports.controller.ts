@@ -360,10 +360,11 @@ export const getFirmReport = async (req: Request, res: Response) => {
   >();
 
   for (const row of byFlightAndType) {
+    const flightId = row.flightId || '';
     const existing =
-      byFlight.get(row.flightId) ||
+      byFlight.get(flightId) ||
       {
-        flightId: row.flightId,
+        flightId: flightId,
         flightNumber: null,
         departure: null,
         arrival: null,
@@ -377,14 +378,15 @@ export const getFirmReport = async (req: Request, res: Response) => {
     if (row.type === 'PAYABLE') existing.debt += val;
     if (row.type === 'SALE') existing.revenue += val;
     if (row.type === 'PAYMENT') existing.paid += val;
-    byFlight.set(row.flightId, existing);
+    byFlight.set(flightId, existing);
   }
 
   for (const row of ticketsByFlightAndStatus) {
+    const flightId = row.flightId || '';
     const existing =
-      byFlight.get(row.flightId) ||
+      byFlight.get(flightId) ||
       {
-        flightId: row.flightId,
+        flightId: flightId,
         flightNumber: null,
         departure: null,
         arrival: null,
@@ -397,7 +399,7 @@ export const getFirmReport = async (req: Request, res: Response) => {
     const count = row._count?._all || 0;
     if (row.status === 'PENDING' || row.status === 'ASSIGNED' || row.status === 'SOLD') existing.ticketsAssigned += count;
     if (row.status === 'SOLD') existing.ticketsSold += count;
-    byFlight.set(row.flightId, existing);
+    byFlight.set(flightId, existing);
   }
 
   const flightIds = Array.from(byFlight.keys());
@@ -540,7 +542,7 @@ export const getPaymentsReport = async (req: Request, res: Response) => {
         count: row._count?._all || 0,
         totalBaseAmount: sumToNumber(row._sum?.baseAmount),
       }))
-      .sort((a, b) => a.currency.localeCompare(b.currency)),
+      .sort((a, b) => (a.currency || '').localeCompare(b.currency || '')),
   });
 };
 
@@ -612,7 +614,7 @@ export const getTransactionsReport = async (req: Request, res: Response) => {
         count: row._count?._all || 0,
         totalBaseAmount: sumToNumber(row._sum?.baseAmount),
       }))
-      .sort((a, b) => a.currency.localeCompare(b.currency)),
+      .sort((a, b) => (a.currency || '').localeCompare(b.currency || '')),
   });
 };
 
@@ -947,8 +949,8 @@ export const getDashboardReport = async (req: Request, res: Response) => {
       }),
     ]);
 
-    const pendingFlightIds = pendingGroups.map((g) => g.flightId);
-    const dueFlightIds = Array.from(new Set(dueGroups.map((g) => g.flightId)));
+    const pendingFlightIds = pendingGroups.map((g) => g.flightId).filter((id): id is string => !!id);
+    const dueFlightIds = Array.from(new Set(dueGroups.map((g) => g.flightId).filter((id): id is string => !!id)));
     const flightIds = Array.from(new Set([...pendingFlightIds, ...dueFlightIds]));
 
     const flights = flightIds.length
@@ -961,7 +963,7 @@ export const getDashboardReport = async (req: Request, res: Response) => {
 
     const pendingItems = pendingGroups
       .map((g) => {
-        const f = flightById.get(g.flightId);
+        const f = flightById.get(g.flightId || '');
         return {
           flightId: g.flightId,
           flightNumber: f?.flightNumber || null,
@@ -975,8 +977,9 @@ export const getDashboardReport = async (req: Request, res: Response) => {
     const paidByFlight = new Map<string, number>();
     for (const row of dueGroups) {
       const val = sumToNumber(row._sum?.baseAmount);
-      if (row.type === 'PAYABLE') debtByFlight.set(row.flightId, (debtByFlight.get(row.flightId) || 0) + val);
-      if (row.type === 'PAYMENT') paidByFlight.set(row.flightId, (paidByFlight.get(row.flightId) || 0) + val);
+      const flightId = row.flightId || '';
+      if (row.type === 'PAYABLE') debtByFlight.set(flightId, (debtByFlight.get(flightId) || 0) + val);
+      if (row.type === 'PAYMENT') paidByFlight.set(flightId, (paidByFlight.get(flightId) || 0) + val);
     }
 
     const dueItems = Array.from(new Set([...debtByFlight.keys(), ...paidByFlight.keys()]))
@@ -1117,4 +1120,6 @@ export const getDashboardReport = async (req: Request, res: Response) => {
       byFirm: dueItems,
     },
   });
+
 };
+

@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ./scripts/hooks/stop-prod-tester.mjs",
+        "timeout": 120,
+        "env": {
+          "PROD_TESTER_STRICT": "0",
+          "PROD_TESTER_INVITE_FLOW": "0"
+        }
+      }
+    ]
+  }
+}

@@ -139,7 +139,7 @@ export const createTickets = async (req: Request, res: Response) => {
 
   const newTickets = Array.from({ length: resolvedQuantity }).map(() => ({
     flightId: flightId.trim(),
-    price,
+    basePrice: price,
     currency,
     status: 'AVAILABLE' as const,
   }));

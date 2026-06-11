@@ -98,16 +98,18 @@ export const getFlightById = async (req: Request, res: Response) => {
 
 // POST /flights - Create a new flight
 export const createFlight = async (req: Request, res: Response) => {
-  const { flightNumber, departure, arrival, ticketCount, ticketPrice, currency } = req.body;
+  const { flightNumber, route, departure, arrival, ticketCount, ticketPrice, currency } = req.body;
   try {
     const newFlight = await prisma.flight.create({
       data: {
         flightNumber,
+        route: route || 'UNKNOWN',
         departure: new Date(departure),
         arrival: new Date(arrival),
+        currency: currency || 'USD',
         tickets: {
           create: Array.from({ length: ticketCount }, () => ({
-            price: ticketPrice,
+            basePrice: ticketPrice,
             currency: currency,
             status: 'AVAILABLE',
           })),
