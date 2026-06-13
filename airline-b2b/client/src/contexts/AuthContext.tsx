@@ -4,10 +4,10 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 
 export interface User {
-  id: number;
+  id: string;
   email: string;
-  role: 'superadmin' | 'admin' | 'firm';
-  firm_id: number | null;
+  role: 'SUPERADMIN' | 'ADMIN' | 'FIRM' | 'superadmin' | 'admin' | 'firm';
+  firmId: string | null;
 }
 
 interface AuthContextType {

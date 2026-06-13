@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { format } from 'date-fns';
+import { format, isValid } from 'date-fns';
 import {
   PlaneTakeoff,
   ArrowRightLeft,
@@ -63,11 +63,18 @@ const TX_TYPE_UZ: Record<string, string> = {
   ALLOCATION: 'Ajratma',
 };
 
+// Safe date formatter to prevent crashes on invalid dates
+const safeFormat = (date: any, formatStr: string) => {
+  if (!date) return '-';
+  const d = new Date(date);
+  return isValid(d) ? format(d, formatStr) : '-';
+};
+
 export default function AdoHomeDashboard() {
   const { user } = useAuth();
   const { tr, language } = useLanguage();
   const router = useRouter();
-  const isAdmin = user?.role !== 'firm';
+  const isAdmin = user?.role?.toLowerCase() !== 'firm';
   const [loading, setLoading] = useState(true);
   const [monthly, setMonthly] = useState<MonthlyRow[]>([]);
   const [dashboard, setDashboard] = useState<DashboardReport | null>(null);
@@ -75,6 +82,7 @@ export default function AdoHomeDashboard() {
   const [firmTotals, setFirmTotals] = useState<{ outstanding?: number; revenue?: number; paid?: number; debt?: number } | null>(null);
 
   useEffect(() => {
+    if (!user) return;
     const load = async () => {
       try {
         const reqs: Promise<unknown>[] = [
@@ -86,19 +94,23 @@ export default function AdoHomeDashboard() {
         const results = await Promise.all(reqs);
         setMonthly((results[0] as any).data || []);
         setDashboard((results[1] as any).data || null);
-        const txRes = results[2] as { data: any[] };
-        setRecentTx(txRes.data || []);
+        
+        // The transactions endpoint returns { data: [...], meta: { ... } }
+        const txResponseData = (results[2] as any).data;
+        setRecentTx(Array.isArray(txResponseData) ? txResponseData : (txResponseData?.data || []));
+        
         if (!isAdmin && results[3]) {
           setFirmTotals((results[3] as any).data?.totals ?? null);
         }
-      } catch {
+      } catch (err: any) {
+        console.error('Dashboard load error:', err);
         toast.error(tr('Failed to load dashboard', 'Panel yuklanmadi'));
       } finally {
         setLoading(false);
       }
     };
     load();
-  }, [isAdmin, tr]);
+  }, [user, tr, isAdmin]);
 
   const sortedMonthly = useMemo(
     () => [...monthly].sort((a, b) => String(a.month).localeCompare(String(b.month))),
@@ -141,7 +153,7 @@ export default function AdoHomeDashboard() {
       id: n.id,
       title: n.title,
       message: n.message,
-      time: format(new Date(n.createdAt), 'dd MMM, HH:mm'),
+      time: safeFormat(n.createdAt, 'dd MMM, HH:mm'),
       urgent: n.urgent,
       href: n.href,
     }));
@@ -161,7 +173,7 @@ export default function AdoHomeDashboard() {
     return (flights || []).slice(0, 4).map((f) => ({
       id: f.flightId,
       title: f.flightNumber || tr('Flight', 'Reys'),
-      detail: f.departure ? format(new Date(f.departure), 'dd MMM yyyy') : undefined,
+      detail: f.departure ? safeFormat(f.departure, 'dd MMM yyyy') : undefined,
       amount: f.outstanding,
       href: `/flights/detail?id=${encodeURIComponent(f.flightId)}`,
     }));
@@ -286,7 +298,7 @@ export default function AdoHomeDashboard() {
                           <td className={`px-5 py-3 font-semibold ${positive ? 'text-emerald-400' : 'text-red-400'}`}>
                             {positive ? '+' : '-'}{formatMoney(Math.abs(amt))}
                           </td>
-                          <td className="px-5 py-3 text-muted">{format(new Date(tx.createdAt), 'dd.MM.yyyy')}</td>
+                          <td className="px-5 py-3 text-muted">{safeFormat(tx.createdAt, 'dd.MM.yyyy')}</td>
                         </tr>
                       );
                     })}
