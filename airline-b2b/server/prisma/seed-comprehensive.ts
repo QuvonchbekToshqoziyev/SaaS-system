@@ -1,8 +1,10 @@
 import { PrismaClient, Role, TicketStatus, TransactionType } from '@prisma/client';
 import bcrypt from 'bcryptjs';
-import { faker } from '@faker-js/faker';
 
 const prisma = new PrismaClient();
+
+const daysFromNow = (days: number, extraHours = 0) =>
+  new Date(Date.now() + days * 86400000 + extraHours * 3600000);
 
 async function main() {
   console.log('Wiping existing data...');
@@ -73,24 +75,30 @@ async function main() {
   const flight1 = await prisma.flight.create({
     data: {
       flightNumber: 'JB-201',
-      departure: faker.date.soon({ days: 5 }),
-      arrival: faker.date.soon({ days: 5, refDate: new Date(Date.now() + 5 * 86400000 + 3 * 3600000) }), // 3 hours later
+      route: 'TAS-JFK',
+      departure: daysFromNow(5),
+      arrival: daysFromNow(5, 3),
+      currency: 'USD',
     },
   });
 
   const flight2 = await prisma.flight.create({
     data: {
       flightNumber: 'JB-305',
-      departure: faker.date.soon({ days: 10 }),
-      arrival: faker.date.soon({ days: 10, refDate: new Date(Date.now() + 10 * 86400000 + 8 * 3600000) }), // 8 hours later
+      route: 'TAS-LHR',
+      departure: daysFromNow(10),
+      arrival: daysFromNow(10, 8),
+      currency: 'USD',
     },
   });
   
   const flight3 = await prisma.flight.create({
     data: {
       flightNumber: 'JB-415',
-      departure: faker.date.soon({ days: 12 }),
-      arrival: faker.date.soon({ days: 12, refDate: new Date(Date.now() + 12 * 86400000 + 4 * 3600000) }), // 4 hours later
+      route: 'TAS-DXB',
+      departure: daysFromNow(12),
+      arrival: daysFromNow(12, 4),
+      currency: 'USD',
     },
   });
 
@@ -101,7 +109,7 @@ async function main() {
     await prisma.ticket.create({
       data: {
         flightId: flight1.id,
-        price: 350.00,
+        basePrice: 350.00,
         currency: 'USD',
         status: TicketStatus.AVAILABLE,
       },
@@ -111,7 +119,7 @@ async function main() {
     await prisma.ticket.create({
       data: {
         flightId: flight1.id,
-        price: 350.00,
+        basePrice: 350.00,
         currency: 'USD',
         status: TicketStatus.ASSIGNED,
         assignedFirmId: firm1.id,
@@ -124,7 +132,7 @@ async function main() {
     await prisma.ticket.create({
       data: {
         flightId: flight2.id,
-        price: 800.00,
+        basePrice: 800.00,
         currency: 'USD',
         status: TicketStatus.AVAILABLE,
       },
@@ -136,7 +144,7 @@ async function main() {
     const ticket = await prisma.ticket.create({
       data: {
         flightId: flight3.id,
-        price: 550.00,
+        basePrice: 550.00,
         currency: 'USD',
         status: TicketStatus.SOLD,
         assignedFirmId: firm2.id,
@@ -149,10 +157,10 @@ async function main() {
             flightId: flight3.id,
             ticketId: ticket.id,
             type: TransactionType.SALE,
-            originalAmount: ticket.price,
+            originalAmount: ticket.basePrice,
             currency: ticket.currency,
             exchangeRate: 1, // Assuming USD base
-            baseAmount: ticket.price,
+            baseAmount: ticket.basePrice,
             paymentMethod: 'Credit Card',
         }
     });

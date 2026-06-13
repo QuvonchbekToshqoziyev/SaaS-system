@@ -23,7 +23,7 @@ export default function LoginPage() {
       toast.success('Logged in successfully', {
         style: { background: '#000', color: '#eab308', border: '1px solid #eab308' },
       });
-      if (user.role === 'firm') {
+      if (user.role.toLowerCase() === 'firm') {
         router.push('/firm');
       } else {
         router.push('/admin');

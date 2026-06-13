@@ -1,5 +1,5 @@
 import { PrismaClient, TransactionType, TicketStatus, FlightSettlementStatus, PaymentMethod, PaymentStatus, ReconciliationStatus, FirmStatus, Role } from '@prisma/client';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 
 const prisma = new PrismaClient();
 
@@ -80,8 +80,8 @@ async function main() {
     data: {
       route: 'JFK-LHR',
       flightNumber: 'AD100',
-      departureTime: new Date(Date.now() + 86400000 * 30), // 30 days later
-      arrivalTime: new Date(Date.now() + 86400000 * 30 + 3600000 * 8),
+      departure: new Date(Date.now() + 86400000 * 30), // 30 days later
+      arrival: new Date(Date.now() + 86400000 * 30 + 3600000 * 8),
       currency: 'USD',
       settlementStatus: FlightSettlementStatus.OPEN,
     }
@@ -91,8 +91,8 @@ async function main() {
     data: {
       route: 'LHR-DXB',
       flightNumber: 'AD200',
-      departureTime: new Date(Date.now() - 86400000 * 1), // 1 day ago
-      arrivalTime: new Date(Date.now() - 86400000 * 1 + 3600000 * 7),
+      departure: new Date(Date.now() - 86400000 * 1), // 1 day ago
+      arrival: new Date(Date.now() - 86400000 * 1 + 3600000 * 7),
       currency: 'USD',
       settlementStatus: FlightSettlementStatus.CLOSING,
     }
@@ -102,8 +102,8 @@ async function main() {
     data: {
       route: 'DXB-SYD',
       flightNumber: 'AD300',
-      departureTime: new Date(Date.now() - 86400000 * 40), // 40 days ago
-      arrivalTime: new Date(Date.now() - 86400000 * 40 + 3600000 * 10),
+      departure: new Date(Date.now() - 86400000 * 40), // 40 days ago
+      arrival: new Date(Date.now() - 86400000 * 40 + 3600000 * 10),
       currency: 'USD',
       settlementStatus: FlightSettlementStatus.CLOSED,
     }
@@ -113,19 +113,19 @@ async function main() {
   const basePrice = 500.00;
   const ticketsOpen = await Promise.all(
     Array.from({ length: 10 }).map(() => prisma.ticket.create({
-      data: { flightId: flightOpen.id, basePrice }
+      data: { flightId: flightOpen.id, basePrice, currency: 'USD' }
     }))
   );
 
   const ticketsClosing = await Promise.all(
     Array.from({ length: 10 }).map(() => prisma.ticket.create({
-      data: { flightId: flightClosing.id, basePrice }
+      data: { flightId: flightClosing.id, basePrice, currency: 'USD' }
     }))
   );
 
   const ticketsClosed = await Promise.all(
     Array.from({ length: 10 }).map(() => prisma.ticket.create({
-      data: { flightId: flightClosed.id, basePrice }
+      data: { flightId: flightClosed.id, basePrice, currency: 'USD' }
     }))
   );
 
@@ -140,7 +140,11 @@ async function main() {
       type: TransactionType.ALLOCATION,
       firmId: firmA.id,
       flightId: flightOpen.id,
-      idempotencyKey: uuidv4(),
+      originalAmount: 4 * basePrice,
+      currency: 'USD',
+      exchangeRate: 1.0,
+      baseAmount: 4 * basePrice,
+      idempotencyKey: randomUUID(),
       metadata: { note: 'Initial basic allocation', ticketIds: ticketsOpen.slice(0, 4).map(t => t.id) },
       ledgerEntries: {
         create: {
@@ -157,7 +161,7 @@ async function main() {
   for (const t of ticketsOpen.slice(0, 4)) {
     await prisma.ticket.update({
       where: { id: t.id },
-      data: { status: TicketStatus.ALLOCATED, allocatedFirmId: firmA.id }
+      data: { status: TicketStatus.ALLOCATED, assignedFirmId: firmA.id }
     });
   }
 
@@ -169,7 +173,11 @@ async function main() {
       type: TransactionType.SALE,
       firmId: firmA.id,
       flightId: flightOpen.id,
-      idempotencyKey: uuidv4(),
+      originalAmount: 2 * sellPrice1,
+      currency: 'USD',
+      exchangeRate: 1.0,
+      baseAmount: 2 * sellPrice1,
+      idempotencyKey: randomUUID(),
       metadata: { note: 'Basic sale', ticketIds: soldTickets1.map(t => t.id) },
       ledgerEntries: {
         create: [
@@ -203,7 +211,11 @@ async function main() {
       type: TransactionType.ALLOCATION,
       firmId: firmB.id,
       flightId: flightOpen.id,
-      idempotencyKey: uuidv4(),
+      originalAmount: 2 * basePrice,
+      currency: 'USD',
+      exchangeRate: 1.0,
+      baseAmount: 2 * basePrice,
+      idempotencyKey: randomUUID(),
       metadata: { note: 'EUR Allocation' },
       ledgerEntries: {
         create: {
@@ -214,14 +226,21 @@ async function main() {
     }
   });
   for (const t of allocTicketsB) {
-    await prisma.ticket.update({ where: { id: t.id }, data: { status: TicketStatus.ALLOCATED, allocatedFirmId: firmB.id } });
+    await prisma.ticket.update({ where: { id: t.id }, data: { status: TicketStatus.ALLOCATED, assignedFirmId: firmB.id } });
   }
 
   // Sell 1 ticket (Eur firm)
   const sellPriceEur = 550.00; // EUR sale price
   await prisma.transaction.create({
     data: {
-      type: TransactionType.SALE, firmId: firmB.id, flightId: flightOpen.id, idempotencyKey: uuidv4(),
+      type: TransactionType.SALE,
+      firmId: firmB.id,
+      flightId: flightOpen.id,
+      originalAmount: sellPriceEur,
+      currency: 'EUR',
+      exchangeRate: exchangeRateEurToUsd,
+      baseAmount: sellPriceEur * exchangeRateEurToUsd,
+      idempotencyKey: randomUUID(),
       ledgerEntries: {
         create: [
           { debitAccount: ACCOUNTS.COGS, creditAccount: ACCOUNTS.INV, amount: basePrice, currency: 'USD', exchangeRateSnapshot: exchangeRateEurToUsd },
@@ -239,7 +258,14 @@ async function main() {
   // Let's refund the SOLD ticket to test the complete double-entry reversal.
   await prisma.transaction.create({
     data: {
-      type: TransactionType.REFUND, firmId: firmB.id, flightId: flightOpen.id, idempotencyKey: uuidv4(),
+      type: TransactionType.REFUND,
+      firmId: firmB.id,
+      flightId: flightOpen.id,
+      originalAmount: -sellPriceEur,
+      currency: 'EUR',
+      exchangeRate: exchangeRateEurToUsd,
+      baseAmount: -(sellPriceEur * exchangeRateEurToUsd),
+      idempotencyKey: randomUUID(),
       metadata: { ticketId: allocTicketsB[0].id, reason: 'Customer Cancelled' },
       ledgerEntries: {
         create: [
@@ -266,7 +292,14 @@ async function main() {
   });
   await prisma.transaction.create({
     data: {
-      type: TransactionType.PAYMENT, firmId: firmB.id, idempotencyKey: uuidv4(),
+      type: TransactionType.PAYMENT,
+      firmId: firmB.id,
+      flightId: flightOpen.id,
+      originalAmount: paymentAmt,
+      currency: 'EUR',
+      exchangeRate: exchangeRateEurToUsd,
+      baseAmount: paymentAmt * exchangeRateEurToUsd,
+      idempotencyKey: randomUUID(),
       metadata: { paymentId: payment.id },
       ledgerEntries: {
         create: {
@@ -282,12 +315,19 @@ async function main() {
   // -----------------------
   console.log('Generating Edge Case 3: CLOSED Flight logic...');
   // Force 1 ALLOCATED and 1 SOLD on the CLOSED flight to see final state
-  await prisma.ticket.update({ where: { id: ticketsClosed[0].id }, data: { status: TicketStatus.ALLOCATED, allocatedFirmId: firmA.id }});
-  await prisma.ticket.update({ where: { id: ticketsClosed[1].id }, data: { status: TicketStatus.SOLD, allocatedFirmId: firmA.id, soldPrice: 800.0, soldCurrency: 'USD' }});
+  await prisma.ticket.update({ where: { id: ticketsClosed[0].id }, data: { status: TicketStatus.ALLOCATED, assignedFirmId: firmA.id }});
+  await prisma.ticket.update({ where: { id: ticketsClosed[1].id }, data: { status: TicketStatus.SOLD, assignedFirmId: firmA.id, soldPrice: 800.0, soldCurrency: 'USD' }});
 
   await prisma.transaction.create({
     data: {
-      type: TransactionType.ADJUSTMENT, firmId: firmA.id, flightId: flightClosed.id, idempotencyKey: uuidv4(),
+      type: TransactionType.ADJUSTMENT,
+      firmId: firmA.id,
+      flightId: flightClosed.id,
+      originalAmount: 15.50,
+      currency: 'USD',
+      exchangeRate: 1.0,
+      baseAmount: 15.50,
+      idempotencyKey: randomUUID(),
       metadata: { note: 'Manual accounting adjustment post-close for roundings.' },
       ledgerEntries: {
         create: {

@@ -1,5 +1,5 @@
 "use client";
-
+import { useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter, usePathname } from 'next/navigation';
 import { PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, ChevronDown, UserCircle } from 'lucide-react';
@@ -8,6 +8,7 @@ import Link from 'next/link';
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { user, logout, isLoading } = useAuth();
   const pathname = usePathname();
+  const router = useRouter();
 
   if (isLoading) {
     return (
@@ -20,11 +21,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     );
   }
 
+  useEffect(() => {
+    if (!isLoading && !user) {
+      router.push('/login');
+    }
+  }, [isLoading, user, router]);
+
   if (!user) {
     return null;
   }
 
-  const navLinks = user.role === 'firm' ? [
+  const userRole = user.role.toLowerCase();
+  const navLinks = userRole === 'firm' ? [
     { name: 'Dashboard', href: '/firm', icon: LayoutDashboard },
     { name: 'Flights', href: '/flights', icon: PlaneTakeoff },
     { name: 'Transactions', href: '/transactions', icon: ArrowRightLeft },
@@ -48,7 +56,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
         <div className="flex-1 px-4 space-y-2 mt-6">
           <div className="mb-4 px-2 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-            {user.role === 'firm' ? 'Agency Portal' : 'Admin Console'}
+            {userRole === 'firm' ? 'Agency Portal' : 'Admin Console'}
           </div>
           {navLinks.map((link) => {
             const isActive = pathname === link.href || (link.href !== '/firm' && link.href !== '/admin' && pathname.startsWith(link.href));
