@@ -84,12 +84,12 @@ export default function AdoHomeDashboard() {
         ];
         if (!isAdmin) reqs.push(api.get('/reports/firm'));
         const results = await Promise.all(reqs);
-        setMonthly(results[0] as MonthlyRow[]);
-        setDashboard(results[1] as DashboardReport);
+        setMonthly((results[0] as any).data || []);
+        setDashboard((results[1] as any).data || null);
         const txRes = results[2] as { data: any[] };
         setRecentTx(txRes.data || []);
         if (!isAdmin && results[3]) {
-          setFirmTotals((results[3] as { totals?: typeof firmTotals }).totals ?? null);
+          setFirmTotals((results[3] as any).data?.totals ?? null);
         }
       } catch {
         toast.error(tr('Failed to load dashboard', 'Panel yuklanmadi'));
