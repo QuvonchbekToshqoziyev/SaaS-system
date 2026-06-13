@@ -22,3 +22,10 @@
 - **Fix**: Updated `tickets.controller.ts` raw ticket locks to filter on `"allocatedFirmId"` and alias `"allocatedFirmId"`/`"price"` back to `assignedFirmId`/`basePrice`; expanded `SaleCancellationRequest` relations and fields in `schema.prisma`; updated seed scripts to use current Prisma field names and required transaction summary fields.
 - **Verification step**: Ran `npx prisma generate`, `npx prisma validate`, `npm run build`, and a direct `tsc --noEmit` check for the touched Prisma seed scripts.
 - **Prevention note**: When using `@map`, keep raw SQL in physical database column names and alias results back to Prisma/API names. After schema changes, regenerate Prisma and type-check scripts outside `src` if they are touched.
+
+## Partial Backend Deploy Build Failure
+- **Symptom**: The production server build failed after copying only `schema.prisma`, ticket controller, and seed scripts to the PM2 deployment.
+- **Root cause**: The active PM2 server had older controllers that still referenced stale Prisma names (`departureTime`, `allocatedFirmId`, old includes), while the copied schema generated a newer Prisma client.
+- **Fix**: Synced the full backend `src`, `prisma`, and server config/package files to `/root/airline-b2b/server`, then ran `npm install`, `npx prisma validate`, `npx prisma generate`, `npx prisma db push`, `npm run build`, and `pm2 restart airline-backend --update-env`.
+- **Verification step**: Confirmed the remote build passed, PM2 showed `airline-backend` online, logs showed `Server running` on port 5000, and `curl http://127.0.0.1:5000/flights` returned the expected protected-route `401 No token`.
+- **Prevention note**: Deploy schema/controller changes as one coherent backend source tree. Avoid partial production copies when Prisma model names changed across multiple controllers.

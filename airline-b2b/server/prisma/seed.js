@@ -12,7 +12,11 @@ async function main() {
     const hashedPassword = await bcryptjs_1.default.hash('superadmin123', 10);
     const superadmin = await prisma.user.upsert({
         where: { email: 'admin@airline.com' },
-        update: {},
+        update: {
+            password: hashedPassword,
+            role: 'SUPERADMIN',
+            firmId: null,
+        },
         create: {
             email: 'admin@airline.com',
             password: hashedPassword,
@@ -20,15 +24,21 @@ async function main() {
         },
     });
     // Create test firm
-    const firm = await prisma.firm.create({
-        data: {
-            name: 'Global Travels Agency',
-        },
-    });
+    const firm = await prisma.firm.findFirst({ where: { name: 'Global Travels Agency' } }) ||
+        await prisma.firm.create({
+            data: {
+                name: 'Global Travels Agency',
+                currency: 'USD',
+            },
+        });
     const firmHashedPassword = await bcryptjs_1.default.hash('firm123', 10);
     const firmUser = await prisma.user.upsert({
         where: { email: 'agency@airline.com' },
-        update: {},
+        update: {
+            password: firmHashedPassword,
+            role: 'FIRM',
+            firmId: firm.id,
+        },
         create: {
             email: 'agency@airline.com',
             password: firmHashedPassword,
@@ -49,8 +59,10 @@ async function main() {
     const flight = await prisma.flight.create({
         data: {
             flightNumber: 'B2B-100',
+            route: 'TAS-DXB',
             departure: new Date(Date.now() + 86400000), // Tomorrow
             arrival: new Date(Date.now() + 86400000 + 7200000), // Tomorrow + 2h
+            currency: 'USD',
         },
     });
     console.log('Database seeded successfully!', { superadmin: superadmin.email, firmUser: firmUser.email });
