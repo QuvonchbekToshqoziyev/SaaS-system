@@ -1,26 +1,98 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root[data-theme="light"], :root {
+  --background: #f8fafc;      /* slate-50 bright clean background */
+  --foreground: #0f172a;      /* slate-900 high contrast dark text */
+  --surface: #ffffff;         /* pure white cards/sidebar */
+  --surface-2: #e2e8f0;       /* slate-200 for proper separated panels/hover contrast */
+  --border: #cbd5e1;          /* slate-300 for clearer borders */
+  --muted: #475569;           /* slate-600 legible muted text */
+  --primary: #e11d48;         /* vivid red accent */
+  --primary-hover: #be123c;   /* darker red */
+}
+
+:root[data-theme="dark"] {
+  --background: #000000;      /* deep black bg */
+  --foreground: #ffffff;      /* pure white text */
+  --surface: #121212;         /* dark gray card surface */
+  --surface-2: #1e1e1e;       /* dark panel */
+  --border: #27272a;          /* dark border */
+  --muted: #a1a1aa;           /* silver text */
+  --primary: #e11d48;         /* vivid red accent */
+  --primary-hover: #f43f5e;   /* lighter red */
 }
 
 @theme inline {
+  --color-ink: #000000;
+  --color-deep: #121212;
+  --color-panel: #1e1e1e;
+  --color-border-accent: #27272a;
+  --color-muted-accent: #3f3f46;
+  --color-smoke: #71717a;
+  --color-silver: #a1a1aa;
+  --color-light: #e4e4e7;
+  --color-white: #ffffff;
+  --color-gold: #fbbf24;
+  --color-gold2: #fcd34d;
+  --color-sky: #38bdf8;
+  --color-sky2: #7dd3fc;
+  --color-red: #e11d48;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-sans: var(--font-outfit), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-playfair), ui-serif, Georgia, serif;
+  --font-mono: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  
+  --font-outfit: var(--font-outfit);
+  --font-playfair: var(--font-playfair);
 }
 
 body {
-  background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--background);
+  font-family: var(--font-outfit), 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.scroller-minimal::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scroller-minimal::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroller-minimal::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 150, 0.2);
+  border-radius: 10px;
+}
+.scroller-minimal::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 150, 150, 0.4);
+}
+
+.scroller-hide::-webkit-scrollbar {
+  display: none;
+}
+.scroller-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@keyframes flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.animate-flash {
+  animation: flash 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
