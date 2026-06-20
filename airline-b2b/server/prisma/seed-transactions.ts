@@ -15,7 +15,7 @@ async function main() {
   // Create 10 tickets
   const ticketsData = Array.from({ length: 10 }).map(() => ({
     flightId: flight.id,
-    price: 500.00,
+    basePrice: 500.00,
     currency: 'USD',
     status: 'AVAILABLE' as any,
   }));
@@ -33,10 +33,10 @@ async function main() {
         flightId: flight.id,
         ticketId: t.id,
         type: 'PAYABLE',
-        originalAmount: t.price,
+        originalAmount: t.basePrice,
         currency: t.currency,
         exchangeRate: 1.0,
-        baseAmount: t.price,
+        baseAmount: t.basePrice,
       }
     });
   }
@@ -51,10 +51,10 @@ async function main() {
         flightId: flight.id,
         ticketId: t.id,
         type: 'SALE',
-        originalAmount: t.price,
+        originalAmount: t.basePrice,
         currency: t.currency,
         exchangeRate: 1.0,
-        baseAmount: t.price,
+        baseAmount: t.basePrice,
       }
     });
   }

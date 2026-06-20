@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: airline_b2b
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+  server:
+    build: ./server
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://user:password@db:5432/airline_b2b
+      PORT: 3000
+    depends_on:
+      - db
+    ports:
+      - "3001:3000"
+
+  client:
+    build: ./client
+    restart: always
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+    depends_on:
+      - server
+    ports:
+      - "3000:3000"
+
+volumes:
+  db-data:

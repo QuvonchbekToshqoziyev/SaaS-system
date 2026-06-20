@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { logger } from '../logger';
+import { isPayableDebtType } from '../utils/transaction-types';
 
 export interface AuthenticatedRequest extends Request {
   user?: any;
@@ -44,7 +45,7 @@ export const getAllFlights = async (req: AuthenticatedRequest, res: Response) =>
         let total_sales = 0;
         let total_payments = 0;
         flight.transactions.forEach((t: any) => {
-            if (t.type === 'PAYABLE') total_allocated += Number(t.baseAmount);
+            if (isPayableDebtType(t.type)) total_allocated += Number(t.baseAmount);
             if (t.type === 'SALE') total_sales += Number(t.baseAmount);
             if (t.type === 'PAYMENT') total_payments += Number(t.baseAmount);
         });
@@ -98,16 +99,18 @@ export const getFlightById = async (req: Request, res: Response) => {
 
 // POST /flights - Create a new flight
 export const createFlight = async (req: Request, res: Response) => {
-  const { flightNumber, departure, arrival, ticketCount, ticketPrice, currency } = req.body;
+  const { flightNumber, route, departure, arrival, ticketCount, ticketPrice, currency } = req.body;
   try {
     const newFlight = await prisma.flight.create({
       data: {
         flightNumber,
+        route: route || 'UNKNOWN',
         departure: new Date(departure),
         arrival: new Date(arrival),
+        currency: currency || 'USD',
         tickets: {
           create: Array.from({ length: ticketCount }, () => ({
-            price: ticketPrice,
+            basePrice: ticketPrice,
             currency: currency,
             status: 'AVAILABLE',
           })),

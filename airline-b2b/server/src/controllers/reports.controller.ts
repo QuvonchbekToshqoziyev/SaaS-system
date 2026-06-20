@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma, Role, TicketStatus, TransactionType } from '@prisma/client';
+import { isPayableDebtType, payableAndPaymentTypeFilter, payableDebtTypeFilter } from '../utils/transaction-types';
 
 type AuthUser = {
   userId?: string;
@@ -159,7 +160,7 @@ export const getFlightReport = async (req: Request, res: Response) => {
 
   for (const row of txByType) {
     const val = sumToNumber(row._sum?.baseAmount);
-    if (row.type === 'PAYABLE') debt += val;
+    if (isPayableDebtType(row.type)) debt += val;
     if (row.type === 'SALE') revenue += val;
     if (row.type === 'PAYMENT') paid += val;
   }
@@ -225,7 +226,7 @@ export const getFlightReport = async (req: Request, res: Response) => {
       };
 
     const val = sumToNumber((row as any)._sum?.baseAmount);
-    if (row.type === 'PAYABLE') existing.debt += val;
+    if (isPayableDebtType(row.type)) existing.debt += val;
     if (row.type === 'SALE') existing.revenue += val;
     if (row.type === 'PAYMENT') existing.paid += val;
 
@@ -325,7 +326,7 @@ export const getFirmReport = async (req: Request, res: Response) => {
   const totals = { debt: 0, revenue: 0, paid: 0 };
   const transactionsByType = byType.map((row) => {
     const totalBaseAmount = sumToNumber(row._sum?.baseAmount);
-    if (row.type === 'PAYABLE') totals.debt += totalBaseAmount;
+    if (isPayableDebtType(row.type)) totals.debt += totalBaseAmount;
     if (row.type === 'SALE') totals.revenue += totalBaseAmount;
     if (row.type === 'PAYMENT') totals.paid += totalBaseAmount;
     return {
@@ -360,10 +361,11 @@ export const getFirmReport = async (req: Request, res: Response) => {
   >();
 
   for (const row of byFlightAndType) {
+    const flightId = row.flightId || '';
     const existing =
-      byFlight.get(row.flightId) ||
+      byFlight.get(flightId) ||
       {
-        flightId: row.flightId,
+        flightId: flightId,
         flightNumber: null,
         departure: null,
         arrival: null,
@@ -374,17 +376,18 @@ export const getFirmReport = async (req: Request, res: Response) => {
         ticketsSold: 0,
       };
     const val = sumToNumber(row._sum?.baseAmount);
-    if (row.type === 'PAYABLE') existing.debt += val;
+    if (isPayableDebtType(row.type)) existing.debt += val;
     if (row.type === 'SALE') existing.revenue += val;
     if (row.type === 'PAYMENT') existing.paid += val;
-    byFlight.set(row.flightId, existing);
+    byFlight.set(flightId, existing);
   }
 
   for (const row of ticketsByFlightAndStatus) {
+    const flightId = row.flightId || '';
     const existing =
-      byFlight.get(row.flightId) ||
+      byFlight.get(flightId) ||
       {
-        flightId: row.flightId,
+        flightId: flightId,
         flightNumber: null,
         departure: null,
         arrival: null,
@@ -397,7 +400,7 @@ export const getFirmReport = async (req: Request, res: Response) => {
     const count = row._count?._all || 0;
     if (row.status === 'PENDING' || row.status === 'ASSIGNED' || row.status === 'SOLD') existing.ticketsAssigned += count;
     if (row.status === 'SOLD') existing.ticketsSold += count;
-    byFlight.set(row.flightId, existing);
+    byFlight.set(flightId, existing);
   }
 
   const flightIds = Array.from(byFlight.keys());
@@ -540,7 +543,7 @@ export const getPaymentsReport = async (req: Request, res: Response) => {
         count: row._count?._all || 0,
         totalBaseAmount: sumToNumber(row._sum?.baseAmount),
       }))
-      .sort((a, b) => a.currency.localeCompare(b.currency)),
+      .sort((a, b) => (a.currency || '').localeCompare(b.currency || '')),
   });
 };
 
@@ -612,7 +615,7 @@ export const getTransactionsReport = async (req: Request, res: Response) => {
         count: row._count?._all || 0,
         totalBaseAmount: sumToNumber(row._sum?.baseAmount),
       }))
-      .sort((a, b) => a.currency.localeCompare(b.currency)),
+      .sort((a, b) => (a.currency || '').localeCompare(b.currency || '')),
   });
 };
 
@@ -743,7 +746,7 @@ export const getInteractionsReport = async (req: Request, res: Response) => {
     const count = row._count?._all || 0;
     const totalBaseAmount = sumToNumber(row._sum?.baseAmount);
 
-    if (row.type === 'PAYABLE') {
+    if (isPayableDebtType(row.type)) {
       pair.allocationsCount += count;
       pair.allocationsBaseAmount += totalBaseAmount;
     }
@@ -835,7 +838,7 @@ export const getMonthlyReport = async (req: Request, res: Response) => {
       formatted[m] = { month: m, allocations: 0, sales: 0, payments: 0 };
     }
     const val = Number(row.total || 0);
-    if (row.type === 'PAYABLE') formatted[m].allocations += val;
+    if (isPayableDebtType(row.type)) formatted[m].allocations += val;
     if (row.type === 'SALE') formatted[m].sales += val;
     if (row.type === 'PAYMENT') formatted[m].payments += val;
   });
@@ -920,75 +923,184 @@ export const getCalendarReport = async (req: Request, res: Response) => {
 };
 
 export const getDashboardReport = async (req: Request, res: Response) => {
-  const authUser = getAuthUser(req);
-  const role = normalizeRole(authUser.role);
+  try {
+    const authUser = getAuthUser(req);
+    const role = normalizeRole(authUser.role);
 
-  const firmScopeId = role === 'FIRM'
-    ? (authUser.firmId ? String(authUser.firmId) : undefined)
-    : undefined;
-  if (role === 'FIRM' && !firmScopeId) {
-    return res.status(400).json({ error: 'Firm account is missing firmId' });
-  }
+    const firmScopeId = role === 'FIRM'
+      ? (authUser.firmId ? String(authUser.firmId) : undefined)
+      : undefined;
+    
+    if (role === 'FIRM' && !firmScopeId) {
+      return res.status(400).json({ error: 'Firm account is missing firmId' });
+    }
 
-  if (role === 'FIRM') {
+    if (role === 'FIRM') {
+      const [pendingGroups, dueGroups] = await Promise.all([
+        prisma.ticket.groupBy({
+          by: ['flightId'],
+          where: { assignedFirmId: firmScopeId, status: 'PENDING' },
+          _count: { _all: true },
+        }),
+        prisma.transaction.groupBy({
+          by: ['flightId', 'type'],
+          where: {
+            firmId: firmScopeId,
+            type: payableAndPaymentTypeFilter,
+          },
+          _sum: { baseAmount: true },
+        }),
+      ]);
+
+      const pendingFlightIds = pendingGroups.map((g) => g.flightId).filter((id): id is string => !!id);
+      const dueFlightIds = Array.from(new Set(dueGroups.map((g) => g.flightId).filter((id): id is string => !!id)));
+      const flightIds = Array.from(new Set([...pendingFlightIds, ...dueFlightIds]));
+
+      const flights = flightIds.length
+        ? await prisma.flight.findMany({
+            where: { id: { in: flightIds } },
+            select: { id: true, flightNumber: true, departure: true, arrival: true },
+          })
+        : [];
+      const flightById = new Map(flights.map((f) => [f.id, f] as const));
+
+      const pendingItems = pendingGroups
+        .map((g) => {
+          const f = flightById.get(g.flightId || '');
+          return {
+            flightId: g.flightId,
+            flightNumber: f?.flightNumber || null,
+            departure: f?.departure || null,
+            count: g._count?._all || 0,
+          };
+        })
+        .sort((a, b) => String(a.departure || '').localeCompare(String(b.departure || '')));
+
+      const debtByFlight = new Map<string, number>();
+      const paidByFlight = new Map<string, number>();
+      for (const row of dueGroups) {
+        const val = sumToNumber(row._sum?.baseAmount);
+        const flightId = row.flightId || '';
+        if (isPayableDebtType(row.type)) debtByFlight.set(flightId, (debtByFlight.get(flightId) || 0) + val);
+        if (row.type === 'PAYMENT') paidByFlight.set(flightId, (paidByFlight.get(flightId) || 0) + val);
+      }
+
+      const dueItems = Array.from(new Set([...debtByFlight.keys(), ...paidByFlight.keys()]))
+        .map((flightId) => {
+          const f = flightById.get(flightId);
+          const debt = debtByFlight.get(flightId) || 0;
+          const paid = paidByFlight.get(flightId) || 0;
+          const outstanding = debt - paid;
+          return {
+            flightId,
+            flightNumber: f?.flightNumber || null,
+            departure: f?.departure || null,
+            debt,
+            paid,
+            outstanding,
+          };
+        })
+        .filter((r) => r.outstanding > 0)
+        .sort((a, b) => b.outstanding - a.outstanding);
+
+      const pendingTotal = pendingItems.reduce((acc, i) => acc + (i.count || 0), 0);
+      const totalOutstanding = dueItems.reduce((acc, i) => acc + i.outstanding, 0);
+
+      return res.json({
+        role,
+        todos: [
+          { key: 'pending_allocations', label: 'Confirm pending allocations', count: pendingTotal },
+          { key: 'due_payments', label: 'Make payments (outstanding balance)', count: dueItems.length, amount: totalOutstanding },
+        ],
+        pendingAllocations: {
+          total: pendingTotal,
+          byFlight: pendingItems,
+        },
+        duePayments: {
+          totalOutstanding,
+          byFlight: dueItems,
+        },
+      });
+    }
+
+    // Admin / Superadmin Dashboard logic
     const [pendingGroups, dueGroups] = await Promise.all([
       prisma.ticket.groupBy({
-        by: ['flightId'],
-        where: { assignedFirmId: firmScopeId, status: 'PENDING' },
+        by: ['assignedFirmId', 'flightId'],
+        where: { status: 'PENDING', assignedFirmId: { not: null } },
         _count: { _all: true },
       }),
       prisma.transaction.groupBy({
-        by: ['flightId', 'type'],
-        where: {
-          firmId: firmScopeId,
-          type: { in: ['PAYABLE', 'PAYMENT'] },
-        },
+        by: ['firmId', 'type'],
+        where: { type: payableAndPaymentTypeFilter },
         _sum: { baseAmount: true },
       }),
     ]);
 
-    const pendingFlightIds = pendingGroups.map((g) => g.flightId);
-    const dueFlightIds = Array.from(new Set(dueGroups.map((g) => g.flightId)));
-    const flightIds = Array.from(new Set([...pendingFlightIds, ...dueFlightIds]));
+    const firmIds = new Set<string>();
+    const flightIds = new Set<string>();
+    for (const g of pendingGroups) {
+      if (g.assignedFirmId) firmIds.add(String(g.assignedFirmId));
+      if (g.flightId) flightIds.add(String(g.flightId));
+    }
+    for (const g of dueGroups) {
+      if (g.firmId) firmIds.add(String(g.firmId));
+    }
 
-    const flights = flightIds.length
-      ? await prisma.flight.findMany({
-          where: { id: { in: flightIds } },
-          select: { id: true, flightNumber: true, departure: true, arrival: true },
-        })
-      : [];
+    const [firms, flights] = await Promise.all([
+      firmIds.size
+        ? prisma.firm.findMany({
+            where: { id: { in: Array.from(firmIds) } },
+            select: { id: true, name: true },
+          })
+        : Promise.resolve([]),
+      flightIds.size
+        ? prisma.flight.findMany({
+            where: { id: { in: Array.from(flightIds) } },
+            select: { id: true, flightNumber: true, departure: true, arrival: true },
+          })
+        : Promise.resolve([]),
+    ]);
+    const firmById = new Map(firms.map((f) => [f.id, f] as const));
     const flightById = new Map(flights.map((f) => [f.id, f] as const));
 
     const pendingItems = pendingGroups
       .map((g) => {
-        const f = flightById.get(g.flightId);
+        const firmIdVal = g.assignedFirmId ? String(g.assignedFirmId) : '';
+        const firm = firmIdVal ? firmById.get(firmIdVal) : undefined;
+        const flightIdVal = g.flightId ? String(g.flightId) : '';
+        const flight = flightIdVal ? flightById.get(flightIdVal) : undefined;
         return {
-          flightId: g.flightId,
-          flightNumber: f?.flightNumber || null,
-          departure: f?.departure || null,
+          firmId: firmIdVal,
+          firmName: firm?.name || null,
+          flightId: flightIdVal,
+          flightNumber: flight?.flightNumber || null,
+          departure: flight?.departure || null,
           count: g._count?._all || 0,
         };
       })
-      .sort((a, b) => String(a.departure || '').localeCompare(String(b.departure || '')));
+      .filter((r) => r.firmId)
+      .sort((a, b) => (a.firmName || a.firmId).localeCompare(b.firmName || b.firmId));
 
-    const debtByFlight = new Map<string, number>();
-    const paidByFlight = new Map<string, number>();
+    const debtByFirm = new Map<string, number>();
+    const paidByFirm = new Map<string, number>();
     for (const row of dueGroups) {
       const val = sumToNumber(row._sum?.baseAmount);
-      if (row.type === 'PAYABLE') debtByFlight.set(row.flightId, (debtByFlight.get(row.flightId) || 0) + val);
-      if (row.type === 'PAYMENT') paidByFlight.set(row.flightId, (paidByFlight.get(row.flightId) || 0) + val);
+      const firmId = row.firmId || '';
+      if (!firmId) continue;
+      if (isPayableDebtType(row.type)) debtByFirm.set(firmId, (debtByFirm.get(firmId) || 0) + val);
+      if (row.type === 'PAYMENT') paidByFirm.set(firmId, (paidByFirm.get(firmId) || 0) + val);
     }
 
-    const dueItems = Array.from(new Set([...debtByFlight.keys(), ...paidByFlight.keys()]))
-      .map((flightId) => {
-        const f = flightById.get(flightId);
-        const debt = debtByFlight.get(flightId) || 0;
-        const paid = paidByFlight.get(flightId) || 0;
+    const dueItems = Array.from(new Set([...debtByFirm.keys(), ...paidByFirm.keys()]))
+      .map((firmId) => {
+        const f = firmById.get(firmId);
+        const debt = debtByFirm.get(firmId) || 0;
+        const paid = paidByFirm.get(firmId) || 0;
         const outstanding = debt - paid;
         return {
-          flightId,
-          flightNumber: f?.flightNumber || null,
-          departure: f?.departure || null,
+          firmId,
+          firmName: f?.name || null,
           debt,
           paid,
           outstanding,
@@ -1003,118 +1115,21 @@ export const getDashboardReport = async (req: Request, res: Response) => {
     return res.json({
       role,
       todos: [
-        { key: 'pending_allocations', label: 'Confirm pending allocations', count: pendingTotal },
-        { key: 'due_payments', label: 'Make payments (outstanding balance)', count: dueItems.length, amount: totalOutstanding },
+        { key: 'pending_allocations', label: 'Pending firm confirmations', count: pendingTotal },
+        { key: 'due_payments', label: 'Firms with outstanding balance', count: dueItems.length, amount: totalOutstanding },
       ],
       pendingAllocations: {
         total: pendingTotal,
-        byFlight: pendingItems,
+        byFirmFlight: pendingItems,
       },
       duePayments: {
         totalOutstanding,
-        byFlight: dueItems,
+        byFirm: dueItems,
       },
     });
+  } catch (error) {
+    console.error('Error in getDashboardReport:', error);
+    return res.status(500).json({ error: 'Internal server error' });
   }
-
-  const [pendingGroups, dueGroups] = await Promise.all([
-    prisma.ticket.groupBy({
-      by: ['assignedFirmId', 'flightId'],
-      where: { status: 'PENDING', assignedFirmId: { not: null } },
-      _count: { _all: true },
-    }),
-    prisma.transaction.groupBy({
-      by: ['firmId', 'type'],
-      where: { type: { in: ['PAYABLE', 'PAYMENT'] } },
-      _sum: { baseAmount: true },
-    }),
-  ]);
-
-  const firmIds = new Set<string>();
-  const flightIds = new Set<string>();
-  for (const g of pendingGroups) {
-    if (g.assignedFirmId) firmIds.add(String(g.assignedFirmId));
-    flightIds.add(String(g.flightId));
-  }
-  for (const g of dueGroups) {
-    firmIds.add(String(g.firmId));
-  }
-
-  const [firms, flights] = await Promise.all([
-    firmIds.size
-      ? prisma.firm.findMany({
-          where: { id: { in: Array.from(firmIds) } },
-          select: { id: true, name: true },
-        })
-      : Promise.resolve([]),
-    flightIds.size
-      ? prisma.flight.findMany({
-          where: { id: { in: Array.from(flightIds) } },
-          select: { id: true, flightNumber: true, departure: true, arrival: true },
-        })
-      : Promise.resolve([]),
-  ]);
-  const firmById = new Map(firms.map((f) => [f.id, f] as const));
-  const flightById = new Map(flights.map((f) => [f.id, f] as const));
-
-  const pendingItems = pendingGroups
-    .map((g) => {
-      const firmIdVal = g.assignedFirmId ? String(g.assignedFirmId) : '';
-      const firm = firmIdVal ? firmById.get(firmIdVal) : undefined;
-      const flight = flightById.get(String(g.flightId));
-      return {
-        firmId: firmIdVal,
-        firmName: firm?.name || null,
-        flightId: String(g.flightId),
-        flightNumber: flight?.flightNumber || null,
-        departure: flight?.departure || null,
-        count: g._count?._all || 0,
-      };
-    })
-    .filter((r) => r.firmId)
-    .sort((a, b) => (a.firmName || a.firmId).localeCompare(b.firmName || b.firmId));
-
-  const debtByFirm = new Map<string, number>();
-  const paidByFirm = new Map<string, number>();
-  for (const row of dueGroups) {
-    const val = sumToNumber(row._sum?.baseAmount);
-    if (row.type === 'PAYABLE') debtByFirm.set(row.firmId, (debtByFirm.get(row.firmId) || 0) + val);
-    if (row.type === 'PAYMENT') paidByFirm.set(row.firmId, (paidByFirm.get(row.firmId) || 0) + val);
-  }
-
-  const dueItems = Array.from(new Set([...debtByFirm.keys(), ...paidByFirm.keys()]))
-    .map((firmId) => {
-      const f = firmById.get(firmId);
-      const debt = debtByFirm.get(firmId) || 0;
-      const paid = paidByFirm.get(firmId) || 0;
-      const outstanding = debt - paid;
-      return {
-        firmId,
-        firmName: f?.name || null,
-        debt,
-        paid,
-        outstanding,
-      };
-    })
-    .filter((r) => r.outstanding > 0)
-    .sort((a, b) => b.outstanding - a.outstanding);
-
-  const pendingTotal = pendingItems.reduce((acc, i) => acc + (i.count || 0), 0);
-  const totalOutstanding = dueItems.reduce((acc, i) => acc + i.outstanding, 0);
-
-  return res.json({
-    role,
-    todos: [
-      { key: 'pending_allocations', label: 'Pending firm confirmations', count: pendingTotal },
-      { key: 'due_payments', label: 'Firms with outstanding balance', count: dueItems.length, amount: totalOutstanding },
-    ],
-    pendingAllocations: {
-      total: pendingTotal,
-      byFirmFlight: pendingItems,
-    },
-    duePayments: {
-      totalOutstanding,
-      byFirm: dueItems,
-    },
-  });
 };
+

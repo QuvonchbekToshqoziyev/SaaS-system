@@ -5,7 +5,7 @@
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { usePathname, useRouter } from 'next/navigation';
-import { PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, ChevronLeft, ChevronRight } from 'lucide-react';
+import { PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, ChevronLeft, ChevronRight, Wallet } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
@@ -47,6 +47,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { key: 'navDashboard' as const, href: '/firm', icon: LayoutDashboard },
     { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
     { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
+    { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
     { key: 'navReports' as const, href: '/reports', icon: BarChart3 },
     { key: 'navSettings' as const, href: '/settings', icon: Settings },
   ] : [
@@ -54,6 +55,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { key: 'navFirms' as const, href: '/firms', icon: UserCircle },
     { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
     { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
+    { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
     { key: 'navReports' as const, href: '/reports', icon: BarChart3 },
     { key: 'navSettings' as const, href: '/settings', icon: Settings },
   ];
@@ -104,7 +106,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
 
         {/* Sidebar Nav */}
-        <div className={`flex-1 py-6 flex flex-col gap-2 ${sidebarCollapsed ? 'px-3' : 'px-5'}`}>
+        <div className={`flex-1 min-h-0 overflow-y-auto scroller-minimal py-6 flex flex-col gap-2 ${sidebarCollapsed ? 'px-3' : 'px-5'}`}>
           {!sidebarCollapsed && (
             <div className="px-2 mb-2 text-[10px] text-muted uppercase tracking-widest font-semibold select-none">
               {user.role === 'firm' ? 'Agency Actions' : 'Platform Setup'}

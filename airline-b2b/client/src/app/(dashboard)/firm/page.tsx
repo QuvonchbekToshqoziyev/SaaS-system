@@ -168,8 +168,8 @@ export default function FirmDashboard() {
             </Link>
           </li>
           <li>
-            <Link href="/transactions" className="hover:underline">
-              {tr('Record payments', "To'lovlarni qayd eting")}
+            <Link href="/kassa" className="hover:underline">
+              {tr('Record payments in kassa', "Kassada to'lovlarni qayd eting")}
             </Link>
             <span className="text-muted"> — {tr('keep your outstanding balance accurate.', 'qoldiqni aniq saqlang.')}</span>
           </li>

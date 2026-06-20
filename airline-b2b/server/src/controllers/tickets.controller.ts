@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma } from '@prisma/client';
+import { payableDebtTypeFilter } from '../utils/transaction-types';
 
 const BASE_CURRENCY = 'UZS' as const;
 
@@ -139,7 +140,7 @@ export const createTickets = async (req: Request, res: Response) => {
 
   const newTickets = Array.from({ length: resolvedQuantity }).map(() => ({
     flightId: flightId.trim(),
-    price,
+    basePrice: price,
     currency,
     status: 'AVAILABLE' as const,
   }));
@@ -176,11 +177,11 @@ export const allocateTicket = async (req: Request, res: Response) => {
         if (flight.status === 'CANCELLED') throw new Error('Cannot allocate tickets for a cancelled flight');
 
         const tickets: any[] = await tx.$queryRaw`
-          SELECT *
+          SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
           FROM "Ticket"
           WHERE "flightId" = ${resolvedFlightId}
             AND status = 'AVAILABLE'
-            AND "assignedFirmId" IS NULL
+            AND "allocatedFirmId" IS NULL
           ORDER BY "createdAt" ASC
           FOR UPDATE SKIP LOCKED
           LIMIT ${resolvedQuantity}
@@ -214,7 +215,12 @@ export const allocateTicket = async (req: Request, res: Response) => {
   try {
     await prisma.$transaction(async (tx) => {
       // Find ticket
-      const tickets: any[] = await tx.$queryRaw`SELECT * FROM "Ticket" WHERE id = ${ticketId} FOR UPDATE`;
+      const tickets: any[] = await tx.$queryRaw`
+        SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
+        FROM "Ticket"
+        WHERE id = ${ticketId}
+        FOR UPDATE
+      `;
       if (tickets.length === 0) throw new Error('Ticket not found');
       const ticket = tickets[0];
 
@@ -275,11 +281,11 @@ export const confirmAllocation = async (req: Request, res: Response) => {
         if (flight.status === 'CANCELLED') throw new Error('Cannot confirm allocation for a cancelled flight');
 
         const tickets: any[] = await tx.$queryRaw`
-          SELECT *
+          SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
           FROM "Ticket"
           WHERE "flightId" = ${resolvedFlightId}
             AND status = 'PENDING'
-            AND "assignedFirmId" = ${ownFirmId}
+            AND "allocatedFirmId" = ${ownFirmId}
           ORDER BY "createdAt" ASC
           FOR UPDATE SKIP LOCKED
           LIMIT ${resolvedQuantity}
@@ -305,7 +311,7 @@ export const confirmAllocation = async (req: Request, res: Response) => {
         }
 
         const transactionRows = tickets.map((t) => {
-          const originalAmount = new Prisma.Decimal(String(t.price)).toDecimalPlaces(4);
+          const originalAmount = new Prisma.Decimal(String(t.basePrice)).toDecimalPlaces(4);
           const currency = normalizeCurrency(t.currency);
           const exchangeRate = currency === BASE_CURRENCY
             ? new Prisma.Decimal(1)
@@ -344,7 +350,12 @@ export const confirmAllocation = async (req: Request, res: Response) => {
 
   try {
     await prisma.$transaction(async (tx) => {
-      const tickets: any[] = await tx.$queryRaw`SELECT * FROM "Ticket" WHERE id = ${ticketId} FOR UPDATE`;
+      const tickets: any[] = await tx.$queryRaw`
+        SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
+        FROM "Ticket"
+        WHERE id = ${ticketId}
+        FOR UPDATE
+      `;
       if (tickets.length === 0) throw new Error('Ticket not found');
       const ticket = tickets[0];
 
@@ -358,7 +369,7 @@ export const confirmAllocation = async (req: Request, res: Response) => {
       if (ticket.status !== 'PENDING') throw new Error('Ticket is not pending confirmation');
       if (String(ticket.assignedFirmId || '') !== ownFirmId) throw new Error('Not your ticket');
 
-      const originalAmount = new Prisma.Decimal(String(ticket.price));
+      const originalAmount = new Prisma.Decimal(String(ticket.basePrice));
       const currency = normalizeCurrency(ticket.currency);
 
       let exchangeRate = new Prisma.Decimal(1);
@@ -428,10 +439,10 @@ export const deallocateTicket = async (req: Request, res: Response) => {
         if (!flight) throw new Error('Flight not found');
 
         const tickets: any[] = await tx.$queryRaw`
-          SELECT *
+          SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
           FROM "Ticket"
           WHERE "flightId" = ${resolvedFlightId}
-            AND "assignedFirmId" = ${targetFirmId}
+            AND "allocatedFirmId" = ${targetFirmId}
             AND status IN ('PENDING', 'ASSIGNED')
           ORDER BY "createdAt" ASC
           FOR UPDATE SKIP LOCKED
@@ -456,7 +467,7 @@ export const deallocateTicket = async (req: Request, res: Response) => {
           const payables = await tx.transaction.findMany({
             where: {
               ticketId: { in: assignedTicketIds },
-              type: 'PAYABLE',
+              type: payableDebtTypeFilter,
               baseAmount: { gt: new Prisma.Decimal(0) },
             },
             orderBy: { createdAt: 'desc' },
@@ -512,7 +523,12 @@ export const deallocateTicket = async (req: Request, res: Response) => {
 
   try {
     await prisma.$transaction(async (tx) => {
-      const tickets: any[] = await tx.$queryRaw`SELECT * FROM "Ticket" WHERE id = ${ticketId} FOR UPDATE`;
+      const tickets: any[] = await tx.$queryRaw`
+        SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
+        FROM "Ticket"
+        WHERE id = ${ticketId}
+        FOR UPDATE
+      `;
       if (tickets.length === 0) throw new Error('Ticket not found');
       const ticket = tickets[0];
 
@@ -531,7 +547,7 @@ export const deallocateTicket = async (req: Request, res: Response) => {
         const payable = await tx.transaction.findFirst({
           where: {
             ticketId: String(ticketId),
-            type: 'PAYABLE',
+            type: payableDebtTypeFilter,
             baseAmount: { gt: new Prisma.Decimal(0) },
           },
           orderBy: { createdAt: 'desc' },
@@ -614,11 +630,11 @@ export const sellTicket = async (req: Request, res: Response) => {
         if (flight.status === 'CANCELLED') throw new Error('Cannot sell tickets for a cancelled flight');
 
         const tickets: any[] = await tx.$queryRaw`
-          SELECT *
+          SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
           FROM "Ticket"
           WHERE "flightId" = ${resolvedFlightId}
             AND status = 'ASSIGNED'
-            AND "assignedFirmId" = ${ownFirmId}
+            AND "allocatedFirmId" = ${ownFirmId}
           ORDER BY "createdAt" ASC
           FOR UPDATE SKIP LOCKED
           LIMIT ${resolvedQuantity}
@@ -680,7 +696,12 @@ export const sellTicket = async (req: Request, res: Response) => {
   
   try {
     await prisma.$transaction(async (tx) => {
-      const tickets: any[] = await tx.$queryRaw`SELECT * FROM "Ticket" WHERE id = ${ticketId} FOR UPDATE`;
+      const tickets: any[] = await tx.$queryRaw`
+        SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
+        FROM "Ticket"
+        WHERE id = ${ticketId}
+        FOR UPDATE
+      `;
       if (tickets.length === 0) throw new Error('Ticket not found');
       const ticket = tickets[0];
 
@@ -759,7 +780,12 @@ export const cancelSale = async (req: Request, res: Response) => {
 
   try {
     await prisma.$transaction(async (tx) => {
-      const tickets: any[] = await tx.$queryRaw`SELECT * FROM "Ticket" WHERE id = ${resolvedTicketId} FOR UPDATE`;
+      const tickets: any[] = await tx.$queryRaw`
+        SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
+        FROM "Ticket"
+        WHERE id = ${resolvedTicketId}
+        FOR UPDATE
+      `;
       if (tickets.length === 0) throw new Error('Ticket not found');
       const ticket = tickets[0];
 
@@ -850,7 +876,12 @@ export const createSaleCancellationRequest = async (req: Request, res: Response)
 
   try {
     const created = await prisma.$transaction(async (tx) => {
-      const tickets: any[] = await tx.$queryRaw`SELECT * FROM "Ticket" WHERE id = ${resolvedTicketId} FOR UPDATE`;
+      const tickets: any[] = await tx.$queryRaw`
+        SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
+        FROM "Ticket"
+        WHERE id = ${resolvedTicketId}
+        FOR UPDATE
+      `;
       if (tickets.length === 0) throw new Error('Ticket not found');
       const ticket = tickets[0];
 
@@ -986,7 +1017,12 @@ export const approveSaleCancellationRequest = async (req: Request, res: Response
       if (!ticketId) throw new Error('Invalid request: missing ticketId');
       if (!firmId) throw new Error('Invalid request: missing firmId');
 
-      const tickets: any[] = await tx.$queryRaw`SELECT * FROM "Ticket" WHERE id = ${ticketId} FOR UPDATE`;
+      const tickets: any[] = await tx.$queryRaw`
+        SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
+        FROM "Ticket"
+        WHERE id = ${ticketId}
+        FOR UPDATE
+      `;
       if (tickets.length === 0) throw new Error('Ticket not found');
       const ticket = tickets[0];
 
