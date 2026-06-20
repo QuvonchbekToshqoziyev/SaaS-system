@@ -8,8 +8,14 @@
     "strict": true,
     "ignoreDeprecations": "6.0",
     "esModuleInterop": true,
+    "preserveSymlinks": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "zod": ["node_modules/zod"]
+    },
+    "types": ["node"]
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*", "prisma/**/*.ts"]
 }
