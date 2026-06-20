@@ -26,7 +26,7 @@ export type Transaction = {
   flightId?: string;
   ticketId?: string;
   createdByUserId?: string;
-  type: 'SALE' | 'PAYMENT' | 'PAYABLE' | 'ADJUSTMENT';
+  type: 'SALE' | 'PAYMENT' | 'PAYABLE' | 'ALLOCATION' | 'REFUND' | 'ADJUSTMENT';
   originalAmount: number | string;
   currency: string;
   exchangeRate: number | string;
@@ -39,4 +39,49 @@ export type Transaction = {
 
 export type ApiErrorResponse = {
   error?: string;
+};
+
+export type KassaStatus = 'NOT_OPEN' | 'OPEN' | 'CLOSED';
+
+export type KassaDay = {
+  id: string;
+  businessDate: string;
+  status: 'OPEN' | 'CLOSED';
+  openedAt: string;
+  closedAt?: string | null;
+  openedBy?: { id: string; email: string };
+  closedBy?: { id: string; email: string } | null;
+  openingBalance: string;
+  closingBalance?: string | null;
+  expectedCash?: string | null;
+  variance?: string | null;
+  notes?: string | null;
+};
+
+export type KassaDuePayment = {
+  firmId: string;
+  firmName: string | null;
+  flightId: string;
+  flightNumber: string | null;
+  departure: string | null;
+  debt: number;
+  paid: number;
+  outstanding: number;
+};
+
+export type KassaDaySummary = {
+  businessDate: string;
+  status: KassaStatus;
+  kassa: KassaDay | null;
+  totals: {
+    cashTotal: number;
+    cardTotal: number;
+    paymentCount: number;
+    saleTotal: number;
+    payableTotal: number;
+    transactionCount: number;
+    expectedCash: number | null;
+  };
+  transactions: Transaction[];
+  duePayments: KassaDuePayment[];
 };

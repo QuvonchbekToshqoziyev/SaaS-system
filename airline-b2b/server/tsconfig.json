@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "CommonJS",
-    "moduleResolution": "node10",
+    "module": "Node16",
+    "moduleResolution": "node16",
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": true,
@@ -11,11 +11,10 @@
     "preserveSymlinks": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "baseUrl": ".",
     "paths": {
-      "zod": ["node_modules/zod"]
+      "*": ["./*"]
     },
     "types": ["node"]
   },
-  "include": ["src/**/*", "prisma/**/*.ts"]
+  "include": ["src/**/*"]
 }

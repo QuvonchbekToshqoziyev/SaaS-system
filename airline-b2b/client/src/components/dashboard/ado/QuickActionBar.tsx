@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { PlaneTakeoff, ArrowRightLeft, BarChart3, FileUp, Sparkles } from 'lucide-react';
+import { PlaneTakeoff, ArrowRightLeft, BarChart3, FileUp, Sparkles, Wallet } from 'lucide-react';
 
 type Props = {
   tr: (en: string, uz: string) => string;
@@ -11,9 +11,14 @@ type Props = {
 export default function QuickActionBar({ tr, isAdmin }: Props) {
   const actions = [
     {
+      href: '/kassa',
+      icon: Wallet,
+      label: tr('Kassa', 'Kassa'),
+    },
+    {
       href: isAdmin ? '/transactions?type=payment' : '/transactions?openPayment=1',
       icon: ArrowRightLeft,
-      label: tr('Record payment', "To'lov qayd etish"),
+      label: tr('Transactions', 'Tranzaksiyalar'),
     },
     { href: '/flights', icon: PlaneTakeoff, label: tr('Flights', 'Reyslar') },
     { href: '/reports', icon: BarChart3, label: tr('Reports', 'Hisobotlar') },

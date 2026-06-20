@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma } from '@prisma/client';
+import { payableDebtTypeFilter } from '../utils/transaction-types';
 
 const BASE_CURRENCY = 'UZS' as const;
 
@@ -466,7 +467,7 @@ export const deallocateTicket = async (req: Request, res: Response) => {
           const payables = await tx.transaction.findMany({
             where: {
               ticketId: { in: assignedTicketIds },
-              type: 'PAYABLE',
+              type: payableDebtTypeFilter,
               baseAmount: { gt: new Prisma.Decimal(0) },
             },
             orderBy: { createdAt: 'desc' },
@@ -546,7 +547,7 @@ export const deallocateTicket = async (req: Request, res: Response) => {
         const payable = await tx.transaction.findFirst({
           where: {
             ticketId: String(ticketId),
-            type: 'PAYABLE',
+            type: payableDebtTypeFilter,
             baseAmount: { gt: new Prisma.Decimal(0) },
           },
           orderBy: { createdAt: 'desc' },

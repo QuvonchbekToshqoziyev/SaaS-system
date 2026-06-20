@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma, Role } from '@prisma/client';
+import { assertKassaOpenForDate, startOfDayUtc, nextDayUtc } from '../utils/kassa';
 
 const BASE_CURRENCY = 'UZS' as const;
 
@@ -38,14 +39,6 @@ function parseDecimal(value: unknown): Prisma.Decimal | undefined {
     return new Prisma.Decimal(trimmed);
   }
   return undefined;
-}
-
-function startOfDayUtc(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
-}
-
-function nextDayUtc(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0));
 }
 
 const PAYMENT_METHODS = new Set(['cash', 'card']);
@@ -145,6 +138,8 @@ export const processPayment = async (req: Request, res: Response) => {
       const dayStart = startOfDayUtc(paymentDate);
       const dayEnd = nextDayUtc(paymentDate);
       const dayKey = dayStart.toISOString().slice(0, 10);
+
+      await assertKassaOpenForDate(dayStart);
 
       let exchangeRate = new Prisma.Decimal(1);
       if (currency !== BASE_CURRENCY) {

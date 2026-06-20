@@ -3,8 +3,8 @@ import { randomUUID } from 'crypto';
 
 const prisma = new PrismaClient();
 
-// A pre-hashed password for '1111' using bcrypt 10 rounds
-const HASHED_PASSWORD_1111 = '$2a$10$C1wz/4D7P6H1/f5Lz4G2b.0X6g7Z8z/l52.aB6qTzQ1O18R1/mRxy';
+// Pre-hashed password for '1111' (bcrypt, 10 rounds)
+const HASHED_PASSWORD_1111 = '$2b$10$T6XM6lrJzdaJvrgrATEKhOnZg4EznAnYtp51UuEMVfQO3Ph9c/9m.';
 
 const ACCOUNTS = {
   AR: 'ACCOUNTS_RECEIVABLE',
@@ -137,7 +137,7 @@ async function main() {
   // Allocate 4 tickets to Firm A
   const allocationTx1 = await prisma.transaction.create({
     data: {
-      type: TransactionType.ALLOCATION,
+      type: TransactionType.PAYABLE,
       firmId: firmA.id,
       flightId: flightOpen.id,
       originalAmount: 4 * basePrice,
@@ -208,7 +208,7 @@ async function main() {
   const allocTicketsB = ticketsOpen.slice(4, 6);
   await prisma.transaction.create({
     data: {
-      type: TransactionType.ALLOCATION,
+      type: TransactionType.PAYABLE,
       firmId: firmB.id,
       flightId: flightOpen.id,
       originalAmount: 2 * basePrice,

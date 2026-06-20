@@ -163,8 +163,8 @@ export default function AdminDashboard() {
             <span className="text-muted"> — {tr('then open it to allocate tickets.', 'so\'ng chiptalarni ajratish uchun oching.')}</span>
           </li>
           <li>
-            <Link href="/transactions" className="hover:underline">
-              {tr('Record payments', "To'lovlarni qayd eting")}
+            <Link href="/kassa" className="hover:underline">
+              {tr('Open kassa and record payments', "Kassani oching va to'lovlarni qayd eting")}
             </Link>
             <span className="text-muted"> — {tr('keep balances accurate.', 'balansni aniq saqlang.')}</span>
           </li>

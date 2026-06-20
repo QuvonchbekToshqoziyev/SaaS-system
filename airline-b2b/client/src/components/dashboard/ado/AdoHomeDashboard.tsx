@@ -179,7 +179,7 @@ export default function AdoHomeDashboard() {
     }));
   }, [dashboard, tr]);
 
-  const paymentHref = isAdmin ? '/transactions?type=payment' : '/transactions?openPayment=1';
+  const paymentHref = '/kassa';
   const todayLabel = format(new Date(), language === 'uz' ? 'd MMMM yyyy, EEEE' : 'MMMM d, yyyy — EEEE');
 
   if (loading) {

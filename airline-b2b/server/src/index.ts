@@ -14,6 +14,8 @@ import flightRoutes from './routes/flights';
 import firmRoutes from './routes/firms';
 import logsRoutes from './routes/logs';
 import currencyRateRoutes from './routes/currency-rates';
+import searchRoutes from './routes/search';
+import kassaRoutes from './routes/kassa';
 
 const jwtSecret = process.env.JWT_SECRET;
 if (!jwtSecret || !jwtSecret.trim()) {
@@ -60,6 +62,10 @@ for (const value of rawAllowed.split(',')) {
 if (process.env.NODE_ENV !== 'production') {
   allowedOrigins.add('http://localhost:3000');
   allowedOrigins.add('http://127.0.0.1:3000');
+  allowedOrigins.add('http://b2b.booking.ado-finance.com:8080');
+  allowedOrigins.add('http://b2b.booking.ado-finance.com:3000');
+  allowedOrigins.add('http://b2b.booking.ado-finance.com');
+  allowedOrigins.add('http://127.0.0.1:8080');
 }
 
 app.use(
@@ -96,6 +102,8 @@ app.use('/flights', flightRoutes);
 app.use('/firms', firmRoutes);
 app.use('/logs', logsRoutes);
 app.use('/currency-rates', currencyRateRoutes);
+app.use('/search', searchRoutes);
+app.use('/kassa', kassaRoutes);
 
 app.use(errorHandler);
 

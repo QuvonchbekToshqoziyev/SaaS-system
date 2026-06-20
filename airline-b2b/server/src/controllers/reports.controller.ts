@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma, Role, TicketStatus, TransactionType } from '@prisma/client';
+import { isPayableDebtType, payableAndPaymentTypeFilter, payableDebtTypeFilter } from '../utils/transaction-types';
 
 type AuthUser = {
   userId?: string;
@@ -159,7 +160,7 @@ export const getFlightReport = async (req: Request, res: Response) => {
 
   for (const row of txByType) {
     const val = sumToNumber(row._sum?.baseAmount);
-    if (row.type === 'PAYABLE') debt += val;
+    if (isPayableDebtType(row.type)) debt += val;
     if (row.type === 'SALE') revenue += val;
     if (row.type === 'PAYMENT') paid += val;
   }
@@ -225,7 +226,7 @@ export const getFlightReport = async (req: Request, res: Response) => {
       };
 
     const val = sumToNumber((row as any)._sum?.baseAmount);
-    if (row.type === 'PAYABLE') existing.debt += val;
+    if (isPayableDebtType(row.type)) existing.debt += val;
     if (row.type === 'SALE') existing.revenue += val;
     if (row.type === 'PAYMENT') existing.paid += val;
 
@@ -325,7 +326,7 @@ export const getFirmReport = async (req: Request, res: Response) => {
   const totals = { debt: 0, revenue: 0, paid: 0 };
   const transactionsByType = byType.map((row) => {
     const totalBaseAmount = sumToNumber(row._sum?.baseAmount);
-    if (row.type === 'PAYABLE') totals.debt += totalBaseAmount;
+    if (isPayableDebtType(row.type)) totals.debt += totalBaseAmount;
     if (row.type === 'SALE') totals.revenue += totalBaseAmount;
     if (row.type === 'PAYMENT') totals.paid += totalBaseAmount;
     return {
@@ -375,7 +376,7 @@ export const getFirmReport = async (req: Request, res: Response) => {
         ticketsSold: 0,
       };
     const val = sumToNumber(row._sum?.baseAmount);
-    if (row.type === 'PAYABLE') existing.debt += val;
+    if (isPayableDebtType(row.type)) existing.debt += val;
     if (row.type === 'SALE') existing.revenue += val;
     if (row.type === 'PAYMENT') existing.paid += val;
     byFlight.set(flightId, existing);
@@ -745,7 +746,7 @@ export const getInteractionsReport = async (req: Request, res: Response) => {
     const count = row._count?._all || 0;
     const totalBaseAmount = sumToNumber(row._sum?.baseAmount);
 
-    if (row.type === 'PAYABLE') {
+    if (isPayableDebtType(row.type)) {
       pair.allocationsCount += count;
       pair.allocationsBaseAmount += totalBaseAmount;
     }
@@ -837,7 +838,7 @@ export const getMonthlyReport = async (req: Request, res: Response) => {
       formatted[m] = { month: m, allocations: 0, sales: 0, payments: 0 };
     }
     const val = Number(row.total || 0);
-    if (row.type === 'PAYABLE') formatted[m].allocations += val;
+    if (isPayableDebtType(row.type)) formatted[m].allocations += val;
     if (row.type === 'SALE') formatted[m].sales += val;
     if (row.type === 'PAYMENT') formatted[m].payments += val;
   });
@@ -945,7 +946,7 @@ export const getDashboardReport = async (req: Request, res: Response) => {
           by: ['flightId', 'type'],
           where: {
             firmId: firmScopeId,
-            type: { in: ['PAYABLE', 'PAYMENT'] },
+            type: payableAndPaymentTypeFilter,
           },
           _sum: { baseAmount: true },
         }),
@@ -980,7 +981,7 @@ export const getDashboardReport = async (req: Request, res: Response) => {
       for (const row of dueGroups) {
         const val = sumToNumber(row._sum?.baseAmount);
         const flightId = row.flightId || '';
-        if (row.type === 'PAYABLE') debtByFlight.set(flightId, (debtByFlight.get(flightId) || 0) + val);
+        if (isPayableDebtType(row.type)) debtByFlight.set(flightId, (debtByFlight.get(flightId) || 0) + val);
         if (row.type === 'PAYMENT') paidByFlight.set(flightId, (paidByFlight.get(flightId) || 0) + val);
       }
 
@@ -1031,7 +1032,7 @@ export const getDashboardReport = async (req: Request, res: Response) => {
       }),
       prisma.transaction.groupBy({
         by: ['firmId', 'type'],
-        where: { type: { in: ['PAYABLE', 'PAYMENT'] } },
+        where: { type: payableAndPaymentTypeFilter },
         _sum: { baseAmount: true },
       }),
     ]);
@@ -1087,7 +1088,7 @@ export const getDashboardReport = async (req: Request, res: Response) => {
       const val = sumToNumber(row._sum?.baseAmount);
       const firmId = row.firmId || '';
       if (!firmId) continue;
-      if (row.type === 'PAYABLE') debtByFirm.set(firmId, (debtByFirm.get(firmId) || 0) + val);
+      if (isPayableDebtType(row.type)) debtByFirm.set(firmId, (debtByFirm.get(firmId) || 0) + val);
       if (row.type === 'PAYMENT') paidByFirm.set(firmId, (paidByFirm.get(firmId) || 0) + val);
     }
 

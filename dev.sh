@@ -13,6 +13,8 @@ PID_FILE="$REPO_ROOT/.dev-pids"
 
 BACKEND_PORT=5000
 FRONTEND_PORT=3000
+DEV_DOMAIN="b2b.booking.ado-finance.com"
+DEV_PROXY_PORT=8080
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=airline_db
@@ -59,7 +61,17 @@ mkdir -p "$LOG_DIR"
 > "$PID_FILE"   # reset PID file
 
 # ─────────────────────────────────────────────────────────────────────────────
-header "1 / 5  — Branch check"
+header "0 / 6  — Local domain check"
+# ─────────────────────────────────────────────────────────────────────────────
+if ! grep -qE "[[:space:]]${DEV_DOMAIN}([[:space:]]|$)" /etc/hosts 2>/dev/null; then
+  warn "${DEV_DOMAIN} is not in /etc/hosts — add this line (requires sudo):"
+  warn "  127.0.0.1  ${DEV_DOMAIN}"
+else
+  success "/etc/hosts contains ${DEV_DOMAIN}"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+header "1 / 6  — Branch check"
 # ─────────────────────────────────────────────────────────────────────────────
 cd "$REPO_ROOT"
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -76,7 +88,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-header "2 / 5  — Database check"
+header "2 / 6  — Database check"
 # ─────────────────────────────────────────────────────────────────────────────
 pg_isready -h "$DB_HOST" -p "$DB_PORT" -q || {
   error "PostgreSQL is not running on ${DB_HOST}:${DB_PORT}"
@@ -93,8 +105,15 @@ PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -U "$DB_USER" -d postgres -c \
 success "Database '${DB_NAME}' exists"
 
 # ─────────────────────────────────────────────────────────────────────────────
-header "3 / 5  — Writing environment files"
+header "3 / 6  — Writing environment files"
 # ─────────────────────────────────────────────────────────────────────────────
+
+DEV_ORIGIN="http://${DEV_DOMAIN}:${DEV_PROXY_PORT}"
+
+if ! grep -qE "^127\.0\.0\.1[[:space:]]+${DEV_DOMAIN}(\$|[[:space:]])" /etc/hosts 2>/dev/null; then
+  warn "${DEV_DOMAIN} does not point to 127.0.0.1 in /etc/hosts (currently resolves to production)."
+  warn "Run once:  sudo sh -c 'echo \"127.0.0.1 ${DEV_DOMAIN}\" >> /etc/hosts'"
+fi
 
 # -- Server .env --------------------------------------------------------------
 SERVER_ENV="$SERVER_DIR/.env"
@@ -102,8 +121,8 @@ info "Writing ${SERVER_ENV}"
 cat > "$SERVER_ENV" <<ENV
 DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/${DB_NAME}?schema=public"
 JWT_SECRET="local-development-secret-key-12345"
-PUBLIC_WEB_ORIGIN="http://localhost:${FRONTEND_PORT}"
-CORS_ORIGINS="http://localhost:${FRONTEND_PORT}"
+PUBLIC_WEB_ORIGIN="${DEV_ORIGIN}"
+CORS_ORIGINS="${DEV_ORIGIN},http://localhost:${FRONTEND_PORT},http://127.0.0.1:${FRONTEND_PORT}"
 PORT=${BACKEND_PORT}
 ENV
 success "Server .env written"
@@ -112,12 +131,13 @@ success "Server .env written"
 CLIENT_ENV="$CLIENT_DIR/.env.local"
 info "Writing ${CLIENT_ENV}"
 cat > "$CLIENT_ENV" <<ENV
-NEXT_PUBLIC_API_URL=http://localhost:${BACKEND_PORT}
+NEXT_PUBLIC_API_URL=http://127.0.0.1:${DEV_PROXY_PORT}/api
+BACKEND_ORIGIN=http://127.0.0.1:${BACKEND_PORT}
 ENV
 success "Client .env.local written"
 
 # ─────────────────────────────────────────────────────────────────────────────
-header "4 / 5  — Install dependencies & migrate DB"
+header "4 / 6  — Install dependencies & migrate DB"
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Server deps
@@ -137,6 +157,24 @@ info "Pushing Prisma schema to database..."
 npx prisma db push --schema=prisma/schema.prisma --accept-data-loss 2>&1 | tail -n 5
 success "Database schema up-to-date"
 
+info "Ensuring dev users have a valid password hash..."
+npx ts-node -e "
+const { PrismaClient } = require('@prisma/client');
+const bcrypt = require('bcrypt');
+const prisma = new PrismaClient();
+(async () => {
+  const hash = await bcrypt.hash('1111', 10);
+  const count = await prisma.user.count();
+  if (count === 0) {
+    require('child_process').execSync('npx ts-node prisma/seed.ts', { stdio: 'inherit' });
+  } else {
+    await prisma.user.updateMany({ data: { password: hash } });
+  }
+  await prisma.\$disconnect();
+})();
+" 2>&1 | tail -n 3
+success "Dev credentials ready (admin@adob2b.com / 1111)"
+
 # Client deps
 cd "$REPO_ROOT"
 if [[ ! -d "$CLIENT_DIR/node_modules" ]]; then
@@ -147,11 +185,11 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-header "5 / 5  — Starting servers"
+header "5 / 6  — Starting servers"
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Kill anything already on these ports (gracefully)
-for port in $BACKEND_PORT $FRONTEND_PORT; do
+for port in $BACKEND_PORT $FRONTEND_PORT $DEV_PROXY_PORT; do
   pid=$(lsof -ti tcp:"$port" 2>/dev/null || true)
   if [[ -n "$pid" ]]; then
     warn "Port ${port} in use by PID ${pid} — killing..."
@@ -180,7 +218,7 @@ done
 
 # Start frontend
 info "Starting frontend on port ${FRONTEND_PORT}..."
-nohup npm run dev --prefix "$CLIENT_DIR" \
+nohup npm run dev --prefix "$CLIENT_DIR" -- --hostname 0.0.0.0 --port "${FRONTEND_PORT}" \
   > "$LOG_DIR/frontend.log" 2>&1 &
 FRONTEND_PID=$!
 echo "$FRONTEND_PID" >> "$PID_FILE"
@@ -196,20 +234,39 @@ for i in $(seq 1 20); do
   sleep 1
 done
 
+# Start dev proxy (production-like /api routing on the dev domain)
+info "Starting dev proxy on port ${DEV_PROXY_PORT}..."
+nohup node "$REPO_ROOT/scripts/dev-proxy.mjs" "$DEV_PROXY_PORT" "$BACKEND_PORT" "$FRONTEND_PORT" \
+  > "$LOG_DIR/proxy.log" 2>&1 &
+PROXY_PID=$!
+echo "$PROXY_PID" >> "$PID_FILE"
+success "Dev proxy PID ${PROXY_PID} → logs: ${LOG_DIR}/proxy.log"
+
+info "Waiting for dev proxy to become ready..."
+for i in $(seq 1 15); do
+  if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${DEV_PROXY_PORT}/" 2>/dev/null | grep -qE "^(200|307)$"; then
+    success "Dev proxy is up!"
+    break
+  fi
+  sleep 1
+done
+
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════╗${RESET}"
 echo -e "${BOLD}║       ADO B2B — Local Dev Running            ║${RESET}"
 echo -e "${BOLD}╠══════════════════════════════════════════════╣${RESET}"
-echo -e "${BOLD}║  Frontend  →  http://localhost:${FRONTEND_PORT}          ║${RESET}"
-echo -e "${BOLD}║  Backend   →  http://localhost:${BACKEND_PORT}          ║${RESET}"
+echo -e "${BOLD}║  App URL   →  ${DEV_ORIGIN}  ║${RESET}"
+echo -e "${BOLD}║  Frontend  →  http://localhost:${FRONTEND_PORT} (direct)   ║${RESET}"
+echo -e "${BOLD}║  Backend   →  http://localhost:${BACKEND_PORT} (direct)   ║${RESET}"
 echo -e "${BOLD}║  DB        →  ${DB_HOST}:${DB_PORT}/${DB_NAME}  ║${RESET}"
 echo -e "${BOLD}╠══════════════════════════════════════════════╣${RESET}"
-echo -e "${BOLD}║  Admin     →  admin@airline.com              ║${RESET}"
-echo -e "${BOLD}║  Password  →  superadmin123                  ║${RESET}"
+echo -e "${BOLD}║  Admin     →  admin@adob2b.com               ║${RESET}"
+echo -e "${BOLD}║  Password  →  1111                           ║${RESET}"
 echo -e "${BOLD}╠══════════════════════════════════════════════╣${RESET}"
 echo -e "${BOLD}║  Backend log:  .dev-logs/backend.log         ║${RESET}"
 echo -e "${BOLD}║  Frontend log: .dev-logs/frontend.log        ║${RESET}"
+echo -e "${BOLD}║  Proxy log:    .dev-logs/proxy.log           ║${RESET}"
 echo -e "${BOLD}╠══════════════════════════════════════════════╣${RESET}"
 echo -e "${BOLD}║  To stop:  ./dev.sh --stop                   ║${RESET}"
 echo -e "${BOLD}╚══════════════════════════════════════════════╝${RESET}"
