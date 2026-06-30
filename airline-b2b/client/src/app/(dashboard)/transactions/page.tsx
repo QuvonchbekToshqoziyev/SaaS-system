@@ -60,6 +60,7 @@ export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [transactionsView, setTransactionsView] = useState<'list' | 'boxes'>('list');
+  const [quickSearch, setQuickSearch] = useState('');
   const [filterType, setFilterType] = useState<string>('');
   const [filterFirmId, setFilterFirmId] = useState<string>('');
   const [filterFlightId, setFilterFlightId] = useState<string>('');
@@ -75,7 +76,7 @@ export default function TransactionsPage() {
   
   // Pagination
   const [page, setPage] = useState(1);
-  const [limit] = useState(10);
+  const [limit] = useState(50);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
 
@@ -287,14 +288,10 @@ export default function TransactionsPage() {
     const method = String(payMethod || '').trim().toLowerCase();
     const currency = (payCurrency === 'OTHER' ? payOtherCurrency : payCurrency).trim().toUpperCase();
     const amount = payAmount.trim();
-    const flightId = payFlightId;
+    const flightId = payFlightId.trim();
 
     if (canFilterFirm && !payFirmId) {
       toast.error(tr('Select a firm for this payment', "Ushbu to'lov uchun firmangizni tanlang"));
-      return;
-    }
-    if (!flightId) {
-      toast.error(tr('Select a flight for this payment', "Ushbu to'lov uchun reysni tanlang"));
       return;
     }
     if (!amount || !Number.isFinite(Number(amount)) || Number(amount) <= 0) {
@@ -353,13 +350,13 @@ export default function TransactionsPage() {
       setRecordingPayment(true);
 
       const body: any = {
-        flightId,
         amount,
         currency,
         method,
         metadata,
       };
       if (canFilterFirm) body.firmId = payFirmId;
+      if (flightId) body.flightId = flightId;
 
       if (currency !== 'UZS' && payExchangeRate.trim()) {
         body.exchangeRate = payExchangeRate.trim();
@@ -467,20 +464,6 @@ export default function TransactionsPage() {
     return normalized || String(type || '');
   };
 
-  const getTransactionDirection = (tx: any) => {
-    const meta = tx?.metadata && typeof tx.metadata === 'object' ? tx.metadata : {};
-    const payer = tx?.payerFirm?.name || meta.payerLabel;
-    const receiver = tx?.receiverFirm?.name || meta.receiverLabel;
-    if (payer || receiver) return `${payer || tr('External', 'Tashqi')} -> ${receiver || tr('Admin / Airline', 'Admin / Aviakompaniya')}`;
-
-    const firmName = tx?.firm?.name || tx?.firmId || tx?.firm_id || tr('Firm', 'Firma');
-    const type = String(tx?.type || '').trim().toUpperCase();
-    if (type === 'PAYMENT') return `${firmName} -> ${tr('Admin / Airline', 'Admin / Aviakompaniya')}`;
-    if (type === 'PAYABLE') return `${tr('Admin / Airline', 'Admin / Aviakompaniya')} -> ${firmName}`;
-    if (type === 'SALE') return `${firmName} -> ${tr('Buyer', 'Xaridor')}`;
-    return '-';
-  };
-
   const hasActiveFilters = Boolean(
     filterType ||
     (canFilterFirm && filterFirmId) ||
@@ -513,29 +496,89 @@ export default function TransactionsPage() {
     return payAmountNum * resolvedRate.rate;
   })();
 
+  const getBalanceDelta = (tx: any) => {
+    const type = String(tx?.type || '').trim().toUpperCase();
+    const amount = Number(tx?.baseAmount || tx?.base_amount || 0);
+    if (!Number.isFinite(amount)) return 0;
+    if (type === 'PAYMENT') return amount;
+    if (type === 'PAYABLE' || type === 'ALLOCATION') return -amount;
+    if (type === 'REFUND' || type === 'ADJUSTMENT') return amount;
+    return 0;
+  };
+
+  const searchText = quickSearch.trim().toLowerCase();
+  const visibleTransactions = useMemo(() => {
+    const rows = transactions.filter((t) => {
+      if (!searchText) return true;
+      const meta = t.metadata && typeof t.metadata === 'object' ? t.metadata : {};
+      const haystack = [
+        t.id,
+        t.type,
+        t.currency,
+        t.firm?.name,
+        t.firmId,
+        t.firm_id,
+        t.flight?.flightNumber,
+        t.flightId,
+        t.flight_id,
+        meta.transaction_reference,
+        meta.reference,
+        meta.note,
+      ].filter(Boolean).join(' ').toLowerCase();
+      return haystack.includes(searchText);
+    });
+
+    const chronological = [...rows].sort((a, b) => {
+      const ad = new Date(a.createdAt || a.created_at).getTime();
+      const bd = new Date(b.createdAt || b.created_at).getTime();
+      return ad - bd;
+    });
+
+    let running = 0;
+    const runningById = new Map<string, number>();
+    for (const tx of chronological) {
+      running += getBalanceDelta(tx);
+      runningById.set(String(tx.id), running);
+    }
+
+    return rows.map((tx) => ({ tx, runningBalance: runningById.get(String(tx.id)) || 0 }));
+  }, [searchText, transactions]);
+
+  const pageTotals = visibleTransactions.reduce(
+    (acc, row) => {
+      const delta = getBalanceDelta(row.tx);
+      if (delta < 0) acc.debit += Math.abs(delta);
+      if (delta > 0) acc.credit += delta;
+      acc.balance = row.runningBalance;
+      return acc;
+    },
+    { debit: 0, credit: 0, balance: 0 },
+  );
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-foreground">{tr('Transactions', 'Tranzaksiyalar')}</h2>
       </div>
 
-      <CollapsibleCard
-        title={tr('Record payment', "To'lovni qayd etish")}
-        description={
-          <>
-            {tr('Creates a', 'Bu')}{' '}
-            <span className="font-semibold">PAYMENT</span>{' '}
-            {tr('transaction.', 'tranzaksiyasini yaratadi.')}{' '}
-            {tr('Supported currencies:', 'Qo‘llab-quvvatlanadigan valyutalar:')}{' '}
-            <span className="font-semibold">UZS</span> / <span className="font-semibold">USD</span>{' '}
-            {tr('(non-UZS currencies require an exchange rate).', '(UZS bo\'lmagan valyutalar uchun kurs kerak).')}
-          </>
-        }
-        defaultOpen={false}
-        storageKey="jetstream-transactions-record-payment-open"
-        className="shadow sm:rounded-lg"
-      >
-        <form onSubmit={submitPayment} className="compact-toolbar">
+      {canFilterFirm && (
+        <CollapsibleCard
+          title={tr('Record payment', "To'lovni qayd etish")}
+          description={
+            <>
+              {tr('Creates a', 'Bu')}{' '}
+              <span className="font-semibold">PAYMENT</span>{' '}
+              {tr('transaction.', 'tranzaksiyasini yaratadi.')}{' '}
+              {tr('Supported currencies:', 'Qo‘llab-quvvatlanadigan valyutalar:')}{' '}
+              <span className="font-semibold">UZS</span> / <span className="font-semibold">USD</span>{' '}
+              {tr('(non-UZS currencies require an exchange rate).', '(UZS bo\'lmagan valyutalar uchun kurs kerak).')}
+            </>
+          }
+          defaultOpen={false}
+          storageKey="jetstream-transactions-record-payment-open"
+          className="shadow sm:rounded-lg"
+        >
+          <form onSubmit={submitPayment} className="compact-toolbar">
           {canFilterFirm && (
             <div>
               <label htmlFor="payFirm" className="compact-label">{tr('Firm', 'Firma')}</label>
@@ -555,15 +598,14 @@ export default function TransactionsPage() {
           )}
 
           <div>
-            <label htmlFor="payFlight" className="compact-label">{tr('Flight', 'Reys')}</label>
+            <label htmlFor="payFlight" className="compact-label">{tr('Flight (optional)', 'Reys (ixtiyoriy)')}</label>
             <select
               id="payFlight"
               value={payFlightId}
               onChange={(e) => setPayFlightId(e.target.value)}
               className="compact-control"
-              required
             >
-              <option value="">{tr('Select', 'Tanlang')}</option>
+              <option value="">{tr('Firm deposit', 'Firma depoziti')}</option>
               {flightOptions.map((f) => {
                 const fid = f.id ?? f.flight_id;
                 if (!fid) return null;
@@ -753,16 +795,23 @@ export default function TransactionsPage() {
               {recordingPayment ? tr('Recording...', 'Qayd etilmoqda...') : tr('Record payment', "To'lovni qayd etish")}
             </button>
           </div>
-        </form>
-      </CollapsibleCard>
+          </form>
+        </CollapsibleCard>
+      )}
 
-      <CollapsibleCard
-        title={tr('Filters', 'Filtrlar')}
-        defaultOpen={false}
-        storageKey="jetstream-transactions-filters-open"
-        className="shadow sm:rounded-lg"
-      >
-        <div className="compact-toolbar">
+      <div className="border border-border bg-surface">
+        <div className="border-b border-border px-3 py-2">
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(220px,1fr)_repeat(5,minmax(120px,auto))]">
+            <div>
+              <label htmlFor="quickSearch" className="compact-label">{tr('Search', 'Qidirish')}</label>
+              <input
+                id="quickSearch"
+                value={quickSearch}
+                onChange={(e) => setQuickSearch(e.target.value)}
+                placeholder={tr('Search this table', 'Jadvaldan qidirish')}
+                className="compact-control"
+              />
+            </div>
           <div>
             <label htmlFor="dateFrom" className="compact-label">{tr('Date from', 'Sana (dan)')}</label>
             <input
@@ -849,103 +898,94 @@ export default function TransactionsPage() {
               className="compact-control"
             />
           </div>
-        </div>
-      </CollapsibleCard>
-
-      <div className="bg-surface-2 border border-border shadow overflow-hidden sm:rounded-lg">
-        <div className="px-4 py-3 border-b border-border flex items-center justify-end">
-          <div className="inline-flex rounded-md border border-border overflow-hidden">
+          <div className="flex items-end">
             <button
               type="button"
-              onClick={() => setTransactionsView('list')}
-              aria-pressed={transactionsView === 'list'}
-              className={`px-3 py-2 text-sm font-medium transition ${transactionsView === 'list'
-                ? 'bg-surface-2 text-foreground'
-                : 'bg-surface text-muted hover:bg-surface-2'
-              }`}
+              onClick={clearFilters}
+              className="h-9 w-full border border-border bg-surface-2 px-3 text-sm font-semibold text-foreground hover:bg-surface"
             >
-              {tr('List', "Ro'yxat")}
-            </button>
-            <button
-              type="button"
-              onClick={() => setTransactionsView('boxes')}
-              aria-pressed={transactionsView === 'boxes'}
-              className={`px-3 py-2 text-sm font-medium transition ${transactionsView === 'boxes'
-                ? 'bg-surface-2 text-foreground'
-                : 'bg-surface text-muted hover:bg-surface-2'
-              }`}
-            >
-              {tr('Boxes', 'Bloklar')}
+              {tr('Clear', 'Tozalash')}
             </button>
           </div>
+          </div>
         </div>
+        <div className="grid grid-cols-1 border-b border-border bg-surface-2 text-sm md:grid-cols-3">
+          <div className="border-b border-border px-3 py-2 md:border-b-0 md:border-r">
+            <span className="text-muted">{tr('Debit', 'Chiqim')}: </span>
+            <span className="font-mono font-bold text-red-600">{pageTotals.debit.toFixed(0)} UZS</span>
+          </div>
+          <div className="border-b border-border px-3 py-2 md:border-b-0 md:border-r">
+            <span className="text-muted">{tr('Credit', 'Kirim')}: </span>
+            <span className="font-mono font-bold text-green-700">{pageTotals.credit.toFixed(0)} UZS</span>
+          </div>
+          <div className="px-3 py-2">
+            <span className="text-muted">{tr('Balance', 'Balans')}: </span>
+            <span className={`font-mono font-bold ${pageTotals.balance < 0 ? 'text-red-600' : 'text-green-700'}`}>
+              {pageTotals.balance.toFixed(0)} UZS
+            </span>
+          </div>
+        </div>
+      </div>
 
-        {transactionsView === 'list' ? (
+      <div className="bg-surface border border-border overflow-hidden">
+        {transactionsView === 'list' || transactionsView === 'boxes' ? (
           <div className="overflow-x-auto scroller-minimal">
           <table className="excel-table">
             <thead>
               <tr>
                 <th>{tr('Date', 'Sana')}</th>
-                <th>{tr('Type', 'Turi')}</th>
-                <th>{tr('Firm / Flight', 'Firma / Reys')}</th>
-                <th>{tr('Who pays who', 'Kim kimga to\'laydi')}</th>
-                <th className="text-right">{tr('Amount', 'Summa')}</th>
-                <th className="text-right">{tr('Base Amount (UZS)', 'Bazaviy summa (UZS)')}</th>
-                <th>{tr('Payment Method', "To'lov usuli")}</th>
+                <th>{tr('Description', 'Tavsif')}</th>
+                {canFilterFirm && <th>{tr('Firm', 'Firma')}</th>}
+                <th>{tr('Flight', 'Reys')}</th>
+                <th className="text-right">{tr('Debit', 'Chiqim')}</th>
+                <th className="text-right">{tr('Credit', 'Kirim')}</th>
+                <th className="text-right">{tr('Balance', 'Balans')}</th>
                 <th>{tr('Reference', 'Izoh')}</th>
+                <th>{tr('Action', 'Amal')}</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={8} className="text-center">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
-              ) : transactions.map((t: any) => (
-                <tr
-                  key={t.id}
-                  onClick={() => router.push(`/transactions/detail?id=${t.id}`)}
-                  className="cursor-pointer"
-                >
-                  <td className="text-muted">
-                    {format(new Date(t.createdAt || t.created_at), 'PPP pp')}
-                  </td>
-                  <td className="font-medium">
-                    <span className={`px-2 py-1 rounded-full text-xs font-bold border ${
-                      (t.type || '').toLowerCase() === 'sale' ? 'bg-green-900/30 text-green-300 border-green-700/50' :
-                      (t.type || '').toLowerCase() === 'payable' ? 'bg-red-900/30 text-red-300 border-red-700/50' :
-                      (t.type || '').toLowerCase() === 'payment' ? 'bg-indigo-900/30 text-indigo-300 border-indigo-700/50' :
-                      'bg-surface text-muted border-border'
-                    }`}
-                    title={getTransactionTypeHelp(t.type)}>
+                <tr><td colSpan={canFilterFirm ? 9 : 8} className="text-center">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
+              ) : visibleTransactions.map(({ tx: t, runningBalance }) => {
+                const delta = getBalanceDelta(t);
+                const debit = delta < 0 ? Math.abs(delta) : 0;
+                const credit = delta > 0 ? delta : 0;
+                return (
+                  <tr key={t.id}>
+                    <td className="text-muted">{format(new Date(t.createdAt || t.created_at), 'yyyy-MM-dd HH:mm')}</td>
+                    <td className="font-medium" title={getTransactionTypeHelp(t.type)}>
                       {getTransactionTypeLabel(t.type)}
-                    </span>
-                  </td>
-                  <td className="text-muted">
-                    <span>{tr('Firm', 'Firma')}: {t.firm?.name || t.firmId || t.firm_id}</span>
-                    <span className="ml-3">{tr('Flight', 'Reys')}: {t.flight?.flightNumber || t.flightId || t.flight_id || '-'}</span>
-                  </td>
-                  <td className="font-medium text-foreground">
-                    {getTransactionDirection(t)}
-                  </td>
-                  <td className="text-right font-semibold">
-                    {Number(t.originalAmount || t.original_amount).toFixed(2)} {t.currency}
-                  </td>
-                  <td className="text-right text-muted">
-                    {Number(t.baseAmount || t.base_amount).toFixed(2)} UZS
-                  </td>
-                  <td className="text-muted">
-                    {getPaymentMethodLabel(t.paymentMethod || t.payment_method)}
-                  </td>
-                  <td className="text-muted">
-                    {(() => {
+                    </td>
+                    {canFilterFirm && <td>{t.firm?.name || t.firmId || t.firm_id}</td>}
+                    <td>{t.flight?.flightNumber || t.flightId || t.flight_id || '-'}</td>
+                    <td className="text-right font-mono font-semibold text-red-600">{debit ? debit.toFixed(0) : '-'}</td>
+                    <td className="text-right font-mono font-semibold text-green-700">{credit ? credit.toFixed(0) : '-'}</td>
+                    <td className={`text-right font-mono font-bold ${runningBalance < 0 ? 'text-red-600' : 'text-green-700'}`}>
+                      {runningBalance.toFixed(0)}
+                    </td>
+                    <td className="text-muted">
+                      {(() => {
                       const meta = t.metadata && typeof t.metadata === 'object' ? t.metadata : null;
                       const ref = meta ? (meta.transaction_reference || meta.reference || meta.note) : null;
                       return ref ? String(ref) : '-';
-                    })()}
-                  </td>
-                </tr>
-              ))}
-              {!loading && transactions.length === 0 && (
+                      })()}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        onClick={() => router.push(`/transactions/detail?id=${t.id}`)}
+                        className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface"
+                      >
+                        {tr('View', "Ko'rish")}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!loading && visibleTransactions.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="text-center text-muted">
+                  <td colSpan={canFilterFirm ? 9 : 8} className="text-center text-muted">
                     <div className="space-y-2">
                       <div>{tr('No transactions found.', 'Tranzaksiyalar topilmadi.')}</div>
                       {hasActiveFilters ? (

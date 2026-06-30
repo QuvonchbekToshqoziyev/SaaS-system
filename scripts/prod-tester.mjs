@@ -124,8 +124,11 @@ async function getJson(apiBase, pathName, { token } = {}) {
 }
 
 async function strictAuthChecks(apiBase) {
-  const SUPERADMIN_EMAIL = process.env.SUPERADMIN_EMAIL || 'admin@airline.com';
-  const SUPERADMIN_PASSWORD = process.env.SUPERADMIN_PASSWORD || 'superadmin123';
+  const SUPERADMIN_EMAIL = process.env.SUPERADMIN_EMAIL?.trim();
+  const SUPERADMIN_PASSWORD = process.env.SUPERADMIN_PASSWORD?.trim();
+  if (!SUPERADMIN_EMAIL || !SUPERADMIN_PASSWORD) {
+    throw new Error('SUPERADMIN_EMAIL and SUPERADMIN_PASSWORD are required.');
+  }
 
   process.stdout.write('==> POST /auth/login (superadmin)\n');
   const login = await postJson(apiBase, '/auth/login', { email: SUPERADMIN_EMAIL, password: SUPERADMIN_PASSWORD });

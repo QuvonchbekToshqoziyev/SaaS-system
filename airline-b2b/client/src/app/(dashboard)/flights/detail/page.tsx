@@ -17,7 +17,8 @@ function FlightDetailContent() {
   const { user } = useAuth();
   const { tr } = useLanguage();
 
-  const [ticketsView, setTicketsView] = useState<'list' | 'boxes'>('list');
+  const [ticketsView] = useState<'list'>('list');
+  const [ticketSearch, setTicketSearch] = useState('');
 
   // Modal State
   const [isAllocateModalOpen, setIsAllocateModalOpen] = useState(false);
@@ -531,6 +532,19 @@ function FlightDetailContent() {
     if (!pendingCancelRequestByTicketId.has(tid)) pendingCancelRequestByTicketId.set(tid, r);
   }
 
+  const visibleTickets = tickets.filter((ticket: any) => {
+    const text = ticketSearch.trim().toLowerCase();
+    if (!text) return true;
+    return [
+      ticket.id,
+      ticket.status,
+      ticket.price,
+      ticket.currency,
+      ticket.assignedFirm?.name,
+      ticket.assignedFirmId,
+    ].filter(Boolean).join(' ').toLowerCase().includes(text);
+  });
+
   return (
     <div className="space-y-8">
       <div className="flex items-center gap-3">
@@ -602,33 +616,19 @@ function FlightDetailContent() {
       </div>
 
       <div className="bg-surface-2 border border-border rounded-lg overflow-hidden">
-        <div className="px-6 py-4 border-b border-border flex items-center justify-between gap-4">
-          <h3 className="text-lg font-bold">{tr('Tickets Inventory', 'Chiptalar zaxirasi')}</h3>
+        <div className="px-3 py-2 border-b border-border grid grid-cols-1 gap-2 lg:grid-cols-[220px_1fr_auto] lg:items-end">
+          <h3 className="text-lg font-bold lg:pb-1">{tr('Tickets Inventory', 'Chiptalar zaxirasi')}</h3>
+          <div>
+            <label htmlFor="ticketSearch" className="compact-label">{tr('Search tickets', 'Chiptalarni qidirish')}</label>
+            <input
+              id="ticketSearch"
+              value={ticketSearch}
+              onChange={(e) => setTicketSearch(e.target.value)}
+              className="compact-control"
+              placeholder={tr('Search ticket, status, firm', 'Chipta, holat, firma qidirish')}
+            />
+          </div>
           <div className="flex items-center gap-3 flex-wrap justify-end">
-            <div className="inline-flex rounded-lg border border-border overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setTicketsView('list')}
-                aria-pressed={ticketsView === 'list'}
-                className={`px-3 py-1 text-sm font-medium transition ${ticketsView === 'list'
-                  ? 'bg-surface-2 text-foreground'
-                  : 'bg-surface text-muted hover:bg-surface-2'
-                }`}
-              >
-                {tr('List', "Ro'yxat")}
-              </button>
-              <button
-                type="button"
-                onClick={() => setTicketsView('boxes')}
-                aria-pressed={ticketsView === 'boxes'}
-                className={`px-3 py-1 text-sm font-medium transition ${ticketsView === 'boxes'
-                  ? 'bg-surface-2 text-foreground'
-                  : 'bg-surface text-muted hover:bg-surface-2'
-                }`}
-              >
-                {tr('Boxes', 'Kartalar')}
-              </button>
-            </div>
             {canAllocate && (
               <button
                 type="button"
@@ -661,7 +661,7 @@ function FlightDetailContent() {
             )}
           </div>
         </div>
-        {ticketsView === 'list' ? (
+        {ticketsView === 'list' || ticketsView === 'boxes' ? (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
@@ -674,7 +674,7 @@ function FlightDetailContent() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border text-sm">
-                {tickets.map((ticket: any) => (
+                {visibleTickets.map((ticket: any) => (
                   <tr key={ticket.id} className="hover:bg-surface transition">
                     <td className="p-4 text-foreground font-medium">
                       <div className="flex items-center gap-2">
@@ -767,7 +767,7 @@ function FlightDetailContent() {
                     </td>
                   </tr>
                 ))}
-                {tickets.length === 0 && (
+                {visibleTickets.length === 0 && (
                   <tr>
                     <td colSpan={5} className="p-8 text-center text-muted">
                       <Plane className="mx-auto h-8 w-8 mb-2 opacity-50" />

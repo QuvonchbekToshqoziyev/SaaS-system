@@ -31,8 +31,10 @@ type KassaSummary = {
   duePayments: Array<{
     firmId: string;
     firmName: string | null;
-    flightId: string;
+    flightId: string | null;
     flightNumber: string | null;
+    debt: number;
+    paid: number;
     outstanding: number;
   }>;
 };
@@ -51,6 +53,7 @@ export default function KassaPage() {
   const isAdmin = role === 'admin' || role === 'superadmin';
   const canAccess = isFirm || isAdmin;
   const canManageKassa = isAdmin;
+  const canRecordPayment = isAdmin;
   const canFilterFirm = canManageKassa;
 
   const [selectedDate, setSelectedDate] = useState(() => format(new Date(), 'yyyy-MM-dd'));
@@ -180,28 +183,24 @@ export default function KassaPage() {
     }
   };
 
-  const prefillPayment = (firmId: string, flightId: string, amount?: number) => {
+  const prefillPayment = (firmId: string, flightId?: string | null, amount?: number) => {
     if (!isEditable) return;
     if (canFilterFirm) setPayFirmId(firmId);
-    setPayFlightId(flightId);
+    setPayFlightId(flightId || '');
     if (amount != null && amount > 0) setPayAmount(String(Math.round(amount)));
   };
 
   const submitPayment = async (e: FormEvent) => {
     e.preventDefault();
-    if (recordingPayment || !isEditable) return;
+    if (recordingPayment || !isEditable || !canRecordPayment) return;
 
     const method = payMethod;
     const currency = payCurrencyCode;
     const amount = payAmount.trim();
-    const flightId = payFlightId;
+    const flightId = payFlightId.trim();
 
     if (canFilterFirm && !payFirmId) {
       toast.error(tr('Select a firm', 'Firmani tanlang'));
-      return;
-    }
-    if (!flightId) {
-      toast.error(tr('Select a flight', 'Reysni tanlang'));
       return;
     }
     if (!amount || !Number.isFinite(Number(amount)) || Number(amount) <= 0) {
@@ -228,8 +227,9 @@ export default function KassaPage() {
 
     try {
       setRecordingPayment(true);
-      const body: any = { flightId, amount, currency, method, metadata };
+      const body: any = { amount, currency, method, metadata };
       if (canFilterFirm) body.firmId = payFirmId;
+      if (flightId) body.flightId = flightId;
       if (currency !== 'UZS' && payExchangeRate.trim()) body.exchangeRate = payExchangeRate.trim();
 
       await api.post('/payments', body);
@@ -370,16 +370,18 @@ export default function KassaPage() {
         ))}
       </div>
 
-      <CollapsibleCard
-        title={tr('Record payment', 'To\'lov qayd etish')}
-        description={
-          isEditable
-            ? tr('Record a cash or card payment for this kassa day.', 'Ushbu kassa kuni uchun naqd yoki karta to\'lovini qayd eting.')
-            : tr('Payments can only be recorded while kassa is open.', 'To\'lovlar faqat kassa ochiq bo\'lganda qayd etiladi.')
-        }
-        storageKey="kassa-payment-card"
-      >
-        <form onSubmit={submitPayment} className={`compact-toolbar ${!isEditable ? 'opacity-50 pointer-events-none' : ''}`}>
+      {canRecordPayment && (
+        <CollapsibleCard
+          title={tr('Add payment', 'To\'lov qo\'shish')}
+          description={
+            isEditable
+              ? tr('Record a firm deposit for this kassa day.', 'Ushbu kassa kuni uchun firma depozitini qayd eting.')
+              : tr('Payments can only be recorded while kassa is open.', 'To\'lovlar faqat kassa ochiq bo\'lganda qayd etiladi.')
+          }
+          defaultOpen={true}
+          storageKey="kassa-payment-card"
+        >
+          <form onSubmit={submitPayment} className={`compact-toolbar ${!isEditable ? 'opacity-50 pointer-events-none' : ''}`}>
           {canFilterFirm && (
             <div>
               <label className="compact-label">{tr('Firm', 'Firma')}</label>
@@ -392,9 +394,9 @@ export default function KassaPage() {
             </div>
           )}
           <div>
-            <label className="compact-label">{tr('Flight', 'Reys')}</label>
+            <label className="compact-label">{tr('Flight (optional)', 'Reys (ixtiyoriy)')}</label>
             <select value={payFlightId} onChange={(e) => setPayFlightId(e.target.value)} className="compact-control">
-              <option value="">{tr('Select flight', 'Reysni tanlang')}</option>
+              <option value="">{tr('Firm deposit', 'Firma depoziti')}</option>
               {flightOptions.map((f) => {
                 const id = f.id || f.flight_id || '';
                 return <option key={id} value={id}>{f.flightNumber || id}</option>;
@@ -449,8 +451,9 @@ export default function KassaPage() {
               {recordingPayment ? tr('Recording…', 'Qayd etilmoqda…') : tr('Record payment', 'To\'lov qayd etish')}
             </button>
           </div>
-        </form>
-      </CollapsibleCard>
+          </form>
+        </CollapsibleCard>
+      )}
 
       <CollapsibleCard
         title={tr('Due payments', 'Muddatli to\'lovlar')}
@@ -475,9 +478,9 @@ export default function KassaPage() {
               </thead>
               <tbody>
                 {summary.duePayments.map((item) => (
-                  <tr key={`${item.firmId}-${item.flightId}`} className="border-b border-border/50">
+                  <tr key={`${item.firmId}-${item.flightId || 'firm'}`} className="border-b border-border/50">
                     {canFilterFirm && <td>{item.firmName || item.firmId}</td>}
-                    <td>{item.flightNumber || item.flightId}</td>
+                    <td>{item.flightNumber || item.flightId || tr('Firm balance', 'Firma balansi')}</td>
                     <td className="text-right font-mono">{formatMoney(item.outstanding)}</td>
                     <td>
                       <button

@@ -75,7 +75,7 @@ export const processPayment = async (req: Request, res: Response) => {
     firmId = ownFirmId;
   }
 
-  if (!firmId || !flightId || !amount || !currency || !method) {
+  if (!firmId || !amount || !currency || !method) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
   if (!PAYMENT_METHODS.has(method)) {
@@ -118,11 +118,11 @@ export const processPayment = async (req: Request, res: Response) => {
     await prisma.$transaction(async (tx) => {
       const [firm, flight] = await Promise.all([
         tx.firm.findUnique({ where: { id: firmId }, select: { id: true, name: true } }),
-        tx.flight.findUnique({ where: { id: flightId }, select: { id: true } }),
+        flightId ? tx.flight.findUnique({ where: { id: flightId }, select: { id: true } }) : Promise.resolve(null),
       ]);
 
       if (!firm) throw new Error('Firm not found');
-      if (!flight) throw new Error('Flight not found');
+      if (flightId && !flight) throw new Error('Flight not found');
 
       let paymentDate = new Date();
       if (method === 'cash') {
@@ -210,9 +210,9 @@ export const processPayment = async (req: Request, res: Response) => {
           firmId,
           payerFirmId: firmId,
           direction: 'FIRM_TO_PLATFORM',
-          subjectType: 'FLIGHT',
-          subjectId: flightId,
-          flightId,
+          subjectType: flightId ? 'FLIGHT' : 'DEPOSIT',
+          subjectId: flightId || firmId,
+          flightId: flightId || undefined,
           createdByUserId: actorUserId,
           type: 'PAYMENT',
           originalAmount: amount.toDecimalPlaces(4),

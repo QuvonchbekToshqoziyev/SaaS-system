@@ -54,10 +54,21 @@ type DashboardReport = {
   };
 };
 
+type CancellationRequest = {
+  id: string;
+  ticketId: string;
+  flightId: string;
+  firmId: string;
+  reason: string;
+  createdAt: string;
+  firm?: { name?: string | null } | null;
+};
+
 export default function AdminDashboard() {
   const { tr } = useLanguage();
   const [report, setReport] = useState<MonthlyReportRow[] | null>(null);
   const [dashboard, setDashboard] = useState<DashboardReport | null>(null);
+  const [cancelRequests, setCancelRequests] = useState<CancellationRequest[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [rateDate, setRateDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
@@ -66,16 +77,20 @@ export default function AdminDashboard() {
   const [savingRate, setSavingRate] = useState(false);
 
   const [calendarReloadKey, setCalendarReloadKey] = useState(0);
+  const [decisionReasons, setDecisionReasons] = useState<Record<string, string>>({});
+  const [approvingRequestId, setApprovingRequestId] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchReport = async () => {
       try {
-        const [monthlyRes, dashboardRes] = await Promise.all([
+        const [monthlyRes, dashboardRes, cancelRes] = await Promise.all([
           api.get<MonthlyReportRow[]>('/reports/monthly'),
           api.get<DashboardReport>('/reports/dashboard'),
+          api.get<CancellationRequest[]>('/tickets/cancel-sale-requests?status=PENDING').catch(() => ({ data: [] })),
         ]);
         setReport(monthlyRes.data);
         setDashboard(dashboardRes.data);
+        setCancelRequests(Array.isArray(cancelRes.data) ? cancelRes.data : []);
       } catch {
         toast.error('Failed to load reports');
       } finally {
@@ -118,6 +133,29 @@ export default function AdminDashboard() {
       toast.error(err?.response?.data?.error || 'Failed to save exchange rate');
     } finally {
       setSavingRate(false);
+    }
+  };
+
+  const approveCancellation = async (request: CancellationRequest) => {
+    if (approvingRequestId) return;
+    const decisionReason = (decisionReasons[request.id] || request.reason || '').trim();
+    if (!decisionReason) {
+      toast.error('Enter a reason before approving');
+      return;
+    }
+
+    try {
+      setApprovingRequestId(request.id);
+      await api.post('/tickets/cancel-sale-requests/approve', {
+        requestId: request.id,
+        decisionReason,
+      });
+      toast.success('Cancellation approved');
+      setCancelRequests((rows) => rows.filter((row) => row.id !== request.id));
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || 'Failed to approve cancellation');
+    } finally {
+      setApprovingRequestId(null);
     }
   };
 
@@ -321,6 +359,61 @@ export default function AdminDashboard() {
           </table>
         </div>
       </CollapsibleCard>
+
+      <div className="border border-border bg-surface">
+        <div className="border-b border-border px-3 py-2 flex items-center justify-between">
+          <h3 className="text-base font-bold text-foreground">{tr('Cancellation requests', 'Bekor qilish so\'rovlari')}</h3>
+          <span className="font-mono text-sm text-muted">{cancelRequests.length}</span>
+        </div>
+        <div className="overflow-x-auto scroller-minimal">
+          <table className="excel-table">
+            <thead>
+              <tr>
+                <th>{tr('Date', 'Sana')}</th>
+                <th>{tr('Firm', 'Firma')}</th>
+                <th>{tr('Flight', 'Reys')}</th>
+                <th>{tr('Ticket', 'Chipta')}</th>
+                <th>{tr('Firm reason', 'Firma sababi')}</th>
+                <th>{tr('Admin reason', 'Admin sababi')}</th>
+                <th>{tr('Action', 'Amal')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cancelRequests.map((request) => (
+                <tr key={request.id}>
+                  <td>{format(new Date(request.createdAt), 'yyyy-MM-dd HH:mm')}</td>
+                  <td>{request.firm?.name || request.firmId}</td>
+                  <td>{request.flightId}</td>
+                  <td>{request.ticketId.slice(0, 8)}...</td>
+                  <td className="max-w-[260px] truncate" title={request.reason}>{request.reason}</td>
+                  <td>
+                    <input
+                      value={decisionReasons[request.id] ?? request.reason}
+                      onChange={(e) => setDecisionReasons((draft) => ({ ...draft, [request.id]: e.target.value }))}
+                      className="h-8 min-w-[220px] border border-border bg-surface px-2 text-sm text-foreground outline-none focus:border-primary"
+                    />
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      onClick={() => approveCancellation(request)}
+                      disabled={approvingRequestId === request.id}
+                      className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50"
+                    >
+                      {approvingRequestId === request.id ? tr('Approving', 'Tasdiqlanmoqda') : tr('Approve', 'Tasdiqlash')}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {cancelRequests.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="text-center text-muted">{tr('No pending requests', "Kutilayotgan so'rovlar yo'q")}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       <DashboardCalendar
         title={tr('Activity calendar', 'Faollik taqvimi')}

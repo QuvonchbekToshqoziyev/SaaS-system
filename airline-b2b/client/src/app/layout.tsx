@@ -14,6 +14,11 @@ const dm_mono = DM_Mono({ subsets: ['latin'], variable: '--font-mono', weight: [
 export const metadata: Metadata = {
   title: 'ADO Financial Accounting — Airline Platform',
   description: 'ADO Financial Accounting Platform',
+  icons: {
+    icon: '/ADO-icon.png',
+    shortcut: '/ADO-icon.png',
+    apple: '/ADO-icon.png',
+  },
 };
 
 export default function RootLayout({

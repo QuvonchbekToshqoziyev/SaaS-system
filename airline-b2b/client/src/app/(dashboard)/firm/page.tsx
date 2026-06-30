@@ -24,6 +24,7 @@ type FirmReport = {
     revenue?: number | string;
     paid?: number | string;
     outstanding?: number | string;
+    balance?: number | string;
     profit?: number | string;
   };
   tickets?: {
@@ -79,9 +80,17 @@ type DashboardReport = {
   };
   duePayments?: {
     totalOutstanding: number;
+    balance?: number;
+    debt?: number;
+    paid?: number;
     byFlight?: DashboardDueFlight[];
   };
 };
+
+function formatMoney(value: number | string | undefined) {
+  const n = Number(value || 0);
+  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Number.isFinite(n) ? n : 0);
+}
 
 export default function FirmDashboard() {
   const { tr } = useLanguage();
@@ -134,6 +143,7 @@ export default function FirmDashboard() {
   if (loading) return <div>{tr('Loading reports...', 'Hisobotlar yuklanmoqda...')}</div>;
 
   const totals = firmReport?.totals || {};
+  const balance = Number(totals.balance ?? dashboard?.duePayments?.balance ?? 0);
   const tickets = firmReport?.tickets || {};
   const byFlight = Array.isArray(firmReport?.byFlight) ? firmReport?.byFlight : [];
 
@@ -147,6 +157,12 @@ export default function FirmDashboard() {
         <h2 className="text-3xl font-bold text-foreground">{tr('Firm Overview', "Firma ko'rinishi")}</h2>
         <p className="mt-1 text-sm text-muted">{tr('Your firm-scoped KPIs and monthly breakdown.', 'Firma bo‘yicha KPI va oylik kesim.')}</p>
       </div>
+
+      {balance < 0 && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          {tr('You have an outstanding balance of', 'Sizda qarzdorlik mavjud:')} <span className="font-bold">{formatMoney(balance)} UZS</span>
+        </div>
+      )}
 
       <CollapsibleCard
         title={tr('Start here', 'Boshlash')}
@@ -192,12 +208,14 @@ export default function FirmDashboard() {
           <dd className="mt-1 text-3xl font-semibold text-foreground">{tickets.sold ?? 0}</dd>
         </div>
         <div className="bg-surface-2 border border-border overflow-hidden rounded-lg px-4 py-5 sm:p-6">
-          <dt className="text-sm font-medium text-muted truncate">{tr('Debt (UZS)', 'Qarz (UZS)')}</dt>
-          <dd className="mt-1 text-3xl font-semibold text-foreground">{Number(totals.debt || 0).toFixed(2)}</dd>
+          <dt className="text-sm font-medium text-muted truncate">{tr('Balance (UZS)', 'Balans (UZS)')}</dt>
+          <dd className={`mt-1 text-3xl font-semibold ${balance < 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+            {formatMoney(balance)}
+          </dd>
         </div>
         <div className="bg-surface-2 border border-border overflow-hidden rounded-lg px-4 py-5 sm:p-6">
           <dt className="text-sm font-medium text-muted truncate">{tr('Outstanding (UZS)', 'Qoldiq (UZS)')}</dt>
-          <dd className="mt-1 text-3xl font-semibold text-foreground">{Number(totals.outstanding || 0).toFixed(2)}</dd>
+          <dd className="mt-1 text-3xl font-semibold text-foreground">{formatMoney(totals.outstanding)}</dd>
         </div>
       </div>
 

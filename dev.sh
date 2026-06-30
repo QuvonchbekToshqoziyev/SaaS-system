@@ -136,6 +136,12 @@ BACKEND_ORIGIN=http://127.0.0.1:${BACKEND_PORT}
 ENV
 success "Client .env.local written"
 
+if [[ -z "${SUPERADMIN_EMAIL:-}" || -z "${SUPERADMIN_PASSWORD:-}" ]]; then
+  error "SUPERADMIN_EMAIL and SUPERADMIN_PASSWORD are required to bootstrap the real superadmin account."
+  error "Run: SUPERADMIN_EMAIL=\"you@example.com\" SUPERADMIN_PASSWORD=\"your-secure-password\" ./dev.sh"
+  exit 1
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────
 header "4 / 6  — Install dependencies & migrate DB"
 # ─────────────────────────────────────────────────────────────────────────────
@@ -157,23 +163,10 @@ info "Pushing Prisma schema to database..."
 npx prisma db push --schema=prisma/schema.prisma --accept-data-loss 2>&1 | tail -n 5
 success "Database schema up-to-date"
 
-info "Ensuring dev users have a valid password hash..."
-npx ts-node -e "
-const { PrismaClient } = require('@prisma/client');
-const bcrypt = require('bcrypt');
-const prisma = new PrismaClient();
-(async () => {
-  const hash = await bcrypt.hash('1111', 10);
-  const count = await prisma.user.count();
-  if (count === 0) {
-    require('child_process').execSync('npx ts-node prisma/seed.ts', { stdio: 'inherit' });
-  } else {
-    await prisma.user.updateMany({ data: { password: hash } });
-  }
-  await prisma.\$disconnect();
-})();
-" 2>&1 | tail -n 3
-success "Dev credentials ready (admin@adob2b.com / 1111)"
+info "Bootstrapping the superadmin account..."
+SUPERADMIN_EMAIL="$SUPERADMIN_EMAIL" SUPERADMIN_PASSWORD="$SUPERADMIN_PASSWORD" \
+  npx ts-node prisma/seed.ts 2>&1 | tail -n 5
+success "Superadmin ready (${SUPERADMIN_EMAIL})"
 
 # Client deps
 cd "$REPO_ROOT"
@@ -261,8 +254,8 @@ echo -e "${BOLD}║  Frontend  →  http://localhost:${FRONTEND_PORT} (direct)  
 echo -e "${BOLD}║  Backend   →  http://localhost:${BACKEND_PORT} (direct)   ║${RESET}"
 echo -e "${BOLD}║  DB        →  ${DB_HOST}:${DB_PORT}/${DB_NAME}  ║${RESET}"
 echo -e "${BOLD}╠══════════════════════════════════════════════╣${RESET}"
-echo -e "${BOLD}║  Admin     →  admin@adob2b.com               ║${RESET}"
-echo -e "${BOLD}║  Password  →  1111                           ║${RESET}"
+echo -e "${BOLD}║  Admin     →  ${SUPERADMIN_EMAIL}  ║${RESET}"
+echo -e "${BOLD}║  Password  →  configured via env             ║${RESET}"
 echo -e "${BOLD}╠══════════════════════════════════════════════╣${RESET}"
 echo -e "${BOLD}║  Backend log:  .dev-logs/backend.log         ║${RESET}"
 echo -e "${BOLD}║  Frontend log: .dev-logs/frontend.log        ║${RESET}"

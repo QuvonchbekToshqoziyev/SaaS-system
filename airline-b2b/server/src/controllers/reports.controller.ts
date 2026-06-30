@@ -281,7 +281,7 @@ export const getFirmReport = async (req: Request, res: Response) => {
 
   const firm = await prisma.firm.findUnique({
     where: { id: resolvedFirmId },
-    select: { id: true, name: true },
+    select: { id: true, name: true, creditLimit: true, currency: true, status: true },
   });
 
   if (!firm) {
@@ -457,7 +457,9 @@ export const getFirmReport = async (req: Request, res: Response) => {
       debt,
       revenue,
       paid,
-      outstanding: debt - paid,
+      outstanding: Math.max(debt - paid, 0),
+      balance: paid - debt,
+      credit: Math.max(paid - debt, 0),
       profit: revenue - debt,
     },
     tickets: {
@@ -943,7 +945,7 @@ export const getDashboardReport = async (req: Request, res: Response) => {
           _count: { _all: true },
         }),
         prisma.transaction.groupBy({
-          by: ['flightId', 'type'],
+          by: ['type'],
           where: {
             firmId: firmScopeId,
             type: payableAndPaymentTypeFilter,
@@ -953,8 +955,7 @@ export const getDashboardReport = async (req: Request, res: Response) => {
       ]);
 
       const pendingFlightIds = pendingGroups.map((g) => g.flightId).filter((id): id is string => !!id);
-      const dueFlightIds = Array.from(new Set(dueGroups.map((g) => g.flightId).filter((id): id is string => !!id)));
-      const flightIds = Array.from(new Set([...pendingFlightIds, ...dueFlightIds]));
+      const flightIds = Array.from(new Set([...pendingFlightIds]));
 
       const flights = flightIds.length
         ? await prisma.flight.findMany({
@@ -976,41 +977,24 @@ export const getDashboardReport = async (req: Request, res: Response) => {
         })
         .sort((a, b) => String(a.departure || '').localeCompare(String(b.departure || '')));
 
-      const debtByFlight = new Map<string, number>();
-      const paidByFlight = new Map<string, number>();
+      let debt = 0;
+      let paid = 0;
       for (const row of dueGroups) {
         const val = sumToNumber(row._sum?.baseAmount);
-        const flightId = row.flightId || '';
-        if (isPayableDebtType(row.type)) debtByFlight.set(flightId, (debtByFlight.get(flightId) || 0) + val);
-        if (row.type === 'PAYMENT') paidByFlight.set(flightId, (paidByFlight.get(flightId) || 0) + val);
+        if (isPayableDebtType(row.type)) debt += val;
+        if (row.type === 'PAYMENT') paid += val;
       }
 
-      const dueItems = Array.from(new Set([...debtByFlight.keys(), ...paidByFlight.keys()]))
-        .map((flightId) => {
-          const f = flightById.get(flightId);
-          const debt = debtByFlight.get(flightId) || 0;
-          const paid = paidByFlight.get(flightId) || 0;
-          const outstanding = debt - paid;
-          return {
-            flightId,
-            flightNumber: f?.flightNumber || null,
-            departure: f?.departure || null,
-            debt,
-            paid,
-            outstanding,
-          };
-        })
-        .filter((r) => r.outstanding > 0)
-        .sort((a, b) => b.outstanding - a.outstanding);
+      const balance = paid - debt;
+      const totalOutstanding = Math.max(-balance, 0);
 
       const pendingTotal = pendingItems.reduce((acc, i) => acc + (i.count || 0), 0);
-      const totalOutstanding = dueItems.reduce((acc, i) => acc + i.outstanding, 0);
 
       return res.json({
         role,
         todos: [
           { key: 'pending_allocations', label: 'Confirm pending allocations', count: pendingTotal },
-          { key: 'due_payments', label: 'Make payments (outstanding balance)', count: dueItems.length, amount: totalOutstanding },
+          { key: 'due_payments', label: 'Make payments (outstanding balance)', count: totalOutstanding > 0 ? 1 : 0, amount: totalOutstanding },
         ],
         pendingAllocations: {
           total: pendingTotal,
@@ -1018,7 +1002,10 @@ export const getDashboardReport = async (req: Request, res: Response) => {
         },
         duePayments: {
           totalOutstanding,
-          byFlight: dueItems,
+          balance,
+          debt,
+          paid,
+          byFlight: [],
         },
       });
     }
@@ -1132,4 +1119,3 @@ export const getDashboardReport = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Internal server error' });
   }
 };
-

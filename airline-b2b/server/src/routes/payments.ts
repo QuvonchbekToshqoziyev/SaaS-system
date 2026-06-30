@@ -5,5 +5,5 @@ import { roleMiddleware } from '../middleware/role';
 
 const router = Router();
 router.use(authMiddleware);
-router.post('/', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), processPayment);
+router.post('/', roleMiddleware(['SUPERADMIN', 'ADMIN']), processPayment);
 export default router;

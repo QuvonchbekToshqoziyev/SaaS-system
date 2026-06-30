@@ -49,12 +49,12 @@ export default function LoginPage() {
 
         {/* Huge Center Logo */}
         <div className="absolute inset-0 z-0 flex items-center justify-center opacity-[0.15] transform scale-[1.5] pointer-events-none">
-           <img src="/logo.png" alt="Big ADO Logo" className="w-1/2 h-auto object-contain drop-shadow-2xl grayscale mix-blend-luminosity" />
+           <img src="/ADO-logo.png" alt="Big ADO Logo" className="w-1/2 h-auto object-contain drop-shadow-2xl grayscale mix-blend-luminosity" />
         </div>
 
         <div className="absolute top-10 left-10 z-10 flex items-center gap-4">
            <div className="w-12 h-12 bg-surface-2 flex items-center justify-center rounded-xl border border-border overflow-hidden">
-             <img src="/logo.png" alt="ADO Logo" className="w-full h-full object-contain p-[3px]" />
+             <img src="/ADO-icon.png" alt="ADO Logo" className="w-full h-full object-contain p-[3px]" />
            </div>
            <div className="h-4 w-px bg-border"></div>
            <span className="text-muted text-xs font-extrabold tracking-[0.2em] font-mono uppercase">ADO Financial</span>

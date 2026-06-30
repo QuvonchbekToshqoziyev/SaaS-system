@@ -88,34 +88,23 @@ async function loadDuePayments(firmScopeId?: string) {
   };
 
   const groups = await prisma.transaction.groupBy({
-    by: ['firmId', 'flightId', 'type'],
+    by: ['firmId', 'type'],
     where,
     _sum: { baseAmount: true },
   });
 
   const firmIds = Array.from(new Set(groups.map((g) => g.firmId).filter(Boolean))) as string[];
-  const flightIds = Array.from(new Set(groups.map((g) => g.flightId).filter(Boolean))) as string[];
 
-  const [firms, flights] = await Promise.all([
-    firmIds.length
-      ? prisma.firm.findMany({ where: { id: { in: firmIds } }, select: { id: true, name: true } })
-      : Promise.resolve([]),
-    flightIds.length
-      ? prisma.flight.findMany({
-          where: { id: { in: flightIds } },
-          select: { id: true, flightNumber: true, departure: true },
-        })
-      : Promise.resolve([]),
-  ]);
+  const firms = firmIds.length
+    ? await prisma.firm.findMany({ where: { id: { in: firmIds } }, select: { id: true, name: true } })
+    : [];
 
   const firmById = new Map(firms.map((f) => [f.id, f]));
-  const flightById = new Map(flights.map((f) => [f.id, f]));
 
-  const bucket = new Map<string, { debt: number; paid: number; firmId: string; flightId: string }>();
+  const bucket = new Map<string, { debt: number; paid: number; firmId: string }>();
   for (const row of groups) {
-    if (!row.flightId) continue;
-    const key = `${row.firmId}:${row.flightId}`;
-    const current = bucket.get(key) || { debt: 0, paid: 0, firmId: row.firmId, flightId: row.flightId };
+    const key = row.firmId;
+    const current = bucket.get(key) || { debt: 0, paid: 0, firmId: row.firmId };
     const val = sumToNumber(row._sum?.baseAmount);
     if (isPayableDebtType(row.type)) current.debt += val;
     if (row.type === 'PAYMENT') current.paid += val;
@@ -126,13 +115,12 @@ async function loadDuePayments(firmScopeId?: string) {
     .map((row) => {
       const outstanding = row.debt - row.paid;
       const firm = firmById.get(row.firmId);
-      const flight = flightById.get(row.flightId);
       return {
         firmId: row.firmId,
         firmName: firm?.name ?? null,
-        flightId: row.flightId,
-        flightNumber: flight?.flightNumber ?? null,
-        departure: flight?.departure?.toISOString() ?? null,
+        flightId: null,
+        flightNumber: null,
+        departure: null,
         debt: row.debt,
         paid: row.paid,
         outstanding,

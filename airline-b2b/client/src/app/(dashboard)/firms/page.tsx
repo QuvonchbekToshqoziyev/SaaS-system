@@ -1,14 +1,14 @@
 "use client";
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { Plus, X, Building, ArrowRight, TrendingUp } from 'lucide-react';
+import { Plus, X } from 'lucide-react';
 import type { AxiosError } from 'axios';
 import Link from 'next/link';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 type ApiErrorResponse = {
   error?: string;
@@ -27,9 +27,19 @@ type CreateFirmInviteResponse = {
   link?: string;
 };
 
+type FirmRow = {
+  id: string;
+  name: string;
+  creditLimit?: number | string;
+  balance?: number | string;
+  outstanding?: number | string;
+  createdAt: string;
+};
+
 export default function FirmsPage() {
   const { user } = useAuth();
   const { tr } = useLanguage();
+  const queryClient = useQueryClient();
 
   const role = (user?.role || '').toString().toUpperCase();
   const canManage = role === 'ADMIN' || role === 'SUPERADMIN';
@@ -37,6 +47,11 @@ export default function FirmsPage() {
   const [firmName, setFirmName] = useState('');
   const [email, setEmail] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [savingCreditFirmId, setSavingCreditFirmId] = useState<string | null>(null);
+  const [creditDrafts, setCreditDrafts] = useState<Record<string, string>>({});
+  const [firmSearch, setFirmSearch] = useState('');
+  const [sortKey, setSortKey] = useState<'name' | 'balance' | 'outstanding' | 'creditLimit'>('outstanding');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [inviteExpiresAt, setInviteExpiresAt] = useState<string | null>(null);
@@ -48,7 +63,7 @@ export default function FirmsPage() {
     setCreatedFirmId(null);
   };
 
-  const { data: firms, isLoading: loadingFirms } = useQuery<any[]>({
+  const { data: firms, isLoading: loadingFirms } = useQuery<FirmRow[]>({
     queryKey: ['firms'],
     queryFn: async () => {
       if (!canManage) return [];
@@ -157,6 +172,54 @@ export default function FirmsPage() {
     }
   };
 
+  const formatMoney = (value: unknown) => {
+    const n = Number(value || 0);
+    return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Number.isFinite(n) ? n : 0);
+  };
+
+  const saveCreditLimit = async (firmId: string, currentValue: unknown) => {
+    const value = creditDrafts[firmId] ?? String(currentValue ?? '0');
+    try {
+      setSavingCreditFirmId(firmId);
+      await api.patch(`/firms/${firmId}`, { creditLimit: value.trim() || '0' });
+      toast.success(tr('Credit limit saved', 'Kredit limiti saqlandi'));
+      queryClient.invalidateQueries({ queryKey: ['firms'] });
+    } catch (error: unknown) {
+      toast.error(getApiErrorMessage(error) || tr('Failed to save credit limit', 'Kredit limitini saqlab bo\'lmadi'));
+    } finally {
+      setSavingCreditFirmId(null);
+    }
+  };
+
+  const visibleFirms = useMemo(() => {
+    const text = firmSearch.trim().toLowerCase();
+    const rows = (firms || []).filter((firm) => {
+      if (!text) return true;
+      return [firm.name, firm.id, firm.balance, firm.outstanding, firm.creditLimit]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(text);
+    });
+
+    return [...rows].sort((a, b) => {
+      const direction = sortDir === 'asc' ? 1 : -1;
+      if (sortKey === 'name') return a.name.localeCompare(b.name) * direction;
+      return (Number(a[sortKey] || 0) - Number(b[sortKey] || 0)) * direction;
+    });
+  }, [firmSearch, firms, sortDir, sortKey]);
+
+  const setSort = (key: typeof sortKey) => {
+    if (sortKey === key) {
+      setSortDir((dir) => (dir === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir(key === 'name' ? 'asc' : 'desc');
+    }
+  };
+
+  const sortLabel = (key: typeof sortKey) => sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
+
   if (!canManage) {
     return (
       <div className="text-foreground">
@@ -216,60 +279,104 @@ export default function FirmsPage() {
         </form>
       </div>
 
-      <div className="bg-surface-2 border border-border rounded-xl p-6">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-xl font-bold text-foreground">{tr('All Firms', 'Barcha firmalar')}</h3>
-          <div className="text-sm font-mono text-muted bg-surface border border-border px-3 py-1 rounded-md">
-            {firms?.length || 0} {tr('Total', 'Jami')}
+      <div className="border border-border bg-surface">
+        <div className="grid grid-cols-1 gap-2 border-b border-border px-3 py-2 md:grid-cols-[1fr_auto] md:items-end">
+          <div>
+            <label htmlFor="firmSearch" className="compact-label">{tr('Search firms', 'Firmalarni qidirish')}</label>
+            <input
+              id="firmSearch"
+              value={firmSearch}
+              onChange={(e) => setFirmSearch(e.target.value)}
+              className="compact-control"
+              placeholder={tr('Type firm name or ID', 'Firma nomi yoki ID kiriting')}
+            />
+          </div>
+          <div className="text-sm font-mono text-muted">
+            {visibleFirms.length} / {firms?.length || 0} {tr('Total', 'Jami')}
           </div>
         </div>
 
-        {loadingFirms ? (
-          <div className="py-12 flex justify-center items-center text-muted">
-            <Building className="animate-pulse w-8 h-8" />
-          </div>
-        ) : !firms || firms.length === 0 ? (
-          <div className="py-12 text-center text-muted border border-dashed border-border rounded-lg">
-            {tr('No firms found.', 'Guruhlar topilmadi.')}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {firms.map((firm) => (
-              <div key={firm.id} className="group bg-surface border border-border hover:border-primary hover:shadow-[0_8px_30px_rgba(201,168,76,0.1)] transition-all duration-300 rounded-xl p-5 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="w-10 h-10 rounded-lg bg-surface-2 border border-border flex items-center justify-center shrink-0 group-hover:bg-primary/10 transition-colors">
-                      <Building size={20} className="text-muted group-hover:text-primary transition-colors" />
+        <div className="overflow-x-auto scroller-minimal">
+          <table className="excel-table">
+            <thead>
+              <tr>
+                <th>
+                  <button type="button" onClick={() => setSort('name')} className="font-bold">
+                    {tr('Firm', 'Firma')}{sortLabel('name')}
+                  </button>
+                </th>
+                <th className="text-right">
+                  <button type="button" onClick={() => setSort('balance')} className="font-bold">
+                    {tr('Balance', 'Balans')}{sortLabel('balance')}
+                  </button>
+                </th>
+                <th className="text-right">
+                  <button type="button" onClick={() => setSort('outstanding')} className="font-bold">
+                    {tr('Debt', 'Qarz')}{sortLabel('outstanding')}
+                  </button>
+                </th>
+                <th className="text-right">
+                  <button type="button" onClick={() => setSort('creditLimit')} className="font-bold">
+                    {tr('Credit limit', 'Kredit limiti')}{sortLabel('creditLimit')}
+                  </button>
+                </th>
+                <th>{tr('Registered', 'Ro\'yxatdan o\'tgan')}</th>
+                <th>{tr('Actions', 'Amallar')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loadingFirms ? (
+                <tr><td colSpan={6} className="text-center text-muted">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
+              ) : visibleFirms.length === 0 ? (
+                <tr><td colSpan={6} className="text-center text-muted">{tr('No firms found.', 'Guruhlar topilmadi.')}</td></tr>
+              ) : visibleFirms.map((firm) => (
+                <tr key={firm.id}>
+                  <td>
+                    <div className="font-semibold">{firm.name}</div>
+                    <div className="font-mono text-xs text-muted">{firm.id.slice(0, 8)}...</div>
+                  </td>
+                  <td className={`text-right font-mono font-bold ${Number(firm.balance || 0) < 0 ? 'text-red-600' : 'text-green-700'}`}>
+                    {formatMoney(firm.balance)}
+                  </td>
+                  <td className="text-right font-mono font-bold text-red-600">
+                    {formatMoney(firm.outstanding)}
+                  </td>
+                  <td className="text-right">
+                    <div className="flex min-w-[190px] items-center justify-end gap-2">
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={creditDrafts[firm.id] ?? String(Math.round(Number(firm.creditLimit || 0)))}
+                        onChange={(e) => setCreditDrafts((drafts) => ({ ...drafts, [firm.id]: e.target.value }))}
+                        className="h-8 w-28 border border-border bg-surface px-2 text-right font-mono text-sm text-foreground outline-none focus:border-primary"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => saveCreditLimit(firm.id, firm.creditLimit)}
+                        disabled={savingCreditFirmId === firm.id}
+                        className="h-8 border border-border bg-surface-2 px-2 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50"
+                      >
+                        {savingCreditFirmId === firm.id ? tr('Saving', 'Saqlanmoqda') : tr('Save', 'Saqlash')}
+                      </button>
                     </div>
-                    <span className="text-xs font-mono text-muted px-2 py-1 bg-surface-2 rounded border border-border group-hover:border-primary/30">
-                      ID: {firm.id.slice(0, 8)}...
-                    </span>
-                  </div>
-                  <h4 className="text-lg font-playfair font-bold text-foreground mb-1 tracking-wide">{firm.name}</h4>
-                  <p className="text-xs text-muted font-mono mb-4">
-                    {tr('Registered', 'Ro\'yxatdan o\'tgan')}: {new Date(firm.createdAt).toLocaleDateString()}
-                  </p>
-                </div>
-                <div className="flex gap-2 border-t border-border pt-4 mt-2">
-                  <Link
-                    href={`/transactions?firmId=${encodeURIComponent(firm.id)}`}
-                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-surface-2 hover:bg-white/5 text-muted hover:text-foreground rounded-lg transition border border-transparent hover:border-border text-[0.8rem] uppercase font-bold tracking-widest"
-                  >
-                    <ArrowRight size={14} />
-                    {tr('Ledger', 'Daftar')}
-                  </Link>
-                  <Link
-                    href={`/reports?firmId=${encodeURIComponent(firm.id)}`}
-                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-surface-2 hover:bg-white/5 text-muted hover:text-foreground rounded-lg transition border border-transparent hover:border-border text-[0.8rem] uppercase font-bold tracking-widest"
-                  >
-                    <TrendingUp size={14} />
-                    {tr('Stats', 'Statistika')}
-                  </Link>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+                  </td>
+                  <td>{new Date(firm.createdAt).toLocaleDateString()}</td>
+                  <td>
+                    <div className="flex gap-2">
+                      <Link href={`/transactions?firmId=${encodeURIComponent(firm.id)}`} className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface">
+                        {tr('History', 'Tarix')}
+                      </Link>
+                      <Link href={`/reports?firmId=${encodeURIComponent(firm.id)}`} className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface">
+                        {tr('Report', 'Hisobot')}
+                      </Link>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {inviteLink && (
