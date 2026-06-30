@@ -117,7 +117,7 @@ export const processPayment = async (req: Request, res: Response) => {
   try {
     await prisma.$transaction(async (tx) => {
       const [firm, flight] = await Promise.all([
-        tx.firm.findUnique({ where: { id: firmId }, select: { id: true } }),
+        tx.firm.findUnique({ where: { id: firmId }, select: { id: true, name: true } }),
         tx.flight.findUnique({ where: { id: flightId }, select: { id: true } }),
       ]);
 
@@ -208,6 +208,10 @@ export const processPayment = async (req: Request, res: Response) => {
       await tx.transaction.create({
         data: {
           firmId,
+          payerFirmId: firmId,
+          direction: 'FIRM_TO_PLATFORM',
+          subjectType: 'FLIGHT',
+          subjectId: flightId,
           flightId,
           createdByUserId: actorUserId,
           type: 'PAYMENT',
@@ -216,7 +220,12 @@ export const processPayment = async (req: Request, res: Response) => {
           exchangeRate: exchangeRate.toDecimalPlaces(6),
           baseAmount,
           paymentMethod: method,
-          metadata: rawMetadata as Prisma.InputJsonValue,
+          metadata: {
+            ...(rawMetadata as Record<string, unknown>),
+            payerLabel: firm.name,
+            receiverLabel: 'Admin / Airline',
+            directionLabel: `${firm.name} -> Admin / Airline`,
+          } as Prisma.InputJsonValue,
         }
       });
     });

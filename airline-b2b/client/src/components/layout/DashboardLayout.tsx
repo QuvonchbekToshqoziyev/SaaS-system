@@ -5,7 +5,7 @@
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { usePathname, useRouter } from 'next/navigation';
-import { PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, ChevronLeft, ChevronRight, Wallet } from 'lucide-react';
+import { PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, ChevronLeft, ChevronRight, Wallet, PackageOpen } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
@@ -46,6 +46,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const navLinks = user.role === 'firm' ? [
     { key: 'navDashboard' as const, href: '/firm', icon: LayoutDashboard },
     { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
+    { key: 'navTours' as const, href: '/tours', icon: PackageOpen },
     { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
     { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
     { key: 'navReports' as const, href: '/reports', icon: BarChart3 },
@@ -54,6 +55,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { key: 'navAdminDashboard' as const, href: '/admin', icon: LayoutDashboard },
     { key: 'navFirms' as const, href: '/firms', icon: UserCircle },
     { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
+    { key: 'navTours' as const, href: '/tours', icon: PackageOpen },
     { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
     { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
     { key: 'navReports' as const, href: '/reports', icon: BarChart3 },

@@ -467,6 +467,20 @@ export default function TransactionsPage() {
     return normalized || String(type || '');
   };
 
+  const getTransactionDirection = (tx: any) => {
+    const meta = tx?.metadata && typeof tx.metadata === 'object' ? tx.metadata : {};
+    const payer = tx?.payerFirm?.name || meta.payerLabel;
+    const receiver = tx?.receiverFirm?.name || meta.receiverLabel;
+    if (payer || receiver) return `${payer || tr('External', 'Tashqi')} -> ${receiver || tr('Admin / Airline', 'Admin / Aviakompaniya')}`;
+
+    const firmName = tx?.firm?.name || tx?.firmId || tx?.firm_id || tr('Firm', 'Firma');
+    const type = String(tx?.type || '').trim().toUpperCase();
+    if (type === 'PAYMENT') return `${firmName} -> ${tr('Admin / Airline', 'Admin / Aviakompaniya')}`;
+    if (type === 'PAYABLE') return `${tr('Admin / Airline', 'Admin / Aviakompaniya')} -> ${firmName}`;
+    if (type === 'SALE') return `${firmName} -> ${tr('Buyer', 'Xaridor')}`;
+    return '-';
+  };
+
   const hasActiveFilters = Boolean(
     filterType ||
     (canFilterFirm && filterFirmId) ||
@@ -874,6 +888,7 @@ export default function TransactionsPage() {
                 <th>{tr('Date', 'Sana')}</th>
                 <th>{tr('Type', 'Turi')}</th>
                 <th>{tr('Firm / Flight', 'Firma / Reys')}</th>
+                <th>{tr('Who pays who', 'Kim kimga to\'laydi')}</th>
                 <th className="text-right">{tr('Amount', 'Summa')}</th>
                 <th className="text-right">{tr('Base Amount (UZS)', 'Bazaviy summa (UZS)')}</th>
                 <th>{tr('Payment Method', "To'lov usuli")}</th>
@@ -882,7 +897,7 @@ export default function TransactionsPage() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={7} className="text-center">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
+                <tr><td colSpan={8} className="text-center">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
               ) : transactions.map((t: any) => (
                 <tr
                   key={t.id}
@@ -905,7 +920,10 @@ export default function TransactionsPage() {
                   </td>
                   <td className="text-muted">
                     <span>{tr('Firm', 'Firma')}: {t.firm?.name || t.firmId || t.firm_id}</span>
-                    <span className="ml-3">{tr('Flight', 'Reys')}: {t.flight?.flightNumber || t.flightId || t.flight_id}</span>
+                    <span className="ml-3">{tr('Flight', 'Reys')}: {t.flight?.flightNumber || t.flightId || t.flight_id || '-'}</span>
+                  </td>
+                  <td className="font-medium text-foreground">
+                    {getTransactionDirection(t)}
                   </td>
                   <td className="text-right font-semibold">
                     {Number(t.originalAmount || t.original_amount).toFixed(2)} {t.currency}
@@ -927,7 +945,7 @@ export default function TransactionsPage() {
               ))}
               {!loading && transactions.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="text-center text-muted">
+                  <td colSpan={8} className="text-center text-muted">
                     <div className="space-y-2">
                       <div>{tr('No transactions found.', 'Tranzaksiyalar topilmadi.')}</div>
                       {hasActiveFilters ? (

@@ -113,6 +113,7 @@ async function loadDuePayments(firmScopeId?: string) {
 
   const bucket = new Map<string, { debt: number; paid: number; firmId: string; flightId: string }>();
   for (const row of groups) {
+    if (!row.flightId) continue;
     const key = `${row.firmId}:${row.flightId}`;
     const current = bucket.get(key) || { debt: 0, paid: 0, firmId: row.firmId, flightId: row.flightId };
     const val = sumToNumber(row._sum?.baseAmount);

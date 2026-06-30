@@ -33,6 +33,20 @@ export default function TransactionDetailPage() {
     return method ? String(method) : tr('None / Not Applicable', "Yo'q / Mos emas");
   };
 
+  const getTransactionDirection = () => {
+    const meta = tx?.metadata && typeof tx.metadata === 'object' ? tx.metadata : {};
+    const payer = tx?.payerFirm?.name || meta.payerLabel;
+    const receiver = tx?.receiverFirm?.name || meta.receiverLabel;
+    if (payer || receiver) return `${payer || tr('External', 'Tashqi')} -> ${receiver || tr('Admin / Airline', 'Admin / Aviakompaniya')}`;
+
+    const firmName = tx?.firm?.name || tx?.firmId || tr('Firm', 'Firma');
+    const type = String(tx?.type || '').trim().toUpperCase();
+    if (type === 'PAYMENT') return `${firmName} -> ${tr('Admin / Airline', 'Admin / Aviakompaniya')}`;
+    if (type === 'PAYABLE') return `${tr('Admin / Airline', 'Admin / Aviakompaniya')} -> ${firmName}`;
+    if (type === 'SALE') return `${firmName} -> ${tr('Buyer', 'Xaridor')}`;
+    return '-';
+  };
+
   useEffect(() => {
     if (!id) return;
     const fetchTx = async () => {
@@ -109,6 +123,15 @@ export default function TransactionDetailPage() {
               </dt>
               <dd className="mt-1 text-sm text-foreground sm:mt-0 sm:col-span-2">
                 {tx.firm?.name || tx.firmId || tr('N/A', 'Mavjud emas')}
+              </dd>
+            </div>
+
+            <div className="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6 bg-surface-2">
+              <dt className="text-sm font-medium text-muted flex items-center gap-2">
+                <Hash size={16}/> {tr('Who pays who', 'Kim kimga to\'laydi')}
+              </dt>
+              <dd className="mt-1 text-sm text-foreground sm:mt-0 sm:col-span-2 font-semibold">
+                {getTransactionDirection()}
               </dd>
             </div>
 

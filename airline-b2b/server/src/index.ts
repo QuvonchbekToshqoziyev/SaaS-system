@@ -16,6 +16,7 @@ import logsRoutes from './routes/logs';
 import currencyRateRoutes from './routes/currency-rates';
 import searchRoutes from './routes/search';
 import kassaRoutes from './routes/kassa';
+import tourPackageRoutes from './routes/tour-packages';
 
 const jwtSecret = process.env.JWT_SECRET;
 if (!jwtSecret || !jwtSecret.trim()) {
@@ -104,6 +105,7 @@ app.use('/logs', logsRoutes);
 app.use('/currency-rates', currencyRateRoutes);
 app.use('/search', searchRoutes);
 app.use('/kassa', kassaRoutes);
+app.use('/tour-packages', tourPackageRoutes);
 
 app.use(errorHandler);
 

@@ -91,9 +91,14 @@ model Firm {
   users                    User[]
   tickets                  Ticket[]
   transactions             Transaction[]
+  paidTransactions         Transaction[]             @relation("TransactionPayerFirm")
+  receivedTransactions     Transaction[]             @relation("TransactionReceiverFirm")
   payments                 Payment[]
   invitations              Invitation[]
   saleCancellationRequests SaleCancellationRequest[]
+  ownedTourPackages        TourPackage[]             @relation("TourPackageOwner")
+  boughtTourPackageSales   TourPackageSale[]         @relation("TourPackageBuyer")
+  soldTourPackageSales     TourPackageSale[]         @relation("TourPackageSeller")
   createdAt                DateTime                  @default(now())
   updatedAt                DateTime                  @updatedAt
 }
@@ -169,10 +174,17 @@ model Transaction {
   type            TransactionType
   firmId          String
   firm            Firm            @relation(fields: [firmId], references: [id])
-  flightId        String
-  flight          Flight          @relation(fields: [flightId], references: [id])
+  flightId        String?
+  flight          Flight?         @relation(fields: [flightId], references: [id])
   ticketId        String?
   ticket          Ticket?         @relation(fields: [ticketId], references: [id])
+  payerFirmId     String?
+  payerFirm       Firm?           @relation("TransactionPayerFirm", fields: [payerFirmId], references: [id])
+  receiverFirmId  String?
+  receiverFirm    Firm?           @relation("TransactionReceiverFirm", fields: [receiverFirmId], references: [id])
+  direction       String?
+  subjectType     String?
+  subjectId       String?
   createdByUserId String?
   createdBy       User?           @relation("TransactionCreatedBy", fields: [createdByUserId], references: [id])
   originalAmount  Decimal         @db.Decimal(12, 4)
@@ -183,14 +195,62 @@ model Transaction {
   idempotencyKey  String?         @unique
   metadata        Json?
   ledgerEntries   LedgerEntry[]
+  tourPackageSale TourPackageSale?
   createdAt       DateTime        @default(now())
 
   @@index([firmId, createdAt])
+  @@index([payerFirmId, createdAt])
+  @@index([receiverFirmId, createdAt])
   @@index([flightId, createdAt])
+  @@index([subjectType, subjectId])
   @@index([type, createdAt])
   @@index([currency, createdAt])
   @@index([paymentMethod, createdAt])
   @@index([createdByUserId, createdAt])
+}
+
+model TourPackage {
+  id                String            @id @default(uuid())
+  ownerFirmId       String
+  ownerFirm         Firm              @relation("TourPackageOwner", fields: [ownerFirmId], references: [id])
+  name              String
+  destination       String
+  startDate         DateTime?
+  endDate           DateTime?
+  quantity          Int
+  availableQuantity Int
+  unitPrice         Decimal           @db.Decimal(12, 4)
+  currency          String            @default("UZS")
+  status            String            @default("ACTIVE")
+  notes             String?
+  sales             TourPackageSale[]
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@index([ownerFirmId, status])
+  @@index([destination])
+}
+
+model TourPackageSale {
+  id            String       @id @default(uuid())
+  packageId     String
+  package       TourPackage  @relation(fields: [packageId], references: [id])
+  sellerFirmId  String
+  sellerFirm    Firm         @relation("TourPackageSeller", fields: [sellerFirmId], references: [id])
+  buyerFirmId   String
+  buyerFirm     Firm         @relation("TourPackageBuyer", fields: [buyerFirmId], references: [id])
+  quantity      Int
+  unitPrice     Decimal      @db.Decimal(12, 4)
+  currency      String
+  totalAmount   Decimal      @db.Decimal(12, 4)
+  transactionId String?      @unique
+  transaction   Transaction? @relation(fields: [transactionId], references: [id])
+  notes         String?
+  createdAt     DateTime     @default(now())
+
+  @@index([packageId, createdAt])
+  @@index([sellerFirmId, createdAt])
+  @@index([buyerFirmId, createdAt])
 }
 
 model LedgerEntry {
