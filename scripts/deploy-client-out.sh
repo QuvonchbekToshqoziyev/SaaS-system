@@ -13,7 +13,7 @@ if [ -f "$SERVER_CREDENTIALS_FILE" ]; then
 fi
 
 REMOTE_HOST="${REMOTE_HOST:-${SERVER_USER:-root}@${SERVER_IP:-206.189.130.168}}"
-REMOTE_WEBROOT="${REMOTE_WEBROOT:-/var/www/airline-b2b/html}"
+REMOTE_WEBROOT="${REMOTE_WEBROOT:-/var/www/b2b.booking.ado-finance.com/html}"
 LOCAL_OUT_DIR="${LOCAL_OUT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/airline-b2b/client/out}"
 
 if ! command -v rsync >/dev/null 2>&1; then

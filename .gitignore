@@ -40,6 +40,7 @@ scratch/
 !.env.sample
 !.env.template
 server_credentials.md
+server-pass.md
 
 # Credentials
 *.pem

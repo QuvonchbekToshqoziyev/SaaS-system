@@ -13,8 +13,8 @@ if [ -f "$SERVER_CREDENTIALS_FILE" ]; then
 fi
 
 REMOTE_HOST="${REMOTE_HOST:-${SERVER_USER:-root}@${SERVER_IP:-206.189.130.168}}"
-REMOTE_BACKEND_DIR="${REMOTE_BACKEND_DIR:-/root/airline-b2b/server}"
-PM2_APP_NAME="${PM2_APP_NAME:-airline-backend}"
+REMOTE_BACKEND_DIR="${REMOTE_BACKEND_DIR:-/root/apps/ado-b2b/airline-b2b/server}"
+PM2_APP_NAME="${PM2_APP_NAME:-airline-b2b-server}"
 RUN_PRISMA_DB_PUSH="${RUN_PRISMA_DB_PUSH:-0}"
 
 LOCAL_BACKEND_DIR="${LOCAL_BACKEND_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/airline-b2b/server}"

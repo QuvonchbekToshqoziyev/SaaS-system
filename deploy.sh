@@ -24,9 +24,9 @@ set -euo pipefail
 DOMAIN="b2b.booking.ado-finance.com"
 REMOTE_SERVER_IP="206.189.130.168"
 REMOTE_USER="root"
-REMOTE_BACKEND_DIR="/root/airline-b2b/server"
+REMOTE_BACKEND_DIR="/root/apps/ado-b2b/airline-b2b/server"
 REMOTE_WEBROOT="/var/www/${DOMAIN}/html"
-PM2_APP_NAME="airline-backend"
+PM2_APP_NAME="airline-b2b-server"
 NGINX_CONF_NAME="${DOMAIN}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -146,7 +146,7 @@ REMOTE_ENV
   success "Remote .env updated"
 
   header "Backend — install deps & build"
-  remote "cd '$REMOTE_BACKEND_DIR' && npm ci --omit=dev --ignore-scripts || npm install --omit=dev"
+  remote "cd '$REMOTE_BACKEND_DIR' && npm ci"
   remote "cd '$REMOTE_BACKEND_DIR' && npx prisma generate"
 
   if [[ "$RUN_SCHEMA" == "1" ]]; then
