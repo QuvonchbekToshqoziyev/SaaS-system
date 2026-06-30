@@ -3,14 +3,8 @@ import crypto from 'node:crypto';
 const BASE = process.env.PROD_BASE_URL || 'https://quvonchbek.me';
 const API = `${BASE.replace(/\/$/, '')}/api`;
 
-function requiredEnv(name) {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} is required.`);
-  return value;
-}
-
-const SUPERADMIN_EMAIL = requiredEnv('SUPERADMIN_EMAIL');
-const SUPERADMIN_PASSWORD = requiredEnv('SUPERADMIN_PASSWORD');
+const SUPERADMIN_EMAIL = 'admin@ado-finance.com';
+const SUPERADMIN_PASSWORD = '12345678';
 
 const PERSIST_FIRM_EMAIL = process.env.FIRM_EMAIL || process.env.TEST_FIRM_EMAIL || '';
 const PERSIST_FIRM_PASSWORD = process.env.FIRM_PASSWORD || process.env.TEST_FIRM_PASSWORD || '';

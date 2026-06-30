@@ -136,12 +136,6 @@ BACKEND_ORIGIN=http://127.0.0.1:${BACKEND_PORT}
 ENV
 success "Client .env.local written"
 
-if [[ -z "${SUPERADMIN_EMAIL:-}" || -z "${SUPERADMIN_PASSWORD:-}" ]]; then
-  error "SUPERADMIN_EMAIL and SUPERADMIN_PASSWORD are required to bootstrap the real superadmin account."
-  error "Run: SUPERADMIN_EMAIL=\"you@example.com\" SUPERADMIN_PASSWORD=\"your-secure-password\" ./dev.sh"
-  exit 1
-fi
-
 # ─────────────────────────────────────────────────────────────────────────────
 header "4 / 6  — Install dependencies & migrate DB"
 # ─────────────────────────────────────────────────────────────────────────────
@@ -164,9 +158,8 @@ npx prisma db push --schema=prisma/schema.prisma --accept-data-loss 2>&1 | tail 
 success "Database schema up-to-date"
 
 info "Bootstrapping the superadmin account..."
-SUPERADMIN_EMAIL="$SUPERADMIN_EMAIL" SUPERADMIN_PASSWORD="$SUPERADMIN_PASSWORD" \
-  npx ts-node prisma/seed.ts 2>&1 | tail -n 5
-success "Superadmin ready (${SUPERADMIN_EMAIL})"
+npx ts-node prisma/seed.ts 2>&1 | tail -n 5
+success "Superadmin ready (admin@ado-finance.com)"
 
 # Client deps
 cd "$REPO_ROOT"
@@ -254,8 +247,8 @@ echo -e "${BOLD}║  Frontend  →  http://localhost:${FRONTEND_PORT} (direct)  
 echo -e "${BOLD}║  Backend   →  http://localhost:${BACKEND_PORT} (direct)   ║${RESET}"
 echo -e "${BOLD}║  DB        →  ${DB_HOST}:${DB_PORT}/${DB_NAME}  ║${RESET}"
 echo -e "${BOLD}╠══════════════════════════════════════════════╣${RESET}"
-echo -e "${BOLD}║  Admin     →  ${SUPERADMIN_EMAIL}  ║${RESET}"
-echo -e "${BOLD}║  Password  →  configured via env             ║${RESET}"
+echo -e "${BOLD}║  Admin     →  admin@ado-finance.com          ║${RESET}"
+echo -e "${BOLD}║  Password  →  12345678 (change after login)  ║${RESET}"
 echo -e "${BOLD}╠══════════════════════════════════════════════╣${RESET}"
 echo -e "${BOLD}║  Backend log:  .dev-logs/backend.log         ║${RESET}"
 echo -e "${BOLD}║  Frontend log: .dev-logs/frontend.log        ║${RESET}"

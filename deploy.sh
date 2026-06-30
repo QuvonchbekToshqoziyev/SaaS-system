@@ -11,7 +11,7 @@
 #   ./deploy.sh --schema             # also run prisma db push
 #
 # Auth (pick one):
-#   1. File   → create server_credentials.md at repo root (git-ignored):
+#   1. File   → create server-pass.md at repo root (git-ignored):
 #                  - IP: 206.189.130.168
 #                  - Username: root
 #                  - Password: <your_password>
@@ -54,12 +54,14 @@ error()   { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 header()  { echo -e "\n${BOLD}══ $* ══${RESET}"; }
 
 # ── Load credentials ─────────────────────────────────────────────────────────
-CREDS_FILE="$REPO_ROOT/server_credentials.md"
+CREDS_FILE="$REPO_ROOT/server-pass.md"
 if [[ -f "$CREDS_FILE" ]]; then
-  [[ -z "${REMOTE_USER:-}" ]]   && REMOTE_USER=$(awk -F': ' '/^- Username:/{print $2;exit}' "$CREDS_FILE")
-  [[ -z "${REMOTE_SERVER_IP:-}" ]] && REMOTE_SERVER_IP=$(awk -F': ' '/^- IP:/{print $2;exit}' "$CREDS_FILE")
+  file_user=$(awk -F':[[:space:]]*' 'tolower($1) ~ /username|user/ {print $2; exit}' "$CREDS_FILE" || true)
+  file_ip=$(awk -F':[[:space:]]*' 'tolower($1) ~ /(^|- )[[:space:]]*ip$|server/ {print $2; exit}' "$CREDS_FILE" || true)
+  [[ -n "${file_user:-}" ]] && REMOTE_USER="$file_user"
+  [[ -n "${file_ip:-}" ]] && REMOTE_SERVER_IP="$file_ip"
   if [[ -z "${SSHPASS:-}" ]]; then
-    SSHPASS=$(awk -F': ' '/^- Password:/{print $2;exit}' "$CREDS_FILE" || true)
+    SSHPASS=$(awk -F':[[:space:]]*' 'tolower($1) ~ /password|pass/ {print $2; exit}' "$CREDS_FILE" || true)
     export SSHPASS
   fi
 fi
@@ -72,7 +74,7 @@ if [[ "$USE_SSH_KEY" == "1" ]]; then
   rsync_cmd() { rsync "$@"; }
 else
   command -v sshpass &>/dev/null || { error "sshpass not found — install it or set USE_SSH_KEY=1"; exit 1; }
-  [[ -z "${SSHPASS:-}" ]] && { error "No password: set SSHPASS env var or create server_credentials.md"; exit 1; }
+  [[ -z "${SSHPASS:-}" ]] && { error "No password: set SSHPASS env var or create server-pass.md"; exit 1; }
   SSH_OPTS="-o StrictHostKeyChecking=no -o PubkeyAuthentication=no -o PreferredAuthentications=password"
   remote() { sshpass -e ssh $SSH_OPTS "$REMOTE_HOST" "$@"; }
   rsync_cmd() { sshpass -e rsync -e "ssh $SSH_OPTS" "$@"; }

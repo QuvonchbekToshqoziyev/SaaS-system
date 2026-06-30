@@ -127,9 +127,8 @@ async function main() {
     'Refusing to run mutating workflow. Set PROD_WORKFLOW_MUTATE=1 to proceed.',
   );
 
-  const SUPERADMIN_EMAIL = process.env.SUPERADMIN_EMAIL?.trim();
-  const SUPERADMIN_PASSWORD = process.env.SUPERADMIN_PASSWORD?.trim();
-  assertOk(Boolean(SUPERADMIN_EMAIL && SUPERADMIN_PASSWORD), 'SUPERADMIN_EMAIL and SUPERADMIN_PASSWORD are required.');
+  const SUPERADMIN_EMAIL = 'admin@ado-finance.com';
+  const SUPERADMIN_PASSWORD = '12345678';
 
   process.stdout.write(`BASE=${BASE}\n`);
   process.stdout.write(`API=${API}\n`);

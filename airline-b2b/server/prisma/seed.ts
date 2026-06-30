@@ -3,13 +3,8 @@ import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
-function requiredEnv(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) {
-    throw new Error(`${name} is required. Set it before running the superadmin bootstrap.`);
-  }
-  return value;
-}
+const SUPERADMIN_EMAIL = 'admin@ado-finance.com';
+const INITIAL_SUPERADMIN_PASSWORD = '12345678';
 
 async function clearApplicationData() {
   await prisma.$transaction([
@@ -30,22 +25,21 @@ async function clearApplicationData() {
 }
 
 async function main() {
-  const email = requiredEnv('SUPERADMIN_EMAIL').toLowerCase();
-  const password = requiredEnv('SUPERADMIN_PASSWORD');
-  const passwordHash = await bcrypt.hash(password, 10);
+  const passwordHash = await bcrypt.hash(INITIAL_SUPERADMIN_PASSWORD, 10);
 
   console.log('Clearing demo/application data...');
   await clearApplicationData();
 
   await prisma.user.create({
     data: {
-      email,
+      email: SUPERADMIN_EMAIL,
       password: passwordHash,
       role: Role.SUPERADMIN,
     },
   });
 
-  console.log(`Superadmin bootstrap complete. Created SUPERADMIN user: ${email}`);
+  console.log(`Superadmin bootstrap complete. Created SUPERADMIN user: ${SUPERADMIN_EMAIL}`);
+  console.log('Ask the client to change the initial password after first login.');
 }
 
 main()

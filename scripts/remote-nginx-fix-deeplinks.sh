@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVER_CREDENTIALS_FILE="${SERVER_CREDENTIALS_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/server_credentials.md}"
+SERVER_CREDENTIALS_FILE="${SERVER_CREDENTIALS_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/server-pass.md}"
 
 if [ -f "$SERVER_CREDENTIALS_FILE" ]; then
-    SERVER_IP=${SERVER_IP:-$(awk -F': ' '/^- IP:/ {print $2; exit 0}' "$SERVER_CREDENTIALS_FILE")}
-    SERVER_USER=${SERVER_USER:-$(awk -F': ' '/^- Username:/ {print $2; exit 0}' "$SERVER_CREDENTIALS_FILE")}
+    file_ip=$(awk -F':[[:space:]]*' 'tolower($1) ~ /(^|- )[[:space:]]*ip$|server/ {print $2; exit 0}' "$SERVER_CREDENTIALS_FILE" || true)
+    file_user=$(awk -F':[[:space:]]*' 'tolower($1) ~ /username|user/ {print $2; exit 0}' "$SERVER_CREDENTIALS_FILE" || true)
+    SERVER_IP=${SERVER_IP:-$file_ip}
+    SERVER_USER=${SERVER_USER:-$file_user}
     if [ -z "${SSHPASS:-}" ]; then
-        SSHPASS=$(awk -F': ' '/^- Password:/ {print $2; exit 0}' "$SERVER_CREDENTIALS_FILE" || true)
+        SSHPASS=$(awk -F':[[:space:]]*' 'tolower($1) ~ /password|pass/ {print $2; exit 0}' "$SERVER_CREDENTIALS_FILE" || true)
         export SSHPASS
     fi
 fi

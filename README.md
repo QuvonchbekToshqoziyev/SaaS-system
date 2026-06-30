@@ -13,24 +13,32 @@ cd airline-b2b/server
 npm install
 npx prisma generate --schema=prisma/schema.prisma
 npx prisma db push --schema=prisma/schema.prisma
-SUPERADMIN_EMAIL="owner@example.com" SUPERADMIN_PASSWORD="use-a-secure-password" npm run bootstrap:superadmin
+npm run bootstrap:superadmin
 ```
 
-The bootstrap clears demo/application data and creates only one `SUPERADMIN`. It does not create test firms, sample flights, tickets, transactions, or demo credentials.
+The bootstrap clears demo/application data and creates only one `SUPERADMIN`.
+
+Initial login:
+
+- Email: `admin@ado-finance.com`
+- Password: `12345678`
+
+After the first login, open `Settings` and change the password before using the system for real work. The bootstrap does not create test firms, sample flights, tickets, transactions, or demo users.
 
 For local development from the repository root:
 
 ```bash
-SUPERADMIN_EMAIL="owner@example.com" SUPERADMIN_PASSWORD="use-a-secure-password" ./dev.sh
+./dev.sh
 ```
 
-The script starts the backend, frontend, and local proxy. It prints the website URL and the configured superadmin email, but it never prints the password.
+The script starts the backend, frontend, and local proxy. It prints the website URL and the initial superadmin login.
 
 ## Website Login
 
 1. Open the website URL.
-2. Sign in with the real superadmin email and password configured during setup.
-3. After login, superadmin/admin users are sent to the admin dashboard. Firm users are sent to the firm dashboard.
+2. Sign in with `admin@ado-finance.com` and `12345678`.
+3. Open `Settings` and change the password.
+4. After login, superadmin/admin users are sent to the admin dashboard. Firm users are sent to the firm dashboard.
 
 ## Admin Workflow
 
@@ -88,7 +96,7 @@ Firm users can only see their own firm data.
 
 ## Important Rules
 
-- Do not share the superadmin password in this repository, tickets, chat, screenshots, or documentation.
+- Treat `12345678` as an initial setup password only. Change it from `Settings` immediately after first login.
 - Do not create users manually in the database unless you are recovering access.
 - Create firm users through website invitations.
 - Keep real production credentials in environment variables or a secure secret manager.
@@ -98,14 +106,14 @@ Firm users can only see their own firm data.
 
 ```bash
 # Start local development
-SUPERADMIN_EMAIL="owner@example.com" SUPERADMIN_PASSWORD="use-a-secure-password" ./dev.sh
+./dev.sh
 
 # Stop local development servers
 ./dev.sh --stop
 
 # Bootstrap/reset to only the real superadmin
 cd airline-b2b/server
-SUPERADMIN_EMAIL="owner@example.com" SUPERADMIN_PASSWORD="use-a-secure-password" npm run bootstrap:superadmin
+npm run bootstrap:superadmin
 
 # Run backend tests
 cd airline-b2b/server
