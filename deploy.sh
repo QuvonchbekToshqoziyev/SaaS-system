@@ -189,12 +189,12 @@ deploy_frontend() {
 
   # Write client env pointing at the API via /api prefix through nginx
   cat > "$CLIENT_DIR/.env.production" <<CLIENTENV
-NEXT_PUBLIC_API_URL=https://${DOMAIN}/api
+NEXT_PUBLIC_API_URL=/api
 CLIENTENV
 
   info "Building Next.js static export..."
   npm --prefix "$CLIENT_DIR" install --silent
-  npm --prefix "$CLIENT_DIR" run build
+  NEXT_PUBLIC_API_URL=/api npm --prefix "$CLIENT_DIR" run build
   success "Static export complete → airline-b2b/client/out/"
 
   header "Frontend — sync to server webroot"
