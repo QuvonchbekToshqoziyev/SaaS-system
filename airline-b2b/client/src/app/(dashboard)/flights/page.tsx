@@ -57,7 +57,7 @@ export default function FlightsPage() {
     }
   });
 
-  const [flightsView, setFlightsView] = useState<'boxes' | 'list'>('boxes');
+  const [flightsView, setFlightsView] = useState<'boxes' | 'list'>('list');
   const [confirm, setConfirm] = useState<
     | null
     | {
@@ -75,6 +75,7 @@ export default function FlightsPage() {
   >(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   
+  const [isCreatingFlight, setIsCreatingFlight] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState<'create' | 'edit'>('create');
   const [currentFlightId, setCurrentFlightId] = useState<string | null>(null);
@@ -89,7 +90,7 @@ export default function FlightsPage() {
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem('jetstream-flights-view');
+      const raw = localStorage.getItem('jetstream-flights-view-v2');
       if (raw === 'list' || raw === 'boxes') {
         setFlightsView(raw);
       }
@@ -100,13 +101,13 @@ export default function FlightsPage() {
 
   useEffect(() => {
     try {
-      localStorage.setItem('jetstream-flights-view', flightsView);
+      localStorage.setItem('jetstream-flights-view-v2', flightsView);
     } catch {
       // ignore
     }
   }, [flightsView]);
 
-  const openCreateModal = () => {
+  const resetCreateForm = () => {
     setModalMode('create');
     setFormData({
       flightNumber: '',
@@ -116,7 +117,31 @@ export default function FlightsPage() {
       ticketPrice: 500,
       currency: 'UZS'
     });
-    setIsModalOpen(true);
+  };
+
+  const openCreateRow = () => {
+    resetCreateForm();
+    setFlightsView('list');
+    setIsCreatingFlight(true);
+  };
+
+  const submitCreateRow = () => {
+    if (!formData.flightNumber) {
+      toast.error(tr('Flight Number is required', 'Reys raqami kerak'));
+      return;
+    }
+
+    setConfirm({
+      kind: 'create',
+      payload: {
+        flightNumber: formData.flightNumber,
+        departure: new Date(formData.departure).toISOString(),
+        arrival: new Date(formData.arrival).toISOString(),
+        ticketCount: Number(formData.ticketCount),
+        ticketPrice: Number(formData.ticketPrice),
+        currency: formData.currency,
+      },
+    });
   };
 
   const openEditModal = (e: React.MouseEvent, flight: LocalFlight) => {
@@ -193,7 +218,7 @@ export default function FlightsPage() {
     setConfirmBusy(false);
 
     if (prev?.kind === 'create') {
-      setIsModalOpen(true);
+      setIsCreatingFlight(true);
     }
   };
 
@@ -204,6 +229,8 @@ export default function FlightsPage() {
       if (confirm.kind === 'create') {
         await api.post('/flights', confirm.payload);
         toast.success(tr('Flight created successfully!', 'Reys muvaffaqiyatli yaratildi!'));
+        resetCreateForm();
+        setIsCreatingFlight(false);
       } else {
         await api.delete(`/flights/${confirm.id}`);
         toast.success(tr('Flight cancelled!', 'Reys bekor qilindi!'));
@@ -269,7 +296,7 @@ export default function FlightsPage() {
           </div>
           {canEdit && (
             <button
-              onClick={openCreateModal}
+              onClick={openCreateRow}
               className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg font-medium transition"
             >
               <Plus size={18} />
@@ -439,6 +466,100 @@ export default function FlightsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
+              {canEdit && isCreatingFlight && (
+                <tr className="bg-surface">
+                  <td className="px-4 py-3">
+                    <input
+                      type="text"
+                      required
+                      className="compact-control"
+                      placeholder="B2B-999"
+                      value={formData.flightNumber}
+                      onChange={(e) => setFormData({ ...formData, flightNumber: e.target.value })}
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-900/50 text-green-300 border border-green-700">
+                      {tr('NEW', 'YANGI')}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <input
+                      type="datetime-local"
+                      required
+                      className="compact-control min-w-44"
+                      value={formData.departure}
+                      onChange={(e) => setFormData({ ...formData, departure: e.target.value })}
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <input
+                      type="datetime-local"
+                      required
+                      className="compact-control min-w-44"
+                      value={formData.arrival}
+                      onChange={(e) => setFormData({ ...formData, arrival: e.target.value })}
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <input
+                      type="number"
+                      min="1"
+                      required
+                      className="compact-control w-28"
+                      title={tr('Ticket count', 'Chipta soni')}
+                      value={formData.ticketCount}
+                      onChange={(e) => setFormData({ ...formData, ticketCount: Number(e.target.value) })}
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min="0"
+                        required
+                        className="compact-control w-28"
+                        title={tr('Ticket price', 'Chipta narxi')}
+                        value={formData.ticketPrice}
+                        onChange={(e) => setFormData({ ...formData, ticketPrice: Number(e.target.value) })}
+                      />
+                      <select
+                        className="compact-control w-24"
+                        value={formData.currency}
+                        onChange={(e) => setFormData({ ...formData, currency: e.target.value })}
+                      >
+                        <option value="UZS">UZS</option>
+                        <option value="USD">USD</option>
+                        <option value="EUR">EUR</option>
+                      </select>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-sm text-muted">
+                    {tr('Tickets and price', 'Chiptalar va narx')}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <div className="inline-flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsCreatingFlight(false);
+                          resetCreateForm();
+                        }}
+                        className="px-3 py-2 bg-surface-2 hover:bg-surface text-foreground rounded-lg transition border border-border text-xs font-semibold uppercase"
+                      >
+                        {tr('Cancel', 'Bekor qilish')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={submitCreateRow}
+                        className="px-3 py-2 bg-primary hover:bg-primary-hover text-ink rounded-lg transition text-xs font-bold uppercase tracking-wider"
+                      >
+                        {tr('Create', 'Yaratish')}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              )}
               {flights.map((flight: LocalFlight) => {
                 const flightId = flight.flight_id || flight.id;
                 return (
@@ -534,9 +655,7 @@ export default function FlightsPage() {
           <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-md p-6">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-xl font-bold text-foreground">
-                {modalMode === 'create'
-                  ? tr('Create New Flight', 'Yangi reys yaratish')
-                  : tr('Edit Flight', 'Reysni tahrirlash')}
+                {tr('Edit Flight', 'Reysni tahrirlash')}
               </h3>
               <button onClick={() => setIsModalOpen(false)} className="text-muted hover:text-foreground">
                 <X size={20} />
@@ -556,7 +675,7 @@ export default function FlightsPage() {
                 />
               </div>
 
-              {modalMode === 'create' && (
+              {false && (
                 <>
                   <div className="grid grid-cols-2 gap-4">
                     <div>

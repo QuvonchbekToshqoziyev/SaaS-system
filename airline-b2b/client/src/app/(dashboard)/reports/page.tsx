@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
@@ -219,11 +219,8 @@ export default function ReportsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canAccess, isAdmin, prefsReady]);
 
-  const loadFlightReport = async () => {
-    if (!selectedFlightId) {
-      toast.error(tr('Select a flight', 'Reysni tanlang'));
-      return;
-    }
+  const loadFlightReport = useCallback(async () => {
+    if (!selectedFlightId) return;
     try {
       setLoadingFlightReport(true);
       const res = await api.get(`/reports/flight?flightId=${encodeURIComponent(selectedFlightId)}`);
@@ -233,17 +230,14 @@ export default function ReportsPage() {
     } finally {
       setLoadingFlightReport(false);
     }
-  };
+  }, [selectedFlightId, tr]);
 
-  const loadFirmReport = async () => {
+  const loadFirmReport = useCallback(async () => {
     try {
       setLoadingFirmReport(true);
       const query = new URLSearchParams();
       if (isAdmin) {
-        if (!selectedFirmId) {
-          toast.error(tr('Select a firm', 'Firmani tanlang'));
-          return;
-        }
+        if (!selectedFirmId) return;
         query.set('firmId', selectedFirmId);
       }
       if (dateParams.dateFrom) query.set('dateFrom', dateParams.dateFrom);
@@ -256,9 +250,9 @@ export default function ReportsPage() {
     } finally {
       setLoadingFirmReport(false);
     }
-  };
+  }, [dateParams.dateFrom, dateParams.dateTo, isAdmin, selectedFirmId, tr]);
 
-  const loadPaymentsReport = async () => {
+  const loadPaymentsReport = useCallback(async () => {
     try {
       setLoadingPaymentsReport(true);
       const query = new URLSearchParams();
@@ -274,9 +268,9 @@ export default function ReportsPage() {
     } finally {
       setLoadingPaymentsReport(false);
     }
-  };
+  }, [dateParams.dateFrom, dateParams.dateTo, isAdmin, selectedFirmId, selectedFlightId, tr]);
 
-  const loadTransactionsReport = async () => {
+  const loadTransactionsReport = useCallback(async () => {
     try {
       setLoadingTransactionsReport(true);
       const query = new URLSearchParams();
@@ -292,13 +286,10 @@ export default function ReportsPage() {
     } finally {
       setLoadingTransactionsReport(false);
     }
-  };
+  }, [dateParams.dateFrom, dateParams.dateTo, isAdmin, selectedFirmId, selectedFlightId, tr]);
 
-  const loadInteractionsReport = async () => {
-    if (!isSuperadmin) {
-      toast.error(tr('Superadmin only', 'Faqat superadmin'));
-      return;
-    }
+  const loadInteractionsReport = useCallback(async () => {
+    if (!isSuperadmin) return;
     try {
       setLoadingInteractionsReport(true);
       const query = new URLSearchParams();
@@ -312,7 +303,29 @@ export default function ReportsPage() {
     } finally {
       setLoadingInteractionsReport(false);
     }
-  };
+  }, [dateParams.dateFrom, dateParams.dateTo, isSuperadmin, tr]);
+
+  useEffect(() => {
+    if (!canAccess || loadingMeta || !prefsReady) return;
+    if (selectedFlightId) loadFlightReport();
+    if (!isAdmin || selectedFirmId) loadFirmReport();
+    loadPaymentsReport();
+    loadTransactionsReport();
+    if (isSuperadmin) loadInteractionsReport();
+  }, [
+    canAccess,
+    isAdmin,
+    isSuperadmin,
+    loadingMeta,
+    loadFirmReport,
+    loadFlightReport,
+    loadInteractionsReport,
+    loadPaymentsReport,
+    loadTransactionsReport,
+    prefsReady,
+    selectedFirmId,
+    selectedFlightId,
+  ]);
 
   if (!canAccess) {
     return (
@@ -403,6 +416,11 @@ export default function ReportsPage() {
         {loadingMeta && (
           <p className="text-sm text-muted">{tr('Loading report options...', 'Hisobot parametrlari yuklanmoqda...')}</p>
         )}
+        {!loadingMeta && (
+          <p className="text-xs text-muted">
+            {tr('Reports refresh automatically when scope changes.', 'Qamrov o\'zgarganda hisobotlar avtomatik yangilanadi.')}
+          </p>
+        )}
       </CollapsibleCard>
 
       {/* Flight report */}
@@ -412,17 +430,8 @@ export default function ReportsPage() {
         storageKey="jetstream-reports-flight-report-open"
         className="rounded-xl"
         contentClassName="p-6 space-y-4"
-        headerRight={
-          <button
-            type="button"
-            onClick={loadFlightReport}
-            disabled={loadingFlightReport || !selectedFlightId}
-            className="px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg transition disabled:opacity-50"
-          >
-            {loadingFlightReport ? tr('Loading…', 'Yuklanmoqda…') : tr('Load', 'Yuklash')}
-          </button>
-        }
       >
+        {loadingFlightReport && <p className="text-sm text-muted">{tr('Loading...', 'Yuklanmoqda...')}</p>}
         {flightReport && (
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
@@ -512,17 +521,8 @@ export default function ReportsPage() {
         storageKey="jetstream-reports-firm-report-open"
         className="rounded-xl"
         contentClassName="p-6 space-y-4"
-        headerRight={
-          <button
-            type="button"
-            onClick={loadFirmReport}
-            disabled={loadingFirmReport || (isAdmin && !selectedFirmId)}
-            className="px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg transition disabled:opacity-50"
-          >
-            {loadingFirmReport ? tr('Loading…', 'Yuklanmoqda…') : tr('Load', 'Yuklash')}
-          </button>
-        }
       >
+        {loadingFirmReport && <p className="text-sm text-muted">{tr('Loading...', 'Yuklanmoqda...')}</p>}
         {firmReport && (
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
@@ -659,17 +659,8 @@ export default function ReportsPage() {
         storageKey="jetstream-reports-payments-report-open"
         className="rounded-xl"
         contentClassName="p-6 space-y-4"
-        headerRight={
-          <button
-            type="button"
-            onClick={loadPaymentsReport}
-            disabled={loadingPaymentsReport}
-            className="px-4 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition disabled:opacity-50"
-          >
-            {loadingPaymentsReport ? tr('Loading…', 'Yuklanmoqda…') : tr('Load', 'Yuklash')}
-          </button>
-        }
       >
+        {loadingPaymentsReport && <p className="text-sm text-muted">{tr('Loading...', 'Yuklanmoqda...')}</p>}
         {paymentsReport && (
           <div className="space-y-4">
             <div className="text-sm text-muted">
@@ -746,17 +737,8 @@ export default function ReportsPage() {
         storageKey="jetstream-reports-transactions-report-open"
         className="rounded-xl"
         contentClassName="p-6 space-y-4"
-        headerRight={
-          <button
-            type="button"
-            onClick={loadTransactionsReport}
-            disabled={loadingTransactionsReport}
-            className="px-4 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition disabled:opacity-50"
-          >
-            {loadingTransactionsReport ? tr('Loading…', 'Yuklanmoqda…') : tr('Load', 'Yuklash')}
-          </button>
-        }
       >
+        {loadingTransactionsReport && <p className="text-sm text-muted">{tr('Loading...', 'Yuklanmoqda...')}</p>}
         {transactionsReport && (
           <div className="space-y-4">
             <div className="text-sm text-muted">
@@ -834,17 +816,8 @@ export default function ReportsPage() {
           storageKey="jetstream-reports-interactions-open"
           className="rounded-xl"
           contentClassName="p-6 space-y-4"
-          headerRight={
-            <button
-              type="button"
-              onClick={loadInteractionsReport}
-              disabled={loadingInteractionsReport}
-              className="px-4 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition disabled:opacity-50"
-            >
-              {loadingInteractionsReport ? tr('Loading…', 'Yuklanmoqda…') : tr('Load', 'Yuklash')}
-            </button>
-          }
         >
+          {loadingInteractionsReport && <p className="text-sm text-muted">{tr('Loading...', 'Yuklanmoqda...')}</p>}
           {interactionsReport && (
             <div className="space-y-4">
               <div className="text-sm text-muted">
