@@ -423,7 +423,7 @@ export default function FlightsPage() {
         </div>
       ) : (
         <div className="overflow-x-auto bg-surface-2 border border-border rounded-lg">
-          <table className="min-w-full divide-y divide-border">
+          <table className="excel-table">
             <thead className="bg-surface">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Flight', 'Reys')}</th>

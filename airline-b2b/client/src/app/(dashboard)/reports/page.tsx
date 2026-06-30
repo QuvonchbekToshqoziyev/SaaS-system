@@ -342,16 +342,16 @@ export default function ReportsPage() {
         defaultOpen
         storageKey="jetstream-reports-scope-open"
         className="rounded-xl"
-        contentClassName="p-6 space-y-4"
+        contentClassName="p-4 space-y-3"
       >
-        <div className={`grid grid-cols-1 ${isAdmin ? 'md:grid-cols-4' : 'md:grid-cols-3'} gap-4`}>
+        <div className="compact-toolbar">
           <div>
-            <label className="block text-sm font-medium text-muted mb-1">{tr('Flight', 'Reys')}</label>
+            <label className="compact-label">{tr('Flight', 'Reys')}</label>
             <select
               value={selectedFlightId}
               onChange={(e) => setSelectedFlightId(e.target.value)}
               disabled={flightOptionsDisabled}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary transition disabled:opacity-50"
+              className="compact-control disabled:opacity-50"
             >
               {flights.map((f) => (
                 <option key={f.id} value={f.id}>
@@ -363,12 +363,12 @@ export default function ReportsPage() {
 
           {isAdmin && (
             <div>
-              <label className="block text-sm font-medium text-muted mb-1">{tr('Firm', 'Firma')}</label>
+              <label className="compact-label">{tr('Firm', 'Firma')}</label>
               <select
                 value={selectedFirmId}
                 onChange={(e) => setSelectedFirmId(e.target.value)}
                 disabled={firmOptionsDisabled}
-                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary transition disabled:opacity-50"
+                className="compact-control disabled:opacity-50"
               >
                 {firms.map((f) => (
                   <option key={f.id} value={f.id}>
@@ -380,22 +380,22 @@ export default function ReportsPage() {
           )}
 
           <div>
-            <label className="block text-sm font-medium text-muted mb-1">{tr('Date from', 'Sana (dan)')}</label>
+            <label className="compact-label">{tr('Date from', 'Sana (dan)')}</label>
             <input
               type="date"
               value={dateFrom}
               onChange={(e) => setDateFrom(e.target.value)}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary transition"
+              className="compact-control"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-muted mb-1">{tr('Date to', 'Sana (gacha)')}</label>
+            <label className="compact-label">{tr('Date to', 'Sana (gacha)')}</label>
             <input
               type="date"
               value={dateTo}
               onChange={(e) => setDateTo(e.target.value)}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary transition"
+              className="compact-control"
             />
           </div>
         </div>
@@ -456,7 +456,7 @@ export default function ReportsPage() {
 
             {isAdmin ? (
               <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-border">
+                <table className="excel-table">
                   <thead className="bg-surface">
                     <tr>
                       <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Firm', 'Firma')}</th>
@@ -556,7 +556,7 @@ export default function ReportsPage() {
               <div className="bg-surface border border-border rounded-lg p-4">
                 <h4 className="text-sm font-semibold text-foreground mb-2">{tr('Transactions by type', 'Tranzaksiyalar (turi bo\'yicha)')}</h4>
                 <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-border">
+                  <table className="excel-table">
                     <thead className="bg-surface-2">
                       <tr>
                         <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Type', 'Turi')}</th>
@@ -585,7 +585,7 @@ export default function ReportsPage() {
               <div className="bg-surface border border-border rounded-lg p-4">
                 <h4 className="text-sm font-semibold text-foreground mb-2">{tr('Payments by method', "To'lovlar (usul bo\'yicha)")}</h4>
                 <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-border">
+                  <table className="excel-table">
                     <thead className="bg-surface-2">
                       <tr>
                         <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Method', 'Usul')}</th>
@@ -615,7 +615,7 @@ export default function ReportsPage() {
             <div className="bg-surface border border-border rounded-lg p-4">
               <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By flight', 'Reys bo\'yicha')}</h4>
               <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-border">
+                <table className="excel-table">
                   <thead className="bg-surface-2">
                     <tr>
                       <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Flight', 'Reys')}</th>
@@ -680,7 +680,7 @@ export default function ReportsPage() {
               <div className="bg-surface border border-border rounded-lg p-4">
                 <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By method', 'Usul bo\'yicha')}</h4>
                 <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-border">
+                  <table className="excel-table">
                     <thead className="bg-surface-2">
                       <tr>
                         <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Method', 'Usul')}</th>
@@ -709,7 +709,7 @@ export default function ReportsPage() {
               <div className="bg-surface border border-border rounded-lg p-4">
                 <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By currency', 'Valyuta bo\'yicha')}</h4>
                 <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-border">
+                  <table className="excel-table">
                     <thead className="bg-surface-2">
                       <tr>
                         <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Currency', 'Valyuta')}</th>
@@ -767,7 +767,7 @@ export default function ReportsPage() {
               <div className="bg-surface border border-border rounded-lg p-4">
                 <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By type', 'Turi bo\'yicha')}</h4>
                 <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-border">
+                  <table className="excel-table">
                     <thead className="bg-surface-2">
                       <tr>
                         <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Type', 'Turi')}</th>
@@ -796,7 +796,7 @@ export default function ReportsPage() {
               <div className="bg-surface border border-border rounded-lg p-4">
                 <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By currency', 'Valyuta bo\'yicha')}</h4>
                 <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-border">
+                  <table className="excel-table">
                     <thead className="bg-surface-2">
                       <tr>
                         <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Currency', 'Valyuta')}</th>
@@ -852,7 +852,7 @@ export default function ReportsPage() {
               </div>
 
               <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-border">
+                <table className="excel-table">
                   <thead className="bg-surface">
                     <tr>
                       <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Admin', 'Admin')}</th>

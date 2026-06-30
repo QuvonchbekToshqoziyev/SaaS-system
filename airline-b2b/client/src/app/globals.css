@@ -96,3 +96,73 @@ body {
 .animate-flash {
   animation: flash 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
+
+.excel-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.8125rem;
+}
+
+.excel-table thead th {
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.excel-table tbody td {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+  color: var(--foreground);
+  padding: 0.5rem 0.75rem;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.excel-table tbody tr:hover {
+  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+}
+
+.compact-toolbar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.75rem;
+  align-items: end;
+  max-width: 72rem;
+}
+
+.compact-label {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: var(--muted);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.compact-control {
+  min-height: 2.25rem;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--surface);
+  color: var(--foreground);
+  font-size: 0.8125rem;
+  outline: none;
+  padding: 0.45rem 0.6rem;
+}
+
+.compact-control::placeholder {
+  color: var(--muted);
+}
+
+.compact-control:focus {
+  border-color: var(--primary);
+}

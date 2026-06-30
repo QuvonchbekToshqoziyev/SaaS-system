@@ -521,15 +521,15 @@ export default function TransactionsPage() {
         storageKey="jetstream-transactions-record-payment-open"
         className="shadow sm:rounded-lg"
       >
-        <form onSubmit={submitPayment} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4 items-end">
+        <form onSubmit={submitPayment} className="compact-toolbar">
           {canFilterFirm && (
             <div>
-              <label htmlFor="payFirm" className="block text-sm font-medium text-muted">{tr('Firm', 'Firma')}</label>
+              <label htmlFor="payFirm" className="compact-label">{tr('Firm', 'Firma')}</label>
               <select
                 id="payFirm"
                 value={payFirmId}
                 onChange={(e) => setPayFirmId(e.target.value)}
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-primary transition sm:text-sm"
+                className="compact-control"
                 required
               >
                 <option value="">{tr('Select', 'Tanlang')}</option>
@@ -541,12 +541,12 @@ export default function TransactionsPage() {
           )}
 
           <div>
-            <label htmlFor="payFlight" className="block text-sm font-medium text-muted">{tr('Flight', 'Reys')}</label>
+            <label htmlFor="payFlight" className="compact-label">{tr('Flight', 'Reys')}</label>
             <select
               id="payFlight"
               value={payFlightId}
               onChange={(e) => setPayFlightId(e.target.value)}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-primary transition sm:text-sm"
+              className="compact-control"
               required
             >
               <option value="">{tr('Select', 'Tanlang')}</option>
@@ -563,7 +563,7 @@ export default function TransactionsPage() {
           </div>
 
           <div>
-            <label htmlFor="payAmount" className="block text-sm font-medium text-muted">{tr('Amount', 'Summa')}</label>
+            <label htmlFor="payAmount" className="compact-label">{tr('Amount', 'Summa')}</label>
             <input
               id="payAmount"
               type="number"
@@ -572,13 +572,13 @@ export default function TransactionsPage() {
               value={payAmount}
               onChange={(e) => setPayAmount(e.target.value)}
               placeholder="0.00"
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition sm:text-sm"
+              className="compact-control"
               required
             />
           </div>
 
           <div>
-            <label htmlFor="payCurrency" className="block text-sm font-medium text-muted">{tr('Currency', 'Valyuta')}</label>
+            <label htmlFor="payCurrency" className="compact-label">{tr('Currency', 'Valyuta')}</label>
             <select
               id="payCurrency"
               value={payCurrency}
@@ -586,7 +586,7 @@ export default function TransactionsPage() {
                 setPayCurrency(e.target.value as any);
                 setPayExchangeRate('');
               }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-primary transition sm:text-sm"
+              className="compact-control"
               required
             >
               <option value="UZS">UZS</option>
@@ -597,13 +597,13 @@ export default function TransactionsPage() {
 
           {payCurrency === 'OTHER' && (
             <div>
-              <label htmlFor="payOtherCurrency" className="block text-sm font-medium text-muted">{tr('Other currency', 'Boshqa valyuta')}</label>
+              <label htmlFor="payOtherCurrency" className="compact-label">{tr('Other currency', 'Boshqa valyuta')}</label>
               <input
                 id="payOtherCurrency"
                 value={payOtherCurrency}
                 onChange={(e) => setPayOtherCurrency(e.target.value)}
                 placeholder={tr('e.g. EUR', 'masalan, EUR')}
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition sm:text-sm"
+                className="compact-control"
                 required
               />
             </div>
@@ -611,7 +611,7 @@ export default function TransactionsPage() {
 
           {(payCurrency !== 'UZS') && (
             <div>
-              <label htmlFor="payExchangeRate" className="block text-sm font-medium text-muted">
+              <label htmlFor="payExchangeRate" className="compact-label">
                 {(payCurrency === 'OTHER' ? (payOtherCurrency || 'XXX') : payCurrency).toUpperCase()}→UZS {tr('rate', 'kursi')}
               </label>
               <input
@@ -624,7 +624,7 @@ export default function TransactionsPage() {
                 placeholder={payCurrency === 'OTHER'
                   ? tr('Required', 'Majburiy')
                   : tr('Optional if rate is already saved for that day', 'Agar kurs shu kunga saqlangan bo\'lsa ixtiyoriy')}
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition sm:text-sm"
+                className="compact-control"
                 required={payCurrency === 'OTHER'}
               />
               <p className="mt-1 text-xs text-muted">
@@ -637,12 +637,12 @@ export default function TransactionsPage() {
           )}
 
           <div>
-            <label htmlFor="payMethod" className="block text-sm font-medium text-muted">{tr('Method', 'Usul')}</label>
+            <label htmlFor="payMethod" className="compact-label">{tr('Method', 'Usul')}</label>
             <select
               id="payMethod"
               value={payMethod}
               onChange={(e) => setPayMethod(e.target.value as any)}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-primary transition sm:text-sm"
+              className="compact-control"
               required
             >
               <option value="cash">{tr('Cash', 'Naqd')}</option>
@@ -651,25 +651,25 @@ export default function TransactionsPage() {
           </div>
 
           <div>
-            <label htmlFor="payReference" className="block text-sm font-medium text-muted">{tr('Reference (optional)', 'Izoh (ixtiyoriy)')}</label>
+            <label htmlFor="payReference" className="compact-label">{tr('Reference (optional)', 'Izoh (ixtiyoriy)')}</label>
             <input
               id="payReference"
               value={payReference}
               onChange={(e) => setPayReference(e.target.value)}
               placeholder={tr('Receipt / note', 'Kvitansiya / izoh')}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition sm:text-sm"
+              className="compact-control"
             />
           </div>
 
           {payMethod === 'cash' && (
             <div>
-              <label htmlFor="payCashDate" className="block text-sm font-medium text-muted">{tr('Cash date', 'Naqd sana')}</label>
+              <label htmlFor="payCashDate" className="compact-label">{tr('Cash date', 'Naqd sana')}</label>
               <input
                 id="payCashDate"
                 type="date"
                 value={payCashDate}
                 onChange={(e) => setPayCashDate(e.target.value)}
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-primary transition sm:text-sm"
+                className="compact-control"
                 required
               />
             </div>
@@ -678,33 +678,33 @@ export default function TransactionsPage() {
           {payMethod === 'card' && (
             <>
               <div>
-                <label htmlFor="payCardProvider" className="block text-sm font-medium text-muted">{tr('Card provider', 'Karta provayderi')}</label>
+                <label htmlFor="payCardProvider" className="compact-label">{tr('Card provider', 'Karta provayderi')}</label>
                 <input
                   id="payCardProvider"
                   value={payCardProvider}
                   onChange={(e) => setPayCardProvider(e.target.value)}
                   placeholder={tr('e.g. Visa / Stripe', 'masalan, Visa / Stripe')}
-                  className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition sm:text-sm"
+                  className="compact-control"
                   required
                 />
               </div>
 
               <div>
-                <label htmlFor="payCardReference" className="block text-sm font-medium text-muted">{tr('Transaction reference', 'Tranzaksiya raqami')}</label>
+                <label htmlFor="payCardReference" className="compact-label">{tr('Transaction reference', 'Tranzaksiya raqami')}</label>
                 <input
                   id="payCardReference"
                   value={payCardReference}
                   onChange={(e) => setPayCardReference(e.target.value)}
                   placeholder={tr('Bank / gateway reference', 'Bank / to\'lov tizimi raqami')}
-                  className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition sm:text-sm"
+                  className="compact-control"
                   required
                 />
               </div>
             </>
           )}
 
-          <div className="sm:col-span-2 lg:col-span-6">
-            <div className="mb-3 text-xs text-muted">
+          <div className="sm:col-span-2 lg:col-span-3 xl:col-span-4">
+            <div className="mb-2 text-xs text-muted">
               {payCurrencyCode === 'UZS' ? (
                 <span>
                   {tr('Preview:', 'Ko\'rinish:')} {tr('Base amount equals original amount (UZS).', 'Bazaviy summa asl summaga teng (UZS).')}
@@ -748,37 +748,37 @@ export default function TransactionsPage() {
         storageKey="jetstream-transactions-filters-open"
         className="shadow sm:rounded-lg"
       >
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
+        <div className="compact-toolbar">
           <div>
-            <label htmlFor="dateFrom" className="block text-sm font-medium text-muted">{tr('Date from', 'Sana (dan)')}</label>
+            <label htmlFor="dateFrom" className="compact-label">{tr('Date from', 'Sana (dan)')}</label>
             <input
               id="dateFrom"
               type="date"
               value={dateFrom}
               onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-primary transition sm:text-sm"
+              className="compact-control"
             />
           </div>
 
           <div>
-            <label htmlFor="dateTo" className="block text-sm font-medium text-muted">{tr('Date to', 'Sana (gacha)')}</label>
+            <label htmlFor="dateTo" className="compact-label">{tr('Date to', 'Sana (gacha)')}</label>
             <input
               id="dateTo"
               type="date"
               value={dateTo}
               onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground outline-none focus:border-primary transition sm:text-sm"
+              className="compact-control"
             />
           </div>
 
           {canFilterFirm && (
             <div>
-              <label htmlFor="firm" className="block text-sm font-medium text-muted">{tr('Firm', 'Firma')}</label>
+              <label htmlFor="firm" className="compact-label">{tr('Firm', 'Firma')}</label>
               <select
                 id="firm"
                 value={filterFirmId}
                 onChange={(e) => { setFilterFirmId(e.target.value); setPage(1); }}
-                className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-primary transition sm:text-sm"
+                className="compact-control"
               >
                 <option value="">{tr('All', 'Barchasi')}</option>
                 {firmOptions.map((f) => (
@@ -789,12 +789,12 @@ export default function TransactionsPage() {
           )}
 
           <div>
-            <label htmlFor="flight" className="block text-sm font-medium text-muted">{tr('Flight', 'Reys')}</label>
+            <label htmlFor="flight" className="compact-label">{tr('Flight', 'Reys')}</label>
             <select
               id="flight"
               value={filterFlightId}
               onChange={(e) => { setFilterFlightId(e.target.value); setPage(1); }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-primary transition sm:text-sm"
+              className="compact-control"
             >
               <option value="">{tr('All', 'Barchasi')}</option>
               {flightOptions.map((f) => {
@@ -810,12 +810,12 @@ export default function TransactionsPage() {
           </div>
 
           <div>
-            <label htmlFor="type" className="block text-sm font-medium text-muted">{tr('Type', 'Turi')}</label>
+            <label htmlFor="type" className="compact-label">{tr('Type', 'Turi')}</label>
             <select
               id="type"
               value={filterType}
               onChange={(e) => { setFilterType(e.target.value); setPage(1); }}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 pl-3 pr-10 text-foreground outline-none focus:border-primary transition sm:text-sm"
+              className="compact-control"
             >
               <option value="">{tr('All', 'Barchasi')}</option>
               <option value="sale">{tr('Sale', 'Sotuv')}</option>
@@ -826,13 +826,13 @@ export default function TransactionsPage() {
           </div>
 
           <div>
-            <label htmlFor="currency" className="block text-sm font-medium text-muted">{tr('Currency', 'Valyuta')}</label>
+            <label htmlFor="currency" className="compact-label">{tr('Currency', 'Valyuta')}</label>
             <input
               id="currency"
               value={filterCurrency}
               onChange={(e) => { setFilterCurrency(e.target.value); setPage(1); }}
               placeholder={tr('e.g. USD', 'masalan, USD')}
-              className="mt-1 block w-full rounded-md bg-surface border border-border py-2 px-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition sm:text-sm"
+              className="compact-control"
             />
           </div>
         </div>
@@ -867,31 +867,32 @@ export default function TransactionsPage() {
         </div>
 
         {transactionsView === 'list' ? (
-          <table className="min-w-full divide-y divide-border">
-            <thead className="bg-surface">
+          <div className="overflow-x-auto scroller-minimal">
+          <table className="excel-table">
+            <thead>
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">{tr('Date', 'Sana')}</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">{tr('Type', 'Turi')}</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">{tr('Firm / Flight', 'Firma / Reys')}</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">{tr('Amount', 'Summa')}</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">{tr('Base Amount (UZS)', 'Bazaviy summa (UZS)')}</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">{tr('Payment Method', "To'lov usuli")}</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider">{tr('Reference', 'Izoh')}</th>
+                <th>{tr('Date', 'Sana')}</th>
+                <th>{tr('Type', 'Turi')}</th>
+                <th>{tr('Firm / Flight', 'Firma / Reys')}</th>
+                <th className="text-right">{tr('Amount', 'Summa')}</th>
+                <th className="text-right">{tr('Base Amount (UZS)', 'Bazaviy summa (UZS)')}</th>
+                <th>{tr('Payment Method', "To'lov usuli")}</th>
+                <th>{tr('Reference', 'Izoh')}</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-border">
+            <tbody>
               {loading ? (
-                <tr><td colSpan={7} className="px-6 py-4 text-center">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
+                <tr><td colSpan={7} className="text-center">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
               ) : transactions.map((t: any) => (
                 <tr
                   key={t.id}
                   onClick={() => router.push(`/transactions/detail?id=${t.id}`)}
-                  className="hover:bg-surface transition cursor-pointer"
+                  className="cursor-pointer"
                 >
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-muted">
+                  <td className="text-muted">
                     {format(new Date(t.createdAt || t.created_at), 'PPP pp')}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                  <td className="font-medium">
                     <span className={`px-2 py-1 rounded-full text-xs font-bold border ${
                       (t.type || '').toLowerCase() === 'sale' ? 'bg-green-900/30 text-green-300 border-green-700/50' :
                       (t.type || '').toLowerCase() === 'payable' ? 'bg-red-900/30 text-red-300 border-red-700/50' :
@@ -902,20 +903,20 @@ export default function TransactionsPage() {
                       {getTransactionTypeLabel(t.type)}
                     </span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-muted flex flex-col gap-1">
+                  <td className="text-muted">
                     <span>{tr('Firm', 'Firma')}: {t.firm?.name || t.firmId || t.firm_id}</span>
-                    <span>{tr('Flight', 'Reys')}: {t.flight?.flightNumber || t.flightId || t.flight_id}</span>
+                    <span className="ml-3">{tr('Flight', 'Reys')}: {t.flight?.flightNumber || t.flightId || t.flight_id}</span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground font-semibold">
+                  <td className="text-right font-semibold">
                     {Number(t.originalAmount || t.original_amount).toFixed(2)} {t.currency}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-muted">
+                  <td className="text-right text-muted">
                     {Number(t.baseAmount || t.base_amount).toFixed(2)} UZS
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-muted">
+                  <td className="text-muted">
                     {getPaymentMethodLabel(t.paymentMethod || t.payment_method)}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-muted">
+                  <td className="text-muted">
                     {(() => {
                       const meta = t.metadata && typeof t.metadata === 'object' ? t.metadata : null;
                       const ref = meta ? (meta.transaction_reference || meta.reference || meta.note) : null;
@@ -926,7 +927,7 @@ export default function TransactionsPage() {
               ))}
               {!loading && transactions.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-6 py-4 text-center text-sm text-muted">
+                  <td colSpan={7} className="text-center text-muted">
                     <div className="space-y-2">
                       <div>{tr('No transactions found.', 'Tranzaksiyalar topilmadi.')}</div>
                       {hasActiveFilters ? (
@@ -944,6 +945,7 @@ export default function TransactionsPage() {
               )}
             </tbody>
           </table>
+          </div>
         ) : (
           <div className="p-4">
             {loading ? (

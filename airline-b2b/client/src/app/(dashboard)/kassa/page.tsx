@@ -326,9 +326,9 @@ export default function KassaPage() {
           description={tr('Start the cash register for this day before recording payments.', 'To\'lovlarni qayd etishdan oldin ushbu kun uchun kassani oching.')}
           storageKey="kassa-open-card"
         >
-          <form onSubmit={handleOpenKassa} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+          <form onSubmit={handleOpenKassa} className="compact-toolbar max-w-2xl">
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">
+              <label className="compact-label">
                 {tr('Opening cash balance (UZS)', 'Boshlang\'ich naqd balans (UZS)')}
               </label>
               <input
@@ -337,7 +337,7 @@ export default function KassaPage() {
                 step="1"
                 value={openingBalance}
                 onChange={(e) => setOpeningBalance(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm"
+                className="compact-control"
               />
             </div>
             <button
@@ -379,11 +379,11 @@ export default function KassaPage() {
         }
         storageKey="kassa-payment-card"
       >
-        <form onSubmit={submitPayment} className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 ${!isEditable ? 'opacity-50 pointer-events-none' : ''}`}>
+        <form onSubmit={submitPayment} className={`compact-toolbar ${!isEditable ? 'opacity-50 pointer-events-none' : ''}`}>
           {canFilterFirm && (
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">{tr('Firm', 'Firma')}</label>
-              <select value={payFirmId} onChange={(e) => setPayFirmId(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm">
+              <label className="compact-label">{tr('Firm', 'Firma')}</label>
+              <select value={payFirmId} onChange={(e) => setPayFirmId(e.target.value)} className="compact-control">
                 <option value="">{tr('Select firm', 'Firmani tanlang')}</option>
                 {firmOptions.map((f) => (
                   <option key={f.id} value={f.id}>{f.name}</option>
@@ -392,8 +392,8 @@ export default function KassaPage() {
             </div>
           )}
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">{tr('Flight', 'Reys')}</label>
-            <select value={payFlightId} onChange={(e) => setPayFlightId(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm">
+            <label className="compact-label">{tr('Flight', 'Reys')}</label>
+            <select value={payFlightId} onChange={(e) => setPayFlightId(e.target.value)} className="compact-control">
               <option value="">{tr('Select flight', 'Reysni tanlang')}</option>
               {flightOptions.map((f) => {
                 const id = f.id || f.flight_id || '';
@@ -402,12 +402,12 @@ export default function KassaPage() {
             </select>
           </div>
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">{tr('Amount', 'Summa')}</label>
-            <input type="number" min="0" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm" />
+            <label className="compact-label">{tr('Amount', 'Summa')}</label>
+            <input type="number" min="0" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className="compact-control" />
           </div>
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">{tr('Currency', 'Valyuta')}</label>
-            <select value={payCurrency} onChange={(e) => setPayCurrency(e.target.value as 'USD' | 'UZS' | 'OTHER')} className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm">
+            <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
+            <select value={payCurrency} onChange={(e) => setPayCurrency(e.target.value as 'USD' | 'UZS' | 'OTHER')} className="compact-control">
               <option value="UZS">UZS</option>
               <option value="USD">USD</option>
               <option value="OTHER">{tr('Other', 'Boshqa')}</option>
@@ -415,19 +415,19 @@ export default function KassaPage() {
           </div>
           {payCurrency === 'OTHER' && (
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">{tr('Currency code', 'Valyuta kodi')}</label>
-              <input value={payOtherCurrency} onChange={(e) => setPayOtherCurrency(e.target.value.toUpperCase())} maxLength={3} className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm uppercase" />
+              <label className="compact-label">{tr('Currency code', 'Valyuta kodi')}</label>
+              <input value={payOtherCurrency} onChange={(e) => setPayOtherCurrency(e.target.value.toUpperCase())} maxLength={3} className="compact-control uppercase" />
             </div>
           )}
           {payCurrencyCode !== 'UZS' && (
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">{tr('Exchange rate', 'Kurs')}</label>
-              <input value={payExchangeRate} onChange={(e) => setPayExchangeRate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm" />
+              <label className="compact-label">{tr('Exchange rate', 'Kurs')}</label>
+              <input value={payExchangeRate} onChange={(e) => setPayExchangeRate(e.target.value)} className="compact-control" />
             </div>
           )}
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">{tr('Method', 'Usul')}</label>
-            <select value={payMethod} onChange={(e) => setPayMethod(e.target.value as 'cash' | 'card')} className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm">
+            <label className="compact-label">{tr('Method', 'Usul')}</label>
+            <select value={payMethod} onChange={(e) => setPayMethod(e.target.value as 'cash' | 'card')} className="compact-control">
               <option value="cash">{tr('Cash', 'Naqd')}</option>
               <option value="card">{tr('Card', 'Karta')}</option>
             </select>
@@ -435,16 +435,16 @@ export default function KassaPage() {
           {payMethod === 'card' && (
             <>
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">{tr('Provider', 'Provayder')}</label>
-                <input value={payCardProvider} onChange={(e) => setPayCardProvider(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm" />
+                <label className="compact-label">{tr('Provider', 'Provayder')}</label>
+                <input value={payCardProvider} onChange={(e) => setPayCardProvider(e.target.value)} className="compact-control" />
               </div>
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">{tr('Reference', 'Raqam')}</label>
-                <input value={payCardReference} onChange={(e) => setPayCardReference(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm" />
+                <label className="compact-label">{tr('Reference', 'Raqam')}</label>
+                <input value={payCardReference} onChange={(e) => setPayCardReference(e.target.value)} className="compact-control" />
               </div>
             </>
           )}
-          <div className="md:col-span-2 lg:col-span-3">
+          <div className="flex items-end">
             <button type="submit" disabled={recordingPayment || !isEditable} className="px-5 py-2.5 bg-primary text-white rounded-lg font-semibold text-sm uppercase tracking-wide hover:bg-primary/90 disabled:opacity-50">
               {recordingPayment ? tr('Recording…', 'Qayd etilmoqda…') : tr('Record payment', 'To\'lov qayd etish')}
             </button>
@@ -463,23 +463,23 @@ export default function KassaPage() {
         ) : !summary?.duePayments.length ? (
           <p className="text-sm text-muted">{tr('No outstanding balances.', 'Qarzdorlik yo\'q.')}</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          <div className="overflow-x-auto scroller-minimal">
+            <table className="excel-table">
               <thead>
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted">
-                  {canFilterFirm && <th className="py-2 pr-4">{tr('Firm', 'Firma')}</th>}
-                  <th className="py-2 pr-4">{tr('Flight', 'Reys')}</th>
-                  <th className="py-2 pr-4 text-right">{tr('Outstanding (UZS)', 'Qarz (UZS)')}</th>
-                  <th className="py-2">{tr('Action', 'Amal')}</th>
+                  {canFilterFirm && <th>{tr('Firm', 'Firma')}</th>}
+                  <th>{tr('Flight', 'Reys')}</th>
+                  <th className="text-right">{tr('Outstanding (UZS)', 'Qarz (UZS)')}</th>
+                  <th>{tr('Action', 'Amal')}</th>
                 </tr>
               </thead>
               <tbody>
                 {summary.duePayments.map((item) => (
                   <tr key={`${item.firmId}-${item.flightId}`} className="border-b border-border/50">
-                    {canFilterFirm && <td className="py-3 pr-4">{item.firmName || item.firmId}</td>}
-                    <td className="py-3 pr-4">{item.flightNumber || item.flightId}</td>
-                    <td className="py-3 pr-4 text-right font-mono">{formatMoney(item.outstanding)}</td>
-                    <td className="py-3">
+                    {canFilterFirm && <td>{item.firmName || item.firmId}</td>}
+                    <td>{item.flightNumber || item.flightId}</td>
+                    <td className="text-right font-mono">{formatMoney(item.outstanding)}</td>
+                    <td>
                       <button
                         type="button"
                         disabled={!isEditable}
@@ -508,27 +508,27 @@ export default function KassaPage() {
         ) : !summary?.transactions.length ? (
           <p className="text-sm text-muted">{tr('No transactions for this day.', 'Bu kun uchun tranzaksiya yo\'q.')}</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          <div className="overflow-x-auto scroller-minimal">
+            <table className="excel-table">
               <thead>
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted">
-                  <th className="py-2 pr-4">{tr('Type', 'Turi')}</th>
-                  {canFilterFirm && <th className="py-2 pr-4">{tr('Firm', 'Firma')}</th>}
-                  <th className="py-2 pr-4">{tr('Flight', 'Reys')}</th>
-                  <th className="py-2 pr-4">{tr('Method', 'Usul')}</th>
-                  <th className="py-2 pr-4 text-right">{tr('Amount', 'Summa')}</th>
-                  <th className="py-2 text-right">{tr('Base (UZS)', 'Asosiy (UZS)')}</th>
+                  <th>{tr('Type', 'Turi')}</th>
+                  {canFilterFirm && <th>{tr('Firm', 'Firma')}</th>}
+                  <th>{tr('Flight', 'Reys')}</th>
+                  <th>{tr('Method', 'Usul')}</th>
+                  <th className="text-right">{tr('Amount', 'Summa')}</th>
+                  <th className="text-right">{tr('Base (UZS)', 'Asosiy (UZS)')}</th>
                 </tr>
               </thead>
               <tbody>
                 {summary.transactions.map((tx) => (
                   <tr key={tx.id} className="border-b border-border/50">
-                    <td className="py-3 pr-4 font-medium">{tx.type}</td>
-                    {canFilterFirm && <td className="py-3 pr-4">{tx.firm?.name || tx.firmId}</td>}
-                    <td className="py-3 pr-4">{tx.flight?.flightNumber || tx.flightId}</td>
-                    <td className="py-3 pr-4 uppercase text-xs">{tx.paymentMethod || '—'}</td>
-                    <td className="py-3 pr-4 text-right font-mono">{tx.originalAmount} {tx.currency}</td>
-                    <td className="py-3 text-right font-mono">{formatMoney(Number(tx.baseAmount))}</td>
+                    <td className="font-medium">{tx.type}</td>
+                    {canFilterFirm && <td>{tx.firm?.name || tx.firmId}</td>}
+                    <td>{tx.flight?.flightNumber || tx.flightId}</td>
+                    <td className="uppercase text-xs">{tx.paymentMethod || '—'}</td>
+                    <td className="text-right font-mono">{tx.originalAmount} {tx.currency}</td>
+                    <td className="text-right font-mono">{formatMoney(Number(tx.baseAmount))}</td>
                   </tr>
                 ))}
               </tbody>
@@ -543,9 +543,9 @@ export default function KassaPage() {
           description={tr('Final step for the day: count physical cash and close only when all payments are recorded.', 'Kun yakunidagi oxirgi qadam: barcha to\'lovlar kiritilgach, naqd pulni sanab kassani yoping.')}
           storageKey="kassa-close-card"
         >
-          <form onSubmit={handleCloseKassa} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <form onSubmit={handleCloseKassa} className="compact-toolbar max-w-3xl">
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">
+              <label className="compact-label">
                 {tr('Physical cash count (UZS)', 'Haqiqiy naqd pul (UZS)')}
               </label>
               <input
@@ -555,7 +555,7 @@ export default function KassaPage() {
                 value={closingBalance}
                 onChange={(e) => setClosingBalance(e.target.value)}
                 placeholder={summary?.totals.expectedCash != null ? String(Math.round(summary.totals.expectedCash)) : ''}
-                className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm"
+                className="compact-control"
               />
               {summary?.totals.expectedCash != null && (
                 <p className="mt-1 text-xs text-muted">
@@ -564,17 +564,17 @@ export default function KassaPage() {
               )}
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">
+              <label className="compact-label">
                 {tr('Notes', 'Izohlar')}
               </label>
               <input
                 type="text"
                 value={closeNotes}
                 onChange={(e) => setCloseNotes(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm"
+                className="compact-control"
               />
             </div>
-            <div className="md:col-span-2">
+            <div className="flex items-end">
               <button
                 type="submit"
                 disabled={closingKassa}

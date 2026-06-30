@@ -270,7 +270,7 @@ export default function AdoHomeDashboard() {
                 </Link>
               </div>
               <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
+                <table className="excel-table">
                   <thead>
                     <tr className="border-b border-border bg-surface-2/50 text-left text-[10px] uppercase tracking-wider text-muted">
                       <th className="px-5 py-3">{tr('Type', 'Turi')}</th>

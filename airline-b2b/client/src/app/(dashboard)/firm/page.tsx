@@ -268,7 +268,7 @@ export default function FirmDashboard() {
           contentClassName="p-0"
         >
           <div className="max-w-full overflow-x-auto">
-            <table className="min-w-full divide-y divide-border">
+            <table className="excel-table">
               <thead className="bg-surface">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Flight', 'Reys')}</th>
@@ -311,7 +311,7 @@ export default function FirmDashboard() {
         contentClassName="p-0"
       >
         <div className="max-w-full overflow-x-auto">
-          <table className="min-w-full divide-y divide-border">
+          <table className="excel-table">
             <thead className="bg-surface">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Month', 'Oy')}</th>
@@ -352,7 +352,7 @@ export default function FirmDashboard() {
         contentClassName="p-0"
       >
         <div className="max-w-full overflow-x-auto">
-          <table className="min-w-full divide-y divide-border">
+          <table className="excel-table">
             <thead className="bg-surface">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Flight', 'Reys')}</th>
