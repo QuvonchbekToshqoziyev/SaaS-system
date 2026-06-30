@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLanguage } from '@/contexts/LanguageContext';
+import { ChevronDown } from 'lucide-react';
 
 type CollapsibleCardProps = {
   title: React.ReactNode;
@@ -10,6 +11,7 @@ type CollapsibleCardProps = {
   className?: string;
   contentClassName?: string;
   headerRight?: React.ReactNode;
+  collapsible?: boolean;
 };
 
 export default function CollapsibleCard({
@@ -21,6 +23,7 @@ export default function CollapsibleCard({
   className,
   contentClassName,
   headerRight,
+  collapsible = false,
 }: CollapsibleCardProps) {
   const { tr } = useLanguage();
   const [open, setOpen] = useState(defaultOpen);
@@ -30,6 +33,7 @@ export default function CollapsibleCard({
   const bodyPaddingClassName = contentClassName ?? 'p-6 md:p-8';
 
   useEffect(() => {
+    if (!collapsible) return;
     if (!storageKey) return;
     try {
       const raw = localStorage.getItem(storageKey);
@@ -40,9 +44,10 @@ export default function CollapsibleCard({
     } finally {
       didHydrateFromStorage.current = true;
     }
-  }, [storageKey]);
+  }, [collapsible, storageKey]);
 
   useEffect(() => {
+    if (!collapsible) return;
     if (!storageKey) return;
     if (!didHydrateFromStorage.current) return;
     try {
@@ -50,13 +55,15 @@ export default function CollapsibleCard({
     } catch {
       // ignore
     }
-  }, [open, storageKey]);
+  }, [collapsible, open, storageKey]);
+
+  const isOpen = collapsible ? open : true;
 
   return (
-    <div className={`bg-surface shadow-sm border border-border rounded-[1.25rem] transition-all duration-300 hover:shadow-[0_4px_24px_-8px_rgba(0,0,0,0.05)] ${className || ''}`}>
+    <div className={`bg-surface shadow-sm border border-border rounded-lg transition-all duration-300 hover:shadow-[0_4px_24px_-8px_rgba(0,0,0,0.05)] ${className || ''}`}>
       <div
         className={`px-6 py-5 md:px-8 md:py-6 flex items-start justify-between gap-4 transition-colors ${
-          open && hasChildren ? 'border-b border-border' : ''
+          isOpen && hasChildren ? 'border-b border-border' : ''
         }`}
       >
         <div className="min-w-0">
@@ -66,23 +73,27 @@ export default function CollapsibleCard({
 
         <div className="flex items-center gap-3 shrink-0">
           {headerRight}
-          <button
-            type="button"
-            onClick={() => setOpen((v) => !v)}
-            className="px-3.5 py-1.5 bg-surface-2 text-foreground hover:bg-black/5 dark:hover:bg-white/5 rounded-md transition-all duration-200 border border-border text-[11px] uppercase tracking-widest font-semibold whitespace-nowrap active:scale-95"
-            aria-expanded={open}
-          >
-            {open ? tr('Hide', 'Yopish') : tr('Show', "Ko'rsatish")}
-          </button>
+          {collapsible && (
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface-2 text-muted transition hover:text-foreground active:scale-95"
+              aria-expanded={open}
+              aria-label={open ? tr('Hide', 'Yopish') : tr('Show', "Ko'rsatish")}
+              title={open ? tr('Hide', 'Yopish') : tr('Show', "Ko'rsatish")}
+            >
+              <ChevronDown size={16} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+            </button>
+          )}
         </div>
       </div>
 
       {hasChildren ? (
         <div
           className={`grid overflow-hidden transition-[grid-template-rows,opacity] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] ${
-            open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+            isOpen ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
           }`}
-          aria-hidden={!open}
+          aria-hidden={!isOpen}
         >
           <div className="min-h-0 bg-surface-2/30">
             <div className={bodyPaddingClassName}>{children}</div>

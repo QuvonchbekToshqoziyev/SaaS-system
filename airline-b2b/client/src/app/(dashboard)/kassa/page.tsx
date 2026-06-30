@@ -351,57 +351,6 @@ export default function KassaPage() {
         </CollapsibleCard>
       )}
 
-      {canManageKassa && isEditable && (
-        <CollapsibleCard
-          title={tr('Close kassa', 'Kassani yopish')}
-          description={tr('Count physical cash and close the day. After closing, no changes are allowed.', 'Naqd pulni sanab, kunni yoping. Yopilgandan keyin o\'zgartirish mumkin emas.')}
-          storageKey="kassa-close-card"
-          defaultOpen={false}
-        >
-          <form onSubmit={handleCloseKassa} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">
-                {tr('Physical cash count (UZS)', 'Haqiqiy naqd pul (UZS)')}
-              </label>
-              <input
-                type="number"
-                min="0"
-                step="1"
-                value={closingBalance}
-                onChange={(e) => setClosingBalance(e.target.value)}
-                placeholder={summary?.totals.expectedCash != null ? String(Math.round(summary.totals.expectedCash)) : ''}
-                className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm"
-              />
-              {summary?.totals.expectedCash != null && (
-                <p className="mt-1 text-xs text-muted">
-                  {tr('Expected', 'Kutilgan')}: {formatMoney(summary.totals.expectedCash)} UZS
-                </p>
-              )}
-            </div>
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">
-                {tr('Notes', 'Izohlar')}
-              </label>
-              <input
-                type="text"
-                value={closeNotes}
-                onChange={(e) => setCloseNotes(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm"
-              />
-            </div>
-            <div className="md:col-span-2">
-              <button
-                type="submit"
-                disabled={closingKassa}
-                className="px-5 py-2.5 bg-red-600 text-white rounded-lg font-semibold text-sm uppercase tracking-wide hover:bg-red-700 disabled:opacity-50"
-              >
-                {closingKassa ? tr('Closing…', 'Yopilyapti…') : tr('Close kassa', 'Kassani yopish')}
-              </button>
-            </div>
-          </form>
-        </CollapsibleCard>
-      )}
-
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
           { label: tr('Cash (UZS)', 'Naqd (UZS)'), value: summary?.totals.cashTotal ?? 0, icon: Wallet },
@@ -587,6 +536,56 @@ export default function KassaPage() {
           </div>
         )}
       </CollapsibleCard>
+
+      {canManageKassa && isEditable && (
+        <CollapsibleCard
+          title={tr('Close kassa', 'Kassani yopish')}
+          description={tr('Final step for the day: count physical cash and close only when all payments are recorded.', 'Kun yakunidagi oxirgi qadam: barcha to\'lovlar kiritilgach, naqd pulni sanab kassani yoping.')}
+          storageKey="kassa-close-card"
+        >
+          <form onSubmit={handleCloseKassa} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">
+                {tr('Physical cash count (UZS)', 'Haqiqiy naqd pul (UZS)')}
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={closingBalance}
+                onChange={(e) => setClosingBalance(e.target.value)}
+                placeholder={summary?.totals.expectedCash != null ? String(Math.round(summary.totals.expectedCash)) : ''}
+                className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm"
+              />
+              {summary?.totals.expectedCash != null && (
+                <p className="mt-1 text-xs text-muted">
+                  {tr('Expected', 'Kutilgan')}: {formatMoney(summary.totals.expectedCash)} UZS
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-muted mb-1.5">
+                {tr('Notes', 'Izohlar')}
+              </label>
+              <input
+                type="text"
+                value={closeNotes}
+                onChange={(e) => setCloseNotes(e.target.value)}
+                className="w-full px-3 py-2.5 rounded-lg border border-border bg-surface text-sm"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <button
+                type="submit"
+                disabled={closingKassa}
+                className="px-5 py-2.5 bg-red-600 text-white rounded-lg font-semibold text-sm uppercase tracking-wide hover:bg-red-700 disabled:opacity-50"
+              >
+                {closingKassa ? tr('Closing…', 'Yopilyapti…') : tr('Close kassa', 'Kassani yopish')}
+              </button>
+            </div>
+          </form>
+        </CollapsibleCard>
+      )}
     </div>
   );
 }
