@@ -7,6 +7,7 @@ import {
   formatBusinessDateKey,
   getTransactionBusinessDateKey,
   nextDayUtc,
+  normalizeBusinessDate,
   parseBusinessDate,
   startOfDayUtc,
   sumToNumber,
@@ -164,18 +165,19 @@ export const getKassaDay = async (req: Request, res: Response) => {
   }
 
   try {
+    const day = normalizeBusinessDate(businessDate);
     const [kassa, transactions, duePayments] = await Promise.all([
-      findKassaForDate(businessDate),
-      loadDayTransactions(businessDate, firmScopeId),
+      findKassaForDate(day),
+      loadDayTransactions(day, firmScopeId),
       loadDuePayments(firmScopeId),
     ]);
 
     const totals = computeDayTotals(transactions);
-    const status = kassa ? kassa.status : 'NOT_OPEN';
+    const status = kassa?.status === KassaStatus.CLOSED ? KassaStatus.CLOSED : kassa ? KassaStatus.OPEN : 'NOT_OPEN';
     const expectedCash = kassa ? sumToNumber(kassa.openingBalance) + totals.cashTotal : null;
 
     res.json({
-      businessDate: formatBusinessDateKey(businessDate),
+      businessDate: formatBusinessDateKey(day),
       status,
       kassa: kassa ? serializeKassa(kassa) : null,
       totals: { ...totals, expectedCash },
@@ -226,25 +228,35 @@ export const openKassa = async (req: Request, res: Response) => {
   }
 
   try {
-    const existing = await findKassaForDate(businessDate);
-    if (existing) {
-      if (existing.status === KassaStatus.CLOSED) {
-        return res.status(400).json({ error: 'Kassa is already closed for this date and cannot be reopened' });
-      }
-      return res.status(400).json({ error: 'Kassa is already open for this date' });
-    }
+    const day = normalizeBusinessDate(businessDate);
+    const kassa = await prisma.$transaction(async (tx) => {
+      const existing = await tx.kassaDay.findUnique({
+        where: { businessDate: day },
+        include: {
+          openedBy: { select: { id: true, email: true } },
+          closedBy: { select: { id: true, email: true } },
+        },
+      });
 
-    const kassa = await prisma.kassaDay.create({
-      data: {
-        businessDate,
-        status: KassaStatus.OPEN,
-        openedByUserId: actorUserId,
-        openingBalance: openingBalance.toDecimalPlaces(4),
-      },
-      include: {
-        openedBy: { select: { id: true, email: true } },
-        closedBy: { select: { id: true, email: true } },
-      },
+      if (existing) {
+        if (existing.status === KassaStatus.CLOSED) {
+          throw new Error('Kassa is already closed for this date and cannot be reopened');
+        }
+        throw new Error('Kassa is already open for this date');
+      }
+
+      return tx.kassaDay.create({
+        data: {
+          businessDate: day,
+          status: KassaStatus.OPEN,
+          openedByUserId: actorUserId,
+          openingBalance: openingBalance.toDecimalPlaces(4),
+        },
+        include: {
+          openedBy: { select: { id: true, email: true } },
+          closedBy: { select: { id: true, email: true } },
+        },
+      });
     });
 
     res.status(201).json({ kassa: serializeKassa(kassa) });
@@ -281,35 +293,44 @@ export const closeKassa = async (req: Request, res: Response) => {
   const notes = typeof req.body?.notes === 'string' ? req.body.notes.trim() : undefined;
 
   try {
-    const kassa = await findKassaForDate(businessDate);
-    if (!kassa) {
-      return res.status(404).json({ error: 'Kassa is not open for this date' });
-    }
-    if (kassa.status === KassaStatus.CLOSED) {
-      return res.status(400).json({ error: 'Kassa is already closed for this date' });
-    }
+    const day = normalizeBusinessDate(businessDate);
+    const updated = await prisma.$transaction(async (tx) => {
+      const kassa = await tx.kassaDay.findUnique({
+        where: { businessDate: day },
+        include: {
+          openedBy: { select: { id: true, email: true } },
+          closedBy: { select: { id: true, email: true } },
+        },
+      });
+      if (!kassa) {
+        throw new Error('Kassa is not open for this date');
+      }
+      if (kassa.status === KassaStatus.CLOSED) {
+        throw new Error('Kassa is already closed for this date');
+      }
 
-    const transactions = await loadDayTransactions(businessDate);
-    const totals = computeDayTotals(transactions);
-    const expectedCash = sumToNumber(kassa.openingBalance) + totals.cashTotal;
-    const variance =
-      closingBalance != null ? sumToNumber(closingBalance) - expectedCash : null;
+      const transactions = await loadDayTransactions(day);
+      const totals = computeDayTotals(transactions);
+      const expectedCash = sumToNumber(kassa.openingBalance) + totals.cashTotal;
+      const variance =
+        closingBalance != null ? sumToNumber(closingBalance) - expectedCash : null;
 
-    const updated = await prisma.kassaDay.update({
-      where: { id: kassa.id },
-      data: {
-        status: KassaStatus.CLOSED,
-        closedAt: new Date(),
-        closedByUserId: actorUserId,
-        closingBalance: closingBalance?.toDecimalPlaces(4),
-        expectedCash: new Prisma.Decimal(expectedCash).toDecimalPlaces(4),
-        variance: variance != null ? new Prisma.Decimal(variance).toDecimalPlaces(4) : null,
-        notes: notes || null,
-      },
-      include: {
-        openedBy: { select: { id: true, email: true } },
-        closedBy: { select: { id: true, email: true } },
-      },
+      return tx.kassaDay.update({
+        where: { businessDate: day },
+        data: {
+          status: KassaStatus.CLOSED,
+          closedAt: new Date(),
+          closedByUserId: actorUserId,
+          closingBalance: closingBalance?.toDecimalPlaces(4),
+          expectedCash: new Prisma.Decimal(expectedCash).toDecimalPlaces(4),
+          variance: variance != null ? new Prisma.Decimal(variance).toDecimalPlaces(4) : null,
+          notes: notes || null,
+        },
+        include: {
+          openedBy: { select: { id: true, email: true } },
+          closedBy: { select: { id: true, email: true } },
+        },
+      });
     });
 
     res.json({ kassa: serializeKassa(updated) });

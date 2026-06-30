@@ -18,6 +18,10 @@ export function startOfDayUtc(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
 }
 
+export function normalizeBusinessDate(d: Date): Date {
+  return startOfDayUtc(d);
+}
+
 export function nextDayUtc(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0));
 }
@@ -44,7 +48,7 @@ export function getTransactionBusinessDateKey(tx: {
 
 export async function findKassaForDate(businessDate: Date) {
   return prisma.kassaDay.findUnique({
-    where: { businessDate },
+    where: { businessDate: normalizeBusinessDate(businessDate) },
     include: {
       openedBy: { select: { id: true, email: true } },
       closedBy: { select: { id: true, email: true } },
