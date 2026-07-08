@@ -502,19 +502,19 @@ export const getPaymentsReport = async (req: Request, res: Response) => {
   const [totals, byMethod, byCurrency] = await Promise.all([
     prisma.transaction.aggregate({
       where,
-      _sum: { baseAmount: true },
+      _sum: { baseAmount: true, originalAmount: true },
       _count: { _all: true },
     }),
     prisma.transaction.groupBy({
       by: ['paymentMethod'],
       where,
-      _sum: { baseAmount: true },
+      _sum: { baseAmount: true, originalAmount: true },
       _count: { _all: true },
     }),
     prisma.transaction.groupBy({
       by: ['currency'],
       where,
-      _sum: { baseAmount: true },
+      _sum: { baseAmount: true, originalAmount: true },
       _count: { _all: true },
     }),
   ]);
@@ -531,12 +531,14 @@ export const getPaymentsReport = async (req: Request, res: Response) => {
     totals: {
       count: totals._count?._all || 0,
       totalBaseAmount: sumToNumber(totals._sum?.baseAmount),
+      totalOriginalAmount: sumToNumber(totals._sum?.originalAmount),
     },
     byMethod: byMethod
       .map((row) => ({
         method: normalizePaymentMethod(row.paymentMethod),
         count: row._count?._all || 0,
         totalBaseAmount: sumToNumber(row._sum?.baseAmount),
+        totalOriginalAmount: sumToNumber(row._sum?.originalAmount),
       }))
       .sort((a, b) => a.method.localeCompare(b.method)),
     byCurrency: byCurrency
@@ -544,6 +546,7 @@ export const getPaymentsReport = async (req: Request, res: Response) => {
         currency: row.currency,
         count: row._count?._all || 0,
         totalBaseAmount: sumToNumber(row._sum?.baseAmount),
+        totalOriginalAmount: sumToNumber(row._sum?.originalAmount),
       }))
       .sort((a, b) => (a.currency || '').localeCompare(b.currency || '')),
   });
@@ -574,19 +577,19 @@ export const getTransactionsReport = async (req: Request, res: Response) => {
   const [totals, byType, byCurrency] = await Promise.all([
     prisma.transaction.aggregate({
       where,
-      _sum: { baseAmount: true },
+      _sum: { baseAmount: true, originalAmount: true },
       _count: { _all: true },
     }),
     prisma.transaction.groupBy({
       by: ['type'],
       where,
-      _sum: { baseAmount: true },
+      _sum: { baseAmount: true, originalAmount: true },
       _count: { _all: true },
     }),
     prisma.transaction.groupBy({
       by: ['currency'],
       where,
-      _sum: { baseAmount: true },
+      _sum: { baseAmount: true, originalAmount: true },
       _count: { _all: true },
     }),
   ]);
@@ -603,12 +606,14 @@ export const getTransactionsReport = async (req: Request, res: Response) => {
     totals: {
       count: totals._count?._all || 0,
       totalBaseAmount: sumToNumber(totals._sum?.baseAmount),
+      totalOriginalAmount: sumToNumber(totals._sum?.originalAmount),
     },
     byType: byType
       .map((row) => ({
         type: row.type,
         count: row._count?._all || 0,
         totalBaseAmount: sumToNumber(row._sum?.baseAmount),
+        totalOriginalAmount: sumToNumber(row._sum?.originalAmount),
       }))
       .sort((a, b) => String(a.type).localeCompare(String(b.type))),
     byCurrency: byCurrency
@@ -616,6 +621,7 @@ export const getTransactionsReport = async (req: Request, res: Response) => {
         currency: row.currency,
         count: row._count?._all || 0,
         totalBaseAmount: sumToNumber(row._sum?.baseAmount),
+        totalOriginalAmount: sumToNumber(row._sum?.originalAmount),
       }))
       .sort((a, b) => (a.currency || '').localeCompare(b.currency || '')),
   });

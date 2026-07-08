@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
@@ -57,7 +57,15 @@ export default function FlightsPage() {
     }
   });
 
-  const [flightsView, setFlightsView] = useState<'boxes' | 'list'>('list');
+  const [flightsView, setFlightsView] = useState<'boxes' | 'list'>(() => {
+    if (typeof window === 'undefined') return 'list';
+    try {
+      const raw = localStorage.getItem('jetstream-flights-view-v2');
+      return raw === 'boxes' ? 'boxes' : 'list';
+    } catch {
+      return 'list';
+    }
+  });
   const [confirm, setConfirm] = useState<
     | null
     | {
@@ -87,17 +95,6 @@ export default function FlightsPage() {
     ticketPrice: 500,
     currency: 'UZS'
   });
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem('jetstream-flights-view-v2');
-      if (raw === 'list' || raw === 'boxes') {
-        setFlightsView(raw);
-      }
-    } catch {
-      // ignore
-    }
-  }, []);
 
   useEffect(() => {
     try {
@@ -256,7 +253,10 @@ export default function FlightsPage() {
     );
   }
 
-  const canEdit = ['SUPERADMIN', 'ADMIN'].includes(user?.role?.toUpperCase() || '');
+  const role = user?.role?.toUpperCase() || '';
+  const canCreateFlight = role === 'SUPERADMIN' || role === 'ADMIN';
+  const canEdit = role === 'SUPERADMIN';
+  const showFlightActions = canCreateFlight || canEdit;
 
   const getStatusLabel = (status?: string) => {
     const normalized = String(status || 'SCHEDULED').trim().toUpperCase();
@@ -294,7 +294,7 @@ export default function FlightsPage() {
               {tr('Boxes', 'Kartalar')}
             </button>
           </div>
-          {canEdit && (
+          {canCreateFlight && (
             <button
               onClick={openCreateRow}
               className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg font-medium transition"
@@ -395,11 +395,11 @@ export default function FlightsPage() {
 
                 <div className="mt-5 pt-4 border-t border-border grid grid-cols-3 gap-2 text-center">
                   <div className="text-muted">
-                    <p className="text-xs">{tr('Allocations (UZS)', 'Ajratmalar (UZS)')}</p>
+                    <p className="text-xs">{tr('Ticket count', 'Bilet soni')}</p>
                     <p className="font-bold text-lg text-yellow-600">{Number(flight.total_allocated || 0).toLocaleString()}</p>
                   </div>
                   <div className="text-muted">
-                    <p className="text-xs">{tr('Sales (UZS)', 'Sotuvlar (UZS)')}</p>
+                    <p className="text-xs">{tr('Ticket amount', 'Bilet summasi')}</p>
                     <p className="font-bold text-lg text-green-600">{Number(flight.total_sales || 0).toLocaleString()}</p>
                   </div>
                   <div className="text-muted">
@@ -457,16 +457,16 @@ export default function FlightsPage() {
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Status', 'Holat')}</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Departure', 'Jo\'nab ketish')}</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Arrival', 'Yetib kelish')}</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Allocations (UZS)', 'Ajratmalar (UZS)')}</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Sales (UZS)', 'Sotuvlar (UZS)')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Ticket count', 'Bilet soni')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Ticket amount', 'Bilet summasi')}</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Payments (UZS)', "To'lovlar (UZS)")}</th>
-                {canEdit && (
+                {showFlightActions && (
                   <th className="px-4 py-3 text-right text-xs font-medium text-muted uppercase">{tr('Actions', 'Amallar')}</th>
                 )}
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {canEdit && isCreatingFlight && (
+              {canCreateFlight && isCreatingFlight && (
                 <tr className="bg-surface">
                   <td className="px-4 py-3">
                     <input
@@ -507,7 +507,7 @@ export default function FlightsPage() {
                       min="1"
                       required
                       className="compact-control w-28"
-                      title={tr('Ticket count', 'Chipta soni')}
+                      title={tr('Ticket count', 'Bilet soni')}
                       value={formData.ticketCount}
                       onChange={(e) => setFormData({ ...formData, ticketCount: Number(e.target.value) })}
                     />
@@ -519,7 +519,7 @@ export default function FlightsPage() {
                         min="0"
                         required
                         className="compact-control w-28"
-                        title={tr('Ticket price', 'Chipta narxi')}
+                        title={tr('Ticket amount', 'Bilet summasi')}
                         value={formData.ticketPrice}
                         onChange={(e) => setFormData({ ...formData, ticketPrice: Number(e.target.value) })}
                       />
@@ -535,7 +535,7 @@ export default function FlightsPage() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-sm text-muted">
-                    {tr('Tickets and price', 'Chiptalar va narx')}
+                    {tr('Ticket count and amount', 'Bilet soni va summasi')}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="inline-flex items-center gap-2">
@@ -607,32 +607,34 @@ export default function FlightsPage() {
                     <td className="px-4 py-3 text-sm text-yellow-600 font-medium whitespace-nowrap">{Number(flight.total_allocated || 0).toLocaleString()}</td>
                     <td className="px-4 py-3 text-sm text-green-600 font-medium whitespace-nowrap">{Number(flight.total_sales || 0).toLocaleString()}</td>
                     <td className="px-4 py-3 text-sm text-primary font-medium whitespace-nowrap">{Number(flight.total_payments || 0).toLocaleString()}</td>
-                    {canEdit && (
+                    {showFlightActions && (
                       <td className="px-4 py-3 text-right text-sm">
-                        <div className="inline-flex items-center gap-3">
-                          <button
-                            onClick={(e) => openEditModal(e, flight)}
-                            disabled={isCancelledFlight(flight.status)}
-                            className="text-muted hover:text-primary transition disabled:opacity-50 disabled:cursor-not-allowed"
-                            title={tr('Edit', 'Tahrirlash')}
-                          >
-                            <Edit size={16} />
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              if (!flightId) {
-                                toast.error(tr('Invalid flight id', 'Reys ID xato'));
-                                return;
-                              }
-                              handleCancelFlight(e, flightId);
-                            }}
-                            disabled={isCancelledFlight(flight.status)}
-                            className="text-muted hover:text-red-400 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                            title={tr('Cancel flight', 'Reysni bekor qilish')}
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
+                        {canEdit && (
+                          <div className="inline-flex items-center gap-3">
+                            <button
+                              onClick={(e) => openEditModal(e, flight)}
+                              disabled={isCancelledFlight(flight.status)}
+                              className="text-muted hover:text-primary transition disabled:opacity-50 disabled:cursor-not-allowed"
+                              title={tr('Edit', 'Tahrirlash')}
+                            >
+                              <Edit size={16} />
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                if (!flightId) {
+                                  toast.error(tr('Invalid flight id', 'Reys ID xato'));
+                                  return;
+                                }
+                                handleCancelFlight(e, flightId);
+                              }}
+                              disabled={isCancelledFlight(flight.status)}
+                              className="text-muted hover:text-red-400 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                              title={tr('Cancel flight', 'Reysni bekor qilish')}
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        )}
                       </td>
                     )}
                   </tr>
@@ -640,7 +642,7 @@ export default function FlightsPage() {
               })}
               {flights.length === 0 && (
                 <tr>
-                  <td colSpan={canEdit ? 8 : 7} className="px-4 py-10 text-center text-sm text-muted">
+                  <td colSpan={showFlightActions ? 8 : 7} className="px-4 py-10 text-center text-sm text-muted">
                     {tr('No flights available.', 'Reyslar mavjud emas.')}
                   </td>
                 </tr>
@@ -702,7 +704,7 @@ export default function FlightsPage() {
                   
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-sm font-medium text-muted mb-1">{tr('Ticket Count', 'Chipta soni')}</label>
+                      <label className="block text-sm font-medium text-muted mb-1">{tr('Ticket Count', 'Bilet soni')}</label>
                       <input
                         type="number"
                         min="1"
@@ -713,7 +715,7 @@ export default function FlightsPage() {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-muted mb-1">{tr('Ticket Price', 'Chipta narxi')}</label>
+                      <label className="block text-sm font-medium text-muted mb-1">{tr('Ticket Amount', 'Bilet summasi')}</label>
                       <input
                         type="number"
                         min="0"

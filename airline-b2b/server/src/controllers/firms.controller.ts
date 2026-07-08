@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma } from '@prisma/client';
 import { isPayableDebtType, payableAndPaymentTypeFilter } from '../utils/transaction-types';
+import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
+import { writeAuditLog } from '../utils/audit';
 
 type AuthUser = {
   userId?: string;
@@ -63,14 +65,41 @@ function parseCreditLimit(value: unknown): Prisma.Decimal | undefined {
   return decimal.toDecimalPlaces(4);
 }
 
+function normalizeCurrency(value: unknown): string {
+  const currency = String(value || 'USD').trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) throw new Error('Invalid currency code');
+  return currency;
+}
+
+function parseOptionalDate(value: unknown): Date | undefined {
+  if (value === null || value === undefined || String(value).trim() === '') return undefined;
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) throw new Error('Invalid subscription date');
+  return date;
+}
+
 export const listFirms = async (req: Request, res: Response) => {
+  const authUser = getAuthUser(req);
+  const scopedFirmIds = await getAccessibleFirmIds(authUser);
+
   const firms = await prisma.firm.findMany({
+    where: {
+      status: { not: 'DELETED' },
+      deletedAt: null,
+      ...(scopedFirmIds ? { id: { in: scopedFirmIds } } : {}),
+    },
     select: {
       id: true,
       name: true,
+      contactFullName: true,
+      phone: true,
+      subscriptionEndsAt: true,
       creditLimit: true,
       currency: true,
       status: true,
+      createdByUserId: true,
+      createdByFirmId: true,
+      createdByRole: true,
       createdAt: true,
       updatedAt: true,
     },
@@ -95,10 +124,8 @@ export const getFirmById = async (req: Request, res: Response) => {
 
   if (!id) return res.status(400).json({ error: 'Firm id is required' });
 
-  if (String(authUser.role || '').toUpperCase() === 'FIRM') {
-    if (!authUser.firmId || String(authUser.firmId) !== id) {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
+  if (!(await canAccessFirm(authUser, id))) {
+    return res.status(403).json({ error: 'Forbidden' });
   }
 
   const firm = await prisma.firm.findUnique({
@@ -106,9 +133,15 @@ export const getFirmById = async (req: Request, res: Response) => {
     select: {
       id: true,
       name: true,
+      contactFullName: true,
+      phone: true,
+      subscriptionEndsAt: true,
       creditLimit: true,
       currency: true,
       status: true,
+      createdByUserId: true,
+      createdByFirmId: true,
+      createdByRole: true,
       createdAt: true,
       updatedAt: true,
       users: {
@@ -124,25 +157,128 @@ export const getFirmById = async (req: Request, res: Response) => {
   });
 
   if (!firm) return res.status(404).json({ error: 'Firm not found' });
+  if (firm.status === 'DELETED') return res.status(404).json({ error: 'Firm not found' });
 
   const balances = await getFirmBalances([firm.id]);
   return res.json(withBalance(firm, balances));
 };
 
+export const createFirm = async (req: Request, res: Response) => {
+  const authUser = getAuthUser(req);
+  const role = String(authUser.role || '').toUpperCase();
+  const actorUserId = authUser.userId ? String(authUser.userId) : '';
+  const actorFirmId = authUser.firmId ? String(authUser.firmId) : null;
+
+  if (!['SUPERADMIN', 'ADMIN', 'FIRM'].includes(role)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  if (!actorUserId) return res.status(401).json({ error: 'Unauthorized' });
+
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  if (!name) return res.status(400).json({ error: 'Firm name is required' });
+  if (role === 'FIRM' && !actorFirmId) return res.status(400).json({ error: 'Firm account is missing firmId' });
+
+  try {
+    const subscriptionEndsAt = parseOptionalDate(req.body?.subscriptionEndsAt);
+    const creditLimit = parseCreditLimit(req.body?.creditLimit);
+    const created = await prisma.$transaction(async (tx) => {
+      const firm = await tx.firm.create({
+        data: {
+          name,
+          contactFullName: typeof req.body?.contactFullName === 'string' ? req.body.contactFullName.trim() || undefined : undefined,
+          phone: typeof req.body?.phone === 'string' ? req.body.phone.trim() || undefined : undefined,
+          subscriptionEndsAt,
+          creditLimit,
+          currency: normalizeCurrency(req.body?.currency || 'USD'),
+          status: 'ACTIVE',
+          createdByUserId: actorUserId,
+          createdByFirmId: role === 'FIRM' ? actorFirmId : null,
+          createdByRole: role,
+        },
+        select: {
+          id: true,
+          name: true,
+          contactFullName: true,
+          phone: true,
+          subscriptionEndsAt: true,
+          creditLimit: true,
+          currency: true,
+          status: true,
+          createdByUserId: true,
+          createdByFirmId: true,
+          createdByRole: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      if (role === 'ADMIN') {
+        await tx.userFirmAccess.create({
+          data: { userId: actorUserId, firmId: firm.id },
+        });
+      }
+
+      return firm;
+    });
+
+    await writeAuditLog(req, {
+      action: 'CREATE',
+      entityType: 'firm',
+      entityId: created.id,
+      entityLabel: created.name,
+      summary: role === 'FIRM' ? `Firm added partner firm ${created.name}` : `Created firm ${created.name}`,
+      after: created,
+      metadata: { createdByRole: role, createdByFirmId: role === 'FIRM' ? actorFirmId : null, directCreate: true },
+    });
+
+    const balances = await getFirmBalances([created.id]);
+    return res.status(201).json(withBalance(created, balances));
+  } catch (err: any) {
+    return res.status(400).json({ error: err?.message || 'Failed to create firm' });
+  }
+};
+
 export const updateFirm = async (req: Request, res: Response) => {
   const authUser = getAuthUser(req);
   const role = String(authUser.role || '').toUpperCase();
-  if (!['SUPERADMIN', 'ADMIN'].includes(role)) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
-
   const id = String(req.params.id || '');
   if (!id) return res.status(400).json({ error: 'Firm id is required' });
 
   try {
+    const before = await prisma.firm.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        contactFullName: true,
+        phone: true,
+        subscriptionEndsAt: true,
+        creditLimit: true,
+        currency: true,
+        status: true,
+      },
+    });
     const data: Prisma.FirmUpdateInput = {};
+    if (role === 'FIRM') {
+      if (!authUser.firmId || String(authUser.firmId) !== id) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+      if (typeof req.body?.currency === 'string' && req.body.currency.trim()) {
+        data.currency = req.body.currency.trim().toUpperCase();
+      }
+    } else if (role === 'SUPERADMIN') {
     if (typeof req.body?.name === 'string' && req.body.name.trim()) {
       data.name = req.body.name.trim();
+    }
+    if (typeof req.body?.contactFullName === 'string') {
+      data.contactFullName = req.body.contactFullName.trim() || null;
+    }
+    if (typeof req.body?.phone === 'string') {
+      data.phone = req.body.phone.trim() || null;
+    }
+    if (req.body?.subscriptionEndsAt !== undefined) {
+      const raw = String(req.body.subscriptionEndsAt || '').trim();
+      data.subscriptionEndsAt = raw ? new Date(raw) : null;
     }
     if (req.body?.creditLimit !== undefined) {
       data.creditLimit = parseCreditLimit(req.body.creditLimit);
@@ -152,6 +288,9 @@ export const updateFirm = async (req: Request, res: Response) => {
     }
     if (typeof req.body?.status === 'string' && ['ACTIVE', 'SUSPENDED'].includes(req.body.status.toUpperCase())) {
       data.status = req.body.status.toUpperCase() as any;
+    }
+    } else {
+      return res.status(403).json({ error: 'Forbidden' });
     }
 
     if (Object.keys(data).length === 0) {
@@ -164,6 +303,9 @@ export const updateFirm = async (req: Request, res: Response) => {
       select: {
         id: true,
         name: true,
+        contactFullName: true,
+        phone: true,
+        subscriptionEndsAt: true,
         creditLimit: true,
         currency: true,
         status: true,
@@ -172,9 +314,116 @@ export const updateFirm = async (req: Request, res: Response) => {
       },
     });
     const balances = await getFirmBalances([firm.id]);
+    await writeAuditLog(req, {
+      action: 'UPDATE',
+      entityType: 'firm',
+      entityId: firm.id,
+      entityLabel: firm.name,
+      summary: `Updated firm ${firm.name}`,
+      before,
+      after: firm,
+      metadata: { fields: Object.keys(data) },
+    });
     return res.json(withBalance(firm, balances));
   } catch (err: any) {
     if (err?.code === 'P2025') return res.status(404).json({ error: 'Firm not found' });
     return res.status(400).json({ error: err?.message || 'Failed to update firm' });
+  }
+};
+
+export const deleteFirm = async (req: Request, res: Response) => {
+  const authUser = getAuthUser(req);
+  const role = String(authUser.role || '').toUpperCase();
+  const actorUserId = authUser.userId ? String(authUser.userId) : '';
+  const id = String(req.params.id || '').trim();
+
+  if (role !== 'SUPERADMIN') return res.status(403).json({ error: 'Forbidden' });
+  if (!actorUserId) return res.status(401).json({ error: 'Unauthorized' });
+  if (!id) return res.status(400).json({ error: 'Firm id is required' });
+
+  try {
+    const before = await prisma.firm.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        contactFullName: true,
+        phone: true,
+        subscriptionEndsAt: true,
+        creditLimit: true,
+        currency: true,
+        status: true,
+        createdByUserId: true,
+        createdByFirmId: true,
+        createdByRole: true,
+        deletedAt: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+    if (!before || before.status === 'DELETED' || before.deletedAt) {
+      return res.status(404).json({ error: 'Firm not found' });
+    }
+
+    const deleted = await prisma.$transaction(async (tx) => {
+      await tx.userFirmAccess.deleteMany({ where: { firmId: id } });
+      await tx.user.updateMany({
+        where: { firmId: id, role: 'FIRM', status: { not: 'DELETED' }, deletedAt: null },
+        data: {
+          status: 'DELETED',
+          deletedAt: new Date(),
+          deletedByUserId: actorUserId,
+          deleteReason: 'Firm was deleted',
+        },
+      });
+      await tx.kassaDesk.updateMany({
+        where: { firmId: id, status: { not: 'DELETED' }, deletedAt: null },
+        data: {
+          status: 'DELETED',
+          deletedAt: new Date(),
+          deletedByUserId: actorUserId,
+          deleteReason: 'Firm was deleted',
+        },
+      });
+      return tx.firm.update({
+        where: { id },
+        data: {
+          status: 'DELETED',
+          deletedAt: new Date(),
+          deletedByUserId: actorUserId,
+          deleteReason: typeof req.body?.reason === 'string' ? req.body.reason.trim() || null : null,
+        },
+        select: {
+          id: true,
+          name: true,
+          contactFullName: true,
+          phone: true,
+          subscriptionEndsAt: true,
+          creditLimit: true,
+          currency: true,
+          status: true,
+          createdByUserId: true,
+          createdByFirmId: true,
+          createdByRole: true,
+          deletedAt: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+    });
+
+    await writeAuditLog(req, {
+      action: 'SOFT_DELETE',
+      entityType: 'firm',
+      entityId: id,
+      entityLabel: before.name,
+      summary: `Soft deleted firm ${before.name}`,
+      before,
+      after: deleted,
+    });
+    return res.json({ ok: true });
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'Firm not found' });
+    return res.status(400).json({ error: err?.message || 'Failed to delete firm' });
   }
 };

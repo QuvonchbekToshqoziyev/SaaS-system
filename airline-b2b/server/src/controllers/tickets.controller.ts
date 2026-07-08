@@ -2,8 +2,8 @@ import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma } from '@prisma/client';
 import { payableDebtTypeFilter } from '../utils/transaction-types';
-
-const BASE_CURRENCY = 'UZS' as const;
+import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
+import { assertActiveKassaDesk, assertKassaDeskForFirmSelection } from '../utils/kassa-desk-policy';
 
 function normalizeRole(role: unknown): string {
   return String(role || '').toUpperCase();
@@ -28,36 +28,6 @@ function parsePositiveInt(value: unknown): number | null {
 
 function normalizeCurrency(value: unknown): string {
   return String(value || '').trim().toUpperCase();
-}
-
-async function getLatestExchangeRateToBase(
-  tx: Prisma.TransactionClient,
-  currency: string,
-): Promise<Prisma.Decimal> {
-  if (currency === BASE_CURRENCY) return new Prisma.Decimal(1);
-
-  const direct = await tx.currencyRate.findFirst({
-    where: { baseCurrency: BASE_CURRENCY, targetCurrency: currency },
-    orderBy: { recordedAt: 'desc' },
-  });
-  if (direct) {
-    const d = new Prisma.Decimal(String(direct.rate));
-    if (!d.gt(0)) throw new Error('Invalid exchange rate');
-    return d;
-  }
-
-  // Backward-compat: some environments may have rates stored as { baseCurrency: <CURRENCY>, targetCurrency: UZS }
-  const inverse = await tx.currencyRate.findFirst({
-    where: { baseCurrency: currency, targetCurrency: BASE_CURRENCY },
-    orderBy: { recordedAt: 'desc' },
-  });
-  if (inverse) {
-    const d = new Prisma.Decimal(String(inverse.rate));
-    if (!d.gt(0)) throw new Error('Invalid exchange rate');
-    return d;
-  }
-
-  throw new Error(`Missing exchange rate for ${currency}`);
 }
 
 function parsePositiveDecimal(value: unknown): Prisma.Decimal | null {
@@ -97,6 +67,38 @@ function parsePurchaserInfo(value: unknown):
     ...(email ? { email } : {}),
     ...(notes ? { notes } : {}),
   };
+}
+
+async function resolveKassaDesk(user: any, rawKassaDeskId: unknown) {
+  const kassaDeskId = typeof rawKassaDeskId === 'string' ? rawKassaDeskId.trim() : '';
+  if (!kassaDeskId) return null;
+
+  const desk = await prisma.kassaDesk.findUnique({
+    where: { id: kassaDeskId },
+    select: { id: true, firmId: true, name: true, status: true, deletedAt: true },
+  });
+  assertActiveKassaDesk(desk);
+
+  const accessibleFirmIds = await getAccessibleFirmIds(user);
+  if (accessibleFirmIds && !accessibleFirmIds.includes(desk.firmId)) {
+    throw new Error('Forbidden');
+  }
+
+  return desk;
+}
+
+async function assertKassaDeskForFirm(kassaDesk: Awaited<ReturnType<typeof resolveKassaDesk>>, firmId: string) {
+  const activeDeskCount = await prisma.kassaDesk.count({
+    where: { firmId, status: 'ACTIVE', deletedAt: null },
+  });
+  try {
+    assertKassaDeskForFirmSelection(kassaDesk, firmId, activeDeskCount);
+  } catch (err: any) {
+    if (err?.message === 'Kassa desk must belong to the selected firm') {
+      throw new Error('Kassa desk must belong to the selling firm');
+    }
+    throw err;
+  }
 }
 
 export const getTickets = async (req: Request, res: Response) => {
@@ -149,7 +151,8 @@ export const createTickets = async (req: Request, res: Response) => {
 };
 
 export const allocateTicket = async (req: Request, res: Response) => {
-  const { ticketId, firmId, flightId, flight_id, quantity, count } = req.body;
+  const { ticketId, firmId, flightId, flight_id, quantity, count, allocationPrice, price } = req.body;
+  const overridePrice = parsePositiveDecimal(allocationPrice ?? price);
 
   const resolvedFlightId = (flightId || flight_id) && typeof (flightId || flight_id) === 'string'
     ? String(flightId || flight_id).trim()
@@ -194,7 +197,11 @@ export const allocateTicket = async (req: Request, res: Response) => {
         const ticketIds = tickets.map((t) => String(t.id));
         await tx.ticket.updateMany({
           where: { id: { in: ticketIds } },
-          data: { status: 'PENDING', assignedFirmId: targetFirmId },
+          data: {
+            status: 'PENDING',
+            assignedFirmId: targetFirmId,
+            ...(overridePrice?.gt(0) ? { basePrice: overridePrice.toDecimalPlaces(4) } : {}),
+          },
         });
         return { count: ticketIds.length };
       });
@@ -240,7 +247,11 @@ export const allocateTicket = async (req: Request, res: Response) => {
       // Update ticket
       await tx.ticket.update({
         where: { id: ticketId },
-        data: { status: 'PENDING', assignedFirmId: firmId }
+        data: {
+          status: 'PENDING',
+          assignedFirmId: firmId,
+          ...(overridePrice?.gt(0) ? { basePrice: overridePrice.toDecimalPlaces(4) } : {}),
+        }
       });
     });
     res.json({ success: true });
@@ -262,6 +273,8 @@ export const confirmAllocation = async (req: Request, res: Response) => {
   if (!ownFirmId) {
     return res.status(400).json({ error: 'Firm account is missing firmId' });
   }
+
+  const kassaDesk = await resolveKassaDesk(user, req.body?.kassaDeskId);
 
   const { ticketId, flightId, flight_id, quantity, count } = req.body;
   const resolvedFlightId = (flightId || flight_id) && typeof (flightId || flight_id) === 'string'
@@ -301,36 +314,24 @@ export const confirmAllocation = async (req: Request, res: Response) => {
           data: { status: 'ASSIGNED' },
         });
 
-        const currencies = Array.from(
-          new Set(tickets.map((t) => normalizeCurrency(t.currency)).filter((c) => c && c !== BASE_CURRENCY)),
-        );
-        const rateByCurrency = new Map<string, Prisma.Decimal>();
-        for (const c of currencies) {
-          const rateDecimal = await getLatestExchangeRateToBase(tx, c);
-          rateByCurrency.set(c, rateDecimal);
-        }
-
         const transactionRows = tickets.map((t) => {
           const originalAmount = new Prisma.Decimal(String(t.basePrice)).toDecimalPlaces(4);
           const currency = normalizeCurrency(t.currency);
-          const exchangeRate = currency === BASE_CURRENCY
-            ? new Prisma.Decimal(1)
-            : (rateByCurrency.get(currency) as Prisma.Decimal);
-          if (!exchangeRate || !exchangeRate.gt(0)) throw new Error('Invalid exchange rate');
-
-          const baseAmount = originalAmount.mul(exchangeRate).toDecimalPlaces(4);
+          const exchangeRate = new Prisma.Decimal(1);
+          const baseAmount = originalAmount.toDecimalPlaces(4);
 
           return {
             firmId: ownFirmId,
             flightId: String(t.flightId),
             ticketId: String(t.id),
             createdByUserId: actorUserId,
+            kassaDeskId: kassaDesk?.id,
             type: 'PAYABLE' as const,
             originalAmount,
             currency,
             exchangeRate: exchangeRate.toDecimalPlaces(6),
             baseAmount,
-            metadata: { note: 'Allocation confirmed by firm, debt incurred' } as any,
+            metadata: { note: 'Allocation confirmed by firm, debt incurred', kassaDeskId: kassaDesk?.id, kassaDeskLabel: kassaDesk?.name } as any,
           };
         });
 
@@ -372,13 +373,8 @@ export const confirmAllocation = async (req: Request, res: Response) => {
       const originalAmount = new Prisma.Decimal(String(ticket.basePrice));
       const currency = normalizeCurrency(ticket.currency);
 
-      let exchangeRate = new Prisma.Decimal(1);
-      if (currency !== BASE_CURRENCY) {
-        exchangeRate = await getLatestExchangeRateToBase(tx, currency);
-      }
-      if (!exchangeRate.gt(0)) throw new Error('Invalid exchange rate');
-
-      const baseAmount = originalAmount.mul(exchangeRate).toDecimalPlaces(4);
+      const exchangeRate = new Prisma.Decimal(1);
+      const baseAmount = originalAmount.toDecimalPlaces(4);
 
       await tx.ticket.update({
         where: { id: ticketId },
@@ -391,12 +387,13 @@ export const confirmAllocation = async (req: Request, res: Response) => {
           flightId: String(ticket.flightId),
           ticketId: String(ticketId),
           createdByUserId: actorUserId,
+          kassaDeskId: kassaDesk?.id,
           type: 'PAYABLE',
           originalAmount: originalAmount.toDecimalPlaces(4),
           currency,
           exchangeRate: exchangeRate.toDecimalPlaces(6),
           baseAmount,
-          metadata: { note: 'Allocation confirmed by firm, debt incurred' },
+          metadata: { note: 'Allocation confirmed by firm, debt incurred', kassaDeskId: kassaDesk?.id, kassaDeskLabel: kassaDesk?.name },
         },
       });
     });
@@ -585,15 +582,20 @@ export const deallocateTicket = async (req: Request, res: Response) => {
 };
 
 export const sellTicket = async (req: Request, res: Response) => {
-  const { ticketId, flightId, flight_id, quantity, count, salePrice, saleCurrency } = req.body;
+  const { ticketId, flightId, flight_id, firmId, quantity, count, salePrice, saleCurrency } = req.body;
   const user = (req as any).user;
   const actorUserId = user?.userId as string | undefined;
 
   const role = normalizeRole(user?.role);
+  let kassaDesk: Awaited<ReturnType<typeof resolveKassaDesk>> = null;
   const resolvedFlightId = (flightId || flight_id) && typeof (flightId || flight_id) === 'string'
     ? String(flightId || flight_id).trim()
     : '';
   const resolvedQuantity = parsePositiveInt(quantity ?? count);
+
+  if (!['SUPERADMIN', 'ADMIN', 'FIRM'].includes(role)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
 
   const saleAmount = parsePositiveDecimal(salePrice);
   const currency = normalizeCurrency(saleCurrency);
@@ -601,7 +603,7 @@ export const sellTicket = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'salePrice is required' });
   }
   if (!/^[A-Z]{3}$/.test(currency)) {
-    return res.status(400).json({ error: `saleCurrency must be a 3-letter code (e.g. ${BASE_CURRENCY})` });
+    return res.status(400).json({ error: 'saleCurrency must be a 3-letter code (e.g. UZS)' });
   }
 
   const purchaserRaw = (req.body as any).purchaser ?? (req.body as any).purchaserInfo;
@@ -612,12 +614,22 @@ export const sellTicket = async (req: Request, res: Response) => {
 
   // Batch sell: firm marks N of their assigned tickets for a flight as SOLD
   if (!ticketId && resolvedFlightId && resolvedQuantity) {
-    if (role !== 'FIRM') {
+    const sellerFirmId = role === 'FIRM'
+      ? (user?.firmId ? String(user.firmId) : '')
+      : typeof firmId === 'string' && firmId.trim()
+        ? firmId.trim()
+        : '';
+    if (!sellerFirmId) {
+      return res.status(400).json({ error: 'firmId is required' });
+    }
+    if (role !== 'SUPERADMIN' && !(await canAccessFirm(user, sellerFirmId))) {
       return res.status(403).json({ error: 'Forbidden' });
     }
-    const ownFirmId = user?.firmId ? String(user.firmId) : '';
-    if (!ownFirmId) {
-      return res.status(400).json({ error: 'Firm account is missing firmId' });
+    try {
+      kassaDesk = await resolveKassaDesk(user, req.body?.kassaDeskId);
+      await assertKassaDeskForFirm(kassaDesk, sellerFirmId);
+    } catch (err: any) {
+      return res.status(400).json({ error: err.message || 'Invalid kassa desk' });
     }
 
     try {
@@ -634,7 +646,7 @@ export const sellTicket = async (req: Request, res: Response) => {
           FROM "Ticket"
           WHERE "flightId" = ${resolvedFlightId}
             AND status = 'ASSIGNED'
-            AND "allocatedFirmId" = ${ownFirmId}
+            AND "allocatedFirmId" = ${sellerFirmId}
           ORDER BY "createdAt" ASC
           FOR UPDATE SKIP LOCKED
           LIMIT ${resolvedQuantity}
@@ -644,12 +656,8 @@ export const sellTicket = async (req: Request, res: Response) => {
           throw new Error(`Not enough assigned tickets (requested ${resolvedQuantity}, found ${tickets.length})`);
         }
 
-        let exchangeRate = new Prisma.Decimal(1);
-        if (currency !== BASE_CURRENCY) {
-          exchangeRate = await getLatestExchangeRateToBase(tx, currency);
-        }
-        if (!exchangeRate.gt(0)) throw new Error('Invalid exchange rate');
-        const baseAmount = saleAmount.mul(exchangeRate).toDecimalPlaces(4);
+        const exchangeRate = new Prisma.Decimal(1);
+        const baseAmount = saleAmount.toDecimalPlaces(4);
 
         const ticketIds = tickets.map((t) => String(t.id));
         await tx.ticket.updateMany({
@@ -664,10 +672,11 @@ export const sellTicket = async (req: Request, res: Response) => {
 
         const transactionRows = tickets.map((t) => {
           return {
-            firmId: ownFirmId,
+            firmId: sellerFirmId,
             flightId: String(t.flightId),
             ticketId: String(t.id),
             createdByUserId: actorUserId,
+            kassaDeskId: kassaDesk?.id,
             type: 'SALE' as const,
             originalAmount: saleAmount.toDecimalPlaces(4),
             currency,
@@ -675,6 +684,8 @@ export const sellTicket = async (req: Request, res: Response) => {
             baseAmount,
             metadata: {
               note: 'Tickets sold, revenue generated',
+              kassaDeskId: kassaDesk?.id,
+              kassaDeskLabel: kassaDesk?.name,
               purchaser: purchaserInfo,
             } as any,
           };
@@ -713,20 +724,16 @@ export const sellTicket = async (req: Request, res: Response) => {
       if (flight.status === 'CANCELLED') throw new Error('Cannot sell tickets for a cancelled flight');
       
       if (ticket.status !== 'ASSIGNED') throw new Error('Ticket is not assigned');
-      if (role === 'FIRM' && ticket.assignedFirmId !== user.firmId) {
-         throw new Error('Not your ticket');
-      }
-
       if (!ticket.assignedFirmId) throw new Error('Ticket is missing assigned firm');
-
-      let exchangeRate = new Prisma.Decimal(1);
-      if (currency !== BASE_CURRENCY) {
-        exchangeRate = await getLatestExchangeRateToBase(tx, currency);
+      const assignedFirmId = String(ticket.assignedFirmId);
+      if (role !== 'SUPERADMIN' && !(await canAccessFirm(user, assignedFirmId))) {
+        throw new Error('Not your ticket');
       }
+      kassaDesk = await resolveKassaDesk(user, req.body?.kassaDeskId);
+      await assertKassaDeskForFirm(kassaDesk, assignedFirmId);
 
-      if (!exchangeRate.gt(0)) throw new Error('Invalid exchange rate');
-
-      const baseAmount = saleAmount.mul(exchangeRate).toDecimalPlaces(4);
+      const exchangeRate = new Prisma.Decimal(1);
+      const baseAmount = saleAmount.toDecimalPlaces(4);
 
       await tx.ticket.update({
         where: { id: ticketId },
@@ -740,10 +747,11 @@ export const sellTicket = async (req: Request, res: Response) => {
 
       await tx.transaction.create({
         data: {
-          firmId: ticket.assignedFirmId, // revenue for assigned firm
+          firmId: assignedFirmId,
           flightId: ticket.flightId,
           ticketId,
           createdByUserId: actorUserId,
+          kassaDeskId: kassaDesk?.id,
           type: 'SALE',
           originalAmount: saleAmount.toDecimalPlaces(4),
           currency,
@@ -751,6 +759,8 @@ export const sellTicket = async (req: Request, res: Response) => {
           baseAmount,
           metadata: {
             note: 'Ticket sold, revenue generated',
+            kassaDeskId: kassaDesk?.id,
+            kassaDeskLabel: kassaDesk?.name,
             purchaser: purchaserInfo,
           }
         }

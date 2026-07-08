@@ -36,7 +36,7 @@ export function getTransactionBusinessDateKey(tx: {
   metadata?: unknown;
   createdAt: Date;
 }): string {
-  if (tx.type === 'PAYMENT') {
+  if (tx.type === 'PAYMENT' || tx.type === 'ADJUSTMENT') {
     const meta = isRecord(tx.metadata) ? tx.metadata : null;
     const dateValue = meta?.date;
     if (typeof dateValue === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateValue.trim())) {

@@ -19,9 +19,24 @@ export const getAllFlights = async (req: AuthenticatedRequest, res: Response) =>
     const txWhere = role === 'FIRM'
       ? (firmId ? { firmId } : undefined)
       : undefined;
+    const where = {
+      status: { not: 'DELETED' },
+      deletedAt: null,
+      ...(role === 'FIRM'
+        ? {
+            tickets: {
+              some: {
+                assignedFirmId: firmId,
+                status: { not: 'DELETED' as const },
+                deletedAt: null,
+              },
+            },
+          }
+        : {}),
+    };
 
-    // Superadmin sees all flights. Firms see all flights too, but details might be limited elsewhere.
     const flights = await prisma.flight.findMany({
+      where,
       orderBy: { departure: 'asc' },
       include: {
         ...(role === 'FIRM'
@@ -78,7 +93,11 @@ export const getFlightById = async (req: Request, res: Response) => {
       where: { id },
       include: {
         tickets: {
-          ...(role === 'FIRM' ? { where: { assignedFirmId: firmId } } : {}),
+          where: {
+            status: { not: 'DELETED' },
+            deletedAt: null,
+            ...(role === 'FIRM' ? { assignedFirmId: firmId } : {}),
+          },
           include: {
             assignedFirm: {
               select: { id: true, name: true }
@@ -87,7 +106,10 @@ export const getFlightById = async (req: Request, res: Response) => {
         }
       }
     });
-    if (!flight) {
+    if (!flight || flight.status === 'DELETED' || flight.deletedAt) {
+      return res.status(404).json({ error: 'Flight not found' });
+    }
+    if (role === 'FIRM' && flight.tickets.length === 0) {
       return res.status(404).json({ error: 'Flight not found' });
     }
     res.json(flight);
@@ -101,6 +123,11 @@ export const getFlightById = async (req: Request, res: Response) => {
 export const createFlight = async (req: Request, res: Response) => {
   const { flightNumber, route, departure, arrival, ticketCount, ticketPrice, currency } = req.body;
   try {
+    const role = normalizeRole((req as any).user?.role);
+    if (role !== 'SUPERADMIN' && role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Only superadmin and assigned platform admins can create flights' });
+    }
+
     const newFlight = await prisma.flight.create({
       data: {
         flightNumber,

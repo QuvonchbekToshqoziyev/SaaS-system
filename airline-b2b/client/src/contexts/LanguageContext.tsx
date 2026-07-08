@@ -7,11 +7,15 @@ export type Language = 'en' | 'uz';
 type TranslationKey =
   | 'navDashboard'
   | 'navAdminDashboard'
+  | 'navAdmins'
+  | 'navAuditLog'
   | 'navFirms'
   | 'navFlights'
   | 'navTours'
   | 'navTransactions'
   | 'navKassa'
+  | 'navEmployees'
+  | 'navChat'
   | 'navReports'
   | 'navSettings'
   | 'sectionAgencyPortal'
@@ -28,11 +32,15 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
     navDashboard: 'Dashboard',
     navAdminDashboard: 'Admin Dashboard',
+    navAdmins: 'Admins',
+    navAuditLog: 'Audit Log',
     navFirms: 'Firms',
     navFlights: 'Flights',
     navTours: 'Tours',
     navTransactions: 'Transactions',
     navKassa: 'Kassa',
+    navEmployees: 'Employees',
+    navChat: 'Chat',
     navReports: 'Reports',
     navSettings: 'Settings',
     sectionAgencyPortal: 'Agency Portal',
@@ -48,11 +56,15 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
   uz: {
     navDashboard: 'Bosh sahifa',
     navAdminDashboard: 'Admin panel',
+    navAdmins: 'Adminlar',
+    navAuditLog: 'Audit Log',
     navFirms: 'Firmalar',
     navFlights: 'Reyslar',
     navTours: 'Turlar',
     navTransactions: 'Tranzaksiyalar',
     navKassa: 'Kassa',
+    navEmployees: 'Hodimlar',
+    navChat: 'Chat',
     navReports: 'Hisobotlar',
     navSettings: 'Sozlamalar',
     sectionAgencyPortal: 'Agentlik',

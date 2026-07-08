@@ -14,6 +14,7 @@ import CollapsibleCard from '@/components/ui/CollapsibleCard';
 type FirmOption = {
   id: string;
   name: string;
+  currency?: string | null;
 };
 
 type FlightOption = {
@@ -22,10 +23,27 @@ type FlightOption = {
   flightNumber?: string;
 };
 
+type PaymentCardOption = {
+  id: string;
+  ownerName: string;
+  cardNumber: string;
+  currency: 'UZS' | 'USD';
+};
+
+type KassaDeskOption = {
+  id: string;
+  firmId: string;
+  name: string;
+  code?: string | null;
+  status?: string;
+  firm?: { id: string; name: string | null } | null;
+};
+
 type TransactionsPrefs = {
   view?: 'list' | 'boxes';
   filterType?: string;
   filterFirmId?: string;
+  filterKassaDeskId?: string;
   filterFlightId?: string;
   filterCurrency?: string;
   dateFrom?: string;
@@ -63,6 +81,7 @@ export default function TransactionsPage() {
   const [quickSearch, setQuickSearch] = useState('');
   const [filterType, setFilterType] = useState<string>('');
   const [filterFirmId, setFilterFirmId] = useState<string>('');
+  const [filterKassaDeskId, setFilterKassaDeskId] = useState<string>('');
   const [filterFlightId, setFilterFlightId] = useState<string>('');
   const [filterCurrency, setFilterCurrency] = useState<string>('');
   const [dateFrom, setDateFrom] = useState<string>('');
@@ -72,7 +91,9 @@ export default function TransactionsPage() {
   const lastAppliedQuerySignatureRef = useRef<string>('');
 
   const [firmOptions, setFirmOptions] = useState<FirmOption[]>([]);
+  const [deskOptions, setDeskOptions] = useState<KassaDeskOption[]>([]);
   const [flightOptions, setFlightOptions] = useState<FlightOption[]>([]);
+  const [paymentCards, setPaymentCards] = useState<PaymentCardOption[]>([]);
   
   // Pagination
   const [page, setPage] = useState(1);
@@ -88,13 +109,20 @@ export default function TransactionsPage() {
   const [payAmount, setPayAmount] = useState<string>('');
   const [payCurrency, setPayCurrency] = useState<'USD' | 'UZS' | 'OTHER'>('UZS');
   const [payOtherCurrency, setPayOtherCurrency] = useState<string>('');
-  const [payExchangeRate, setPayExchangeRate] = useState<string>('');
   const [payMethod, setPayMethod] = useState<'cash' | 'card'>('cash');
   const [payCashDate, setPayCashDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
-  const [payCardProvider, setPayCardProvider] = useState<string>('');
+  const [payCardId, setPayCardId] = useState<string>('');
   const [payCardReference, setPayCardReference] = useState<string>('');
   const [payReference, setPayReference] = useState<string>('');
+  const [payKassaDeskId, setPayKassaDeskId] = useState<string>('');
   const [recordingPayment, setRecordingPayment] = useState(false);
+  const [cashFlow, setCashFlow] = useState<'IN' | 'OUT'>('IN');
+  const [cashFirmId, setCashFirmId] = useState<string>('');
+  const [cashAmount, setCashAmount] = useState<string>('');
+  const [cashDate, setCashDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
+  const [cashNote, setCashNote] = useState<string>('');
+  const [cashKassaDeskId, setCashKassaDeskId] = useState<string>('');
+  const [recordingCash, setRecordingCash] = useState(false);
 
   const payCurrencyCode = useMemo(() => {
     const c = payCurrency === 'OTHER' ? payOtherCurrency : payCurrency;
@@ -106,21 +134,21 @@ export default function TransactionsPage() {
     return Number.isFinite(n) ? n : NaN;
   }, [payAmount]);
 
-  const payExchangeRateNum = useMemo(() => {
-    const raw = String(payExchangeRate || '').trim();
-    if (!raw) return NaN;
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : NaN;
-  }, [payExchangeRate]);
+  const selectedPayCard = useMemo(() => paymentCards.find((card) => card.id === payCardId), [paymentCards, payCardId]);
+  const selectedPayFirm = useMemo(() => firmOptions.find((firm) => firm.id === payFirmId), [firmOptions, payFirmId]);
+  const selectedCashFirm = useMemo(() => firmOptions.find((firm) => firm.id === cashFirmId), [firmOptions, cashFirmId]);
 
-  const [savedRate, setSavedRate] = useState<number | null>(null);
-  const [savedRateSource, setSavedRateSource] = useState<string | null>(null);
-  const [savedRateLoading, setSavedRateLoading] = useState(false);
-
-  const rateLookupDate = useMemo(() => {
-    if (String(payMethod || '').trim().toLowerCase() === 'cash') return payCashDate;
-    return format(new Date(), 'yyyy-MM-dd');
-  }, [payCashDate, payMethod]);
+  const setPaymentCurrencyCode = (currency: string) => {
+    const next = String(currency || '').trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(next)) return;
+    if (next === 'UZS' || next === 'USD') {
+      setPayCurrency(next);
+      setPayOtherCurrency('');
+    } else {
+      setPayCurrency('OTHER');
+      setPayOtherCurrency(next);
+    }
+  };
 
   useEffect(() => {
     if (!prefsReady) return;
@@ -133,6 +161,7 @@ export default function TransactionsPage() {
     const firmId = (searchParams.get('firmId') || searchParams.get('firm_id') || '').trim();
     const type = normalizeTxTypeParam(searchParams.get('type') || '');
     const currency = String(searchParams.get('currency') || '').trim();
+    const kassaDeskId = String(searchParams.get('kassaDeskId') || searchParams.get('kassa_desk_id') || '').trim();
     const view = String(searchParams.get('view') || '').trim().toLowerCase();
     const qDateFrom = normalizeDateParam(searchParams.get('dateFrom') || '');
     const qDateTo = normalizeDateParam(searchParams.get('dateTo') || '');
@@ -155,6 +184,11 @@ export default function TransactionsPage() {
 
     if (flightId) {
       setFilterFlightId(flightId);
+      resetPage = true;
+    }
+
+    if (kassaDeskId) {
+      setFilterKassaDeskId(kassaDeskId);
       resetPage = true;
     }
 
@@ -184,6 +218,7 @@ export default function TransactionsPage() {
       if (parsed.view === 'list' || parsed.view === 'boxes') setTransactionsView(parsed.view);
       if (typeof parsed.filterType === 'string') setFilterType(parsed.filterType);
       if (typeof parsed.filterFlightId === 'string') setFilterFlightId(parsed.filterFlightId);
+      if (typeof parsed.filterKassaDeskId === 'string') setFilterKassaDeskId(parsed.filterKassaDeskId);
       if (typeof parsed.filterCurrency === 'string') setFilterCurrency(parsed.filterCurrency);
       if (typeof parsed.dateFrom === 'string') setDateFrom(parsed.dateFrom);
       if (typeof parsed.dateTo === 'string') setDateTo(parsed.dateTo);
@@ -203,6 +238,7 @@ export default function TransactionsPage() {
         view: transactionsView,
         filterType,
         filterFirmId: canFilterFirm ? filterFirmId : '',
+        filterKassaDeskId,
         filterFlightId,
         filterCurrency,
         dateFrom,
@@ -212,62 +248,7 @@ export default function TransactionsPage() {
     } catch {
       // ignore
     }
-  }, [canFilterFirm, dateFrom, dateTo, filterCurrency, filterFirmId, filterFlightId, filterType, prefsReady, transactionsView]);
-
-  useEffect(() => {
-    const shouldFetchSavedRate =
-      prefsReady &&
-      payCurrencyCode !== 'UZS' &&
-      !String(payExchangeRate || '').trim() &&
-      /^[A-Z]{3}$/.test(payCurrencyCode) &&
-      /^\d{4}-\d{2}-\d{2}$/.test(rateLookupDate);
-
-    if (!shouldFetchSavedRate) {
-      setSavedRate(null);
-      setSavedRateSource(null);
-      setSavedRateLoading(false);
-      return;
-    }
-
-    let ignore = false;
-
-    const run = async () => {
-      try {
-        setSavedRateLoading(true);
-        const query = new URLSearchParams();
-        query.set('date', rateLookupDate);
-        query.set('baseCurrency', 'UZS');
-        query.set('targetCurrency', payCurrencyCode);
-        const res = await api.get(`/currency-rates?${query.toString()}`);
-        const rates = Array.isArray(res.data) ? res.data : [];
-        const first = rates[0];
-        const rateValue = first?.rate;
-        const num = Number(rateValue);
-
-        if (ignore) return;
-
-        if (Number.isFinite(num) && num > 0) {
-          setSavedRate(num);
-          setSavedRateSource(typeof first?.source === 'string' ? String(first.source) : null);
-        } else {
-          setSavedRate(null);
-          setSavedRateSource(null);
-        }
-      } catch {
-        if (!ignore) {
-          setSavedRate(null);
-          setSavedRateSource(null);
-        }
-      } finally {
-        if (!ignore) setSavedRateLoading(false);
-      }
-    };
-
-    run();
-    return () => {
-      ignore = true;
-    };
-  }, [payCurrencyCode, payExchangeRate, prefsReady, rateLookupDate]);
+  }, [canFilterFirm, dateFrom, dateTo, filterCurrency, filterFirmId, filterFlightId, filterKassaDeskId, filterType, prefsReady, transactionsView]);
 
   useEffect(() => {
     if (!payFlightId && filterFlightId) {
@@ -280,6 +261,30 @@ export default function TransactionsPage() {
       setPayFirmId(filterFirmId);
     }
   }, [canFilterFirm, filterFirmId, payFirmId]);
+
+  useEffect(() => {
+    if (!payKassaDeskId && filterKassaDeskId) {
+      setPayKassaDeskId(filterKassaDeskId);
+    }
+  }, [filterKassaDeskId, payKassaDeskId]);
+
+  useEffect(() => {
+    if (selectedPayFirm?.currency) {
+      setPaymentCurrencyCode(selectedPayFirm.currency);
+    }
+  }, [selectedPayFirm?.currency]);
+
+  useEffect(() => {
+    if (canFilterFirm && !cashFirmId && filterFirmId) {
+      setCashFirmId(filterFirmId);
+    }
+  }, [canFilterFirm, cashFirmId, filterFirmId]);
+
+  useEffect(() => {
+    if (!cashKassaDeskId && filterKassaDeskId) {
+      setCashKassaDeskId(filterKassaDeskId);
+    }
+  }, [filterKassaDeskId, cashKassaDeskId]);
 
   const submitPayment = async (e: FormEvent) => {
     e.preventDefault();
@@ -303,20 +308,6 @@ export default function TransactionsPage() {
       return;
     }
 
-    if (currency !== 'UZS') {
-      const rateRaw = payExchangeRate.trim();
-      const rateNum = rateRaw ? Number(rateRaw) : NaN;
-      if (payCurrency === 'OTHER') {
-        if (!rateRaw || !Number.isFinite(rateNum) || rateNum <= 0) {
-          toast.error(tr('Enter a valid exchange rate (required for non-UZS currencies)', 'To\'g\'ri kursni kiriting (UZS bo\'lmagan valyutalar uchun majburiy)'));
-          return;
-        }
-      }
-      if (rateRaw && (!Number.isFinite(rateNum) || rateNum <= 0)) {
-        toast.error(tr('Enter a valid exchange rate', 'To\'g\'ri kursni kiriting'));
-        return;
-      }
-    }
     if (method !== 'cash' && method !== 'card') {
       toast.error(tr('Select a payment method', "To'lov usulini tanlang"));
       return;
@@ -334,16 +325,16 @@ export default function TransactionsPage() {
     }
 
     if (method === 'card') {
-      if (!payCardProvider.trim()) {
-        toast.error(tr('Card payments require a provider', "Karta to'lovi uchun provayder kerak"));
+      if (!payCardId) {
+        toast.error(tr('Select a card', 'Kartani tanlang'));
         return;
       }
-      if (!payCardReference.trim()) {
-        toast.error(tr('Card payments require a transaction reference', "Karta to'lovi uchun tranzaksiya raqami kerak"));
+      if (selectedPayCard?.currency && selectedPayCard.currency !== currency) {
+        toast.error(tr('Selected card currency must match payment currency', 'Tanlangan karta valyutasi to\'lov valyutasiga mos bo\'lishi kerak'));
         return;
       }
-      metadata.payment_provider = payCardProvider.trim();
-      metadata.transaction_reference = payCardReference.trim();
+      metadata.payment_provider = selectedPayCard?.ownerName || '';
+      if (payCardReference.trim()) metadata.transaction_reference = payCardReference.trim();
     }
 
     try {
@@ -355,21 +346,18 @@ export default function TransactionsPage() {
         method,
         metadata,
       };
+      if (method === 'card') body.paymentCardId = payCardId;
       if (canFilterFirm) body.firmId = payFirmId;
       if (flightId) body.flightId = flightId;
-
-      if (currency !== 'UZS' && payExchangeRate.trim()) {
-        body.exchangeRate = payExchangeRate.trim();
-      }
+      if (payKassaDeskId) body.kassaDeskId = payKassaDeskId;
 
       await api.post('/payments', body);
       toast.success(tr('Payment recorded', "To'lov qayd etildi"));
 
       setPayAmount('');
-      setPayCardProvider('');
+      setPayCardId('');
       setPayCardReference('');
       setPayReference('');
-      setPayExchangeRate('');
 
       setPage(1);
       setReloadKey((k) => k + 1);
@@ -377,6 +365,47 @@ export default function TransactionsPage() {
       toast.error(err?.response?.data?.error || tr('Failed to record payment', "To'lovni qayd etib bo'lmadi"));
     } finally {
       setRecordingPayment(false);
+    }
+  };
+
+  const submitCashMovement = async (e: FormEvent) => {
+    e.preventDefault();
+    if (recordingCash) return;
+
+    const amount = cashAmount.trim();
+    if (canFilterFirm && !cashFirmId) {
+      toast.error(tr('Select a firm', 'Firmani tanlang'));
+      return;
+    }
+    if (!amount || !Number.isFinite(Number(amount)) || Number(amount) <= 0) {
+      toast.error(tr('Enter a valid amount', 'To\'g\'ri summani kiriting'));
+      return;
+    }
+    if (!cashDate) {
+      toast.error(tr('Select a date', 'Sanani tanlang'));
+      return;
+    }
+
+    try {
+      setRecordingCash(true);
+      await api.post('/transactions/cash', {
+        flow: cashFlow,
+        businessDate: cashDate,
+        firmId: cashFirmId,
+        amount,
+        currency: selectedCashFirm?.currency || 'UZS',
+        note: cashNote.trim() || undefined,
+        kassaDeskId: cashKassaDeskId || undefined,
+      });
+      toast.success(cashFlow === 'IN' ? tr('Cash income recorded', 'Kirim qayd etildi') : tr('Cash expense recorded', 'Chiqim qayd etildi'));
+      setCashAmount('');
+      setCashNote('');
+      setPage(1);
+      setReloadKey((k) => k + 1);
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || tr('Failed to record cash movement', 'Kassa harakatini qayd etib bo\'lmadi'));
+    } finally {
+      setRecordingCash(false);
     }
   };
 
@@ -388,6 +417,7 @@ export default function TransactionsPage() {
         const query = new URLSearchParams();
         if (filterType) query.append('type', filterType.toUpperCase());
         if (canFilterFirm && filterFirmId) query.append('firmId', filterFirmId);
+        if (filterKassaDeskId) query.append('kassaDeskId', filterKassaDeskId);
         if (filterFlightId) query.append('flightId', filterFlightId);
         if (filterCurrency.trim()) query.append('currency', filterCurrency.trim().toUpperCase());
         if (dateFrom) query.append('dateFrom', dateFrom);
@@ -416,14 +446,16 @@ export default function TransactionsPage() {
       }
     };
     fetchTransactions();
-  }, [prefsReady, filterType, filterFirmId, filterFlightId, filterCurrency, dateFrom, dateTo, page, limit, canFilterFirm, reloadKey, tr]);
+  }, [prefsReady, filterType, filterFirmId, filterKassaDeskId, filterFlightId, filterCurrency, dateFrom, dateTo, page, limit, canFilterFirm, reloadKey, tr]);
 
   useEffect(() => {
     const loadOptions = async () => {
       try {
-        const [flightsRes, firmsRes] = await Promise.all([
+        const [flightsRes, firmsRes, desksRes, cardsRes] = await Promise.all([
           api.get('/flights'),
           canFilterFirm ? api.get('/firms') : Promise.resolve({ data: [] }),
+          api.get('/kassa/desks'),
+          api.get('/kassa/cards'),
         ]);
 
         const flights = Array.isArray(flightsRes.data) ? flightsRes.data : [];
@@ -431,6 +463,12 @@ export default function TransactionsPage() {
 
         const firms = Array.isArray(firmsRes.data) ? firmsRes.data : [];
         setFirmOptions(firms);
+
+        const desks = Array.isArray(desksRes.data) ? desksRes.data : [];
+        setDeskOptions(desks);
+
+        const cards = Array.isArray(cardsRes.data) ? cardsRes.data : [];
+        setPaymentCards(cards);
       } catch {
         // Non-fatal; filters can still be used via manual inputs.
       }
@@ -439,8 +477,11 @@ export default function TransactionsPage() {
     loadOptions();
   }, [canFilterFirm]);
 
-  const getTransactionTypeLabel = (type?: string) => {
+  const getTransactionTypeLabel = (type?: string, direction?: string) => {
     const normalized = String(type || '').trim().toUpperCase();
+    const normalizedDirection = String(direction || '').trim().toUpperCase();
+    if (normalized === 'ADJUSTMENT' && normalizedDirection === 'KASSA_IN') return tr('Income', 'Kirim');
+    if (normalized === 'ADJUSTMENT' && normalizedDirection === 'KASSA_OUT') return tr('Expense', 'Chiqim');
     if (normalized === 'SALE') return tr('SALE', 'SOTUV');
     if (normalized === 'PAYABLE') return tr('PAYABLE', 'QARZDORLIK');
     if (normalized === 'PAYMENT') return tr('PAYMENT', "TO'LOV");
@@ -455,8 +496,11 @@ export default function TransactionsPage() {
     return method ? String(method) : '-';
   };
 
-  const getTransactionTypeHelp = (type?: string) => {
+  const getTransactionTypeHelp = (type?: string, direction?: string) => {
     const normalized = String(type || '').trim().toUpperCase();
+    const normalizedDirection = String(direction || '').trim().toUpperCase();
+    if (normalized === 'ADJUSTMENT' && normalizedDirection === 'KASSA_IN') return tr('Cash income', 'Kassa kirim');
+    if (normalized === 'ADJUSTMENT' && normalizedDirection === 'KASSA_OUT') return tr('Cash expense', 'Kassa chiqim');
     if (normalized === 'SALE') return tr('Ticket sale (revenue)', 'Chipta sotuv (daromad)');
     if (normalized === 'PAYABLE') return tr('Debt created (firm owes)', 'Qarz yaratildi (firma qarzdor)');
     if (normalized === 'PAYMENT') return tr('Payment received/recorded', "To'lov qabul qilindi/qayd etildi");
@@ -467,6 +511,7 @@ export default function TransactionsPage() {
   const hasActiveFilters = Boolean(
     filterType ||
     (canFilterFirm && filterFirmId) ||
+    filterKassaDeskId ||
     filterFlightId ||
     filterCurrency.trim() ||
     dateFrom ||
@@ -476,6 +521,7 @@ export default function TransactionsPage() {
   const clearFilters = () => {
     setFilterType('');
     setFilterFirmId('');
+    setFilterKassaDeskId('');
     setFilterFlightId('');
     setFilterCurrency('');
     setDateFrom('');
@@ -483,24 +529,13 @@ export default function TransactionsPage() {
     setPage(1);
   };
 
-  const resolvedRate = (() => {
-    if (payCurrencyCode === 'UZS') return { rate: 1, source: 'base' as const };
-    if (Number.isFinite(payExchangeRateNum) && payExchangeRateNum > 0) return { rate: payExchangeRateNum, source: 'manual' as const };
-    if (typeof savedRate === 'number' && Number.isFinite(savedRate) && savedRate > 0) return { rate: savedRate, source: 'saved' as const };
-    return { rate: null as number | null, source: 'missing' as const };
-  })();
-
-  const previewBaseAmount = (() => {
-    if (!Number.isFinite(payAmountNum) || payAmountNum <= 0) return null;
-    if (!resolvedRate.rate || !Number.isFinite(resolvedRate.rate) || resolvedRate.rate <= 0) return null;
-    return payAmountNum * resolvedRate.rate;
-  })();
-
   const getBalanceDelta = (tx: any) => {
     const type = String(tx?.type || '').trim().toUpperCase();
     const amount = Number(tx?.baseAmount || tx?.base_amount || 0);
     if (!Number.isFinite(amount)) return 0;
     if (type === 'PAYMENT') return amount;
+    if (type === 'ADJUSTMENT' && tx?.direction === 'KASSA_IN') return amount;
+    if (type === 'ADJUSTMENT' && tx?.direction === 'KASSA_OUT') return -amount;
     if (type === 'PAYABLE' || type === 'ALLOCATION') return -amount;
     if (type === 'REFUND' || type === 'ADJUSTMENT') return amount;
     return 0;
@@ -521,6 +556,8 @@ export default function TransactionsPage() {
         t.flight?.flightNumber,
         t.flightId,
         t.flight_id,
+        t.kassaDesk?.name,
+        t.kassaDeskId,
         meta.transaction_reference,
         meta.reference,
         meta.note,
@@ -569,9 +606,7 @@ export default function TransactionsPage() {
               {tr('Creates a', 'Bu')}{' '}
               <span className="font-semibold">PAYMENT</span>{' '}
               {tr('transaction.', 'tranzaksiyasini yaratadi.')}{' '}
-              {tr('Supported currencies:', 'Qo‘llab-quvvatlanadigan valyutalar:')}{' '}
-              <span className="font-semibold">UZS</span> / <span className="font-semibold">USD</span>{' '}
-              {tr('(non-UZS currencies require an exchange rate).', '(UZS bo\'lmagan valyutalar uchun kurs kerak).')}
+              {tr('The selected firm default currency is used automatically, and payments stay in that currency.', 'Tanlangan firmaning asosiy valyutasi avtomatik ishlatiladi va to\'lov shu valyutada qoladi.')}
             </>
           }
           defaultOpen={false}
@@ -591,7 +626,7 @@ export default function TransactionsPage() {
               >
                 <option value="">{tr('Select', 'Tanlang')}</option>
                 {firmOptions.map((f) => (
-                  <option key={f.id} value={f.id}>{f.name}</option>
+                  <option key={f.id} value={f.id}>{f.name}{f.currency ? ` (${f.currency})` : ''}</option>
                 ))}
               </select>
             </div>
@@ -640,7 +675,6 @@ export default function TransactionsPage() {
               value={payCurrency}
               onChange={(e) => {
                 setPayCurrency(e.target.value as any);
-                setPayExchangeRate('');
               }}
               className="compact-control"
               required
@@ -665,39 +699,16 @@ export default function TransactionsPage() {
             </div>
           )}
 
-          {(payCurrency !== 'UZS') && (
-            <div>
-              <label htmlFor="payExchangeRate" className="compact-label">
-                {(payCurrency === 'OTHER' ? (payOtherCurrency || 'XXX') : payCurrency).toUpperCase()}→UZS {tr('rate', 'kursi')}
-              </label>
-              <input
-                id="payExchangeRate"
-                type="number"
-                step="0.000001"
-                min="0"
-                value={payExchangeRate}
-                onChange={(e) => setPayExchangeRate(e.target.value)}
-                placeholder={payCurrency === 'OTHER'
-                  ? tr('Required', 'Majburiy')
-                  : tr('Optional if rate is already saved for that day', 'Agar kurs shu kunga saqlangan bo\'lsa ixtiyoriy')}
-                className="compact-control"
-                required={payCurrency === 'OTHER'}
-              />
-              <p className="mt-1 text-xs text-muted">
-                {tr('Enter how many', 'To\'lov sanasi uchun')}{' '}
-                <span className="font-semibold">UZS</span>{' '}
-                {tr('equals', 'nechta ekanligini kiriting:')}{' '}
-                <span className="font-semibold">1 {(payCurrency === 'OTHER' ? (payOtherCurrency || 'XXX') : payCurrency).toUpperCase()}</span>.
-              </p>
-            </div>
-          )}
-
           <div>
             <label htmlFor="payMethod" className="compact-label">{tr('Method', 'Usul')}</label>
             <select
               id="payMethod"
               value={payMethod}
-              onChange={(e) => setPayMethod(e.target.value as any)}
+              onChange={(e) => {
+                const next = e.target.value as 'cash' | 'card';
+                setPayMethod(next);
+                if (next === 'card' && selectedPayCard?.currency) setPaymentCurrencyCode(selectedPayCard.currency);
+              }}
               className="compact-control"
               required
             >
@@ -717,6 +728,21 @@ export default function TransactionsPage() {
             />
           </div>
 
+          <div>
+            <label htmlFor="payKassaDesk" className="compact-label">{tr('Kassa desk', 'Kassa')}</label>
+            <select
+              id="payKassaDesk"
+              value={payKassaDeskId}
+              onChange={(e) => setPayKassaDeskId(e.target.value)}
+              className="compact-control"
+            >
+              <option value="">{tr('Auto / none', 'Avto / yo‘q')}</option>
+              {deskOptions.map((desk) => (
+                <option key={desk.id} value={desk.id}>{desk.firm?.name ? `${desk.firm.name} · ` : ''}{desk.name}</option>
+              ))}
+            </select>
+          </div>
+
           {payMethod === 'cash' && (
             <div>
               <label htmlFor="payCashDate" className="compact-label">{tr('Cash date', 'Naqd sana')}</label>
@@ -734,26 +760,34 @@ export default function TransactionsPage() {
           {payMethod === 'card' && (
             <>
               <div>
-                <label htmlFor="payCardProvider" className="compact-label">{tr('Card provider', 'Karta provayderi')}</label>
-                <input
-                  id="payCardProvider"
-                  value={payCardProvider}
-                  onChange={(e) => setPayCardProvider(e.target.value)}
-                  placeholder={tr('e.g. Visa / Stripe', 'masalan, Visa / Stripe')}
+                <label htmlFor="payCardId" className="compact-label">{tr('Card', 'Karta')}</label>
+                <select
+                  id="payCardId"
+                  value={payCardId}
+                  onChange={(e) => {
+                    const nextId = e.target.value;
+                    const card = paymentCards.find((item) => item.id === nextId);
+                    setPayCardId(nextId);
+                    if (card?.currency) setPayCurrency(card.currency);
+                  }}
                   className="compact-control"
                   required
-                />
+                >
+                  <option value="">{tr('Select card', 'Kartani tanlang')}</option>
+                  {paymentCards.map((card) => (
+                    <option key={card.id} value={card.id}>{card.ownerName} — {card.cardNumber} ({card.currency})</option>
+                  ))}
+                </select>
               </div>
 
               <div>
-                <label htmlFor="payCardReference" className="compact-label">{tr('Transaction reference', 'Tranzaksiya raqami')}</label>
+                <label htmlFor="payCardReference" className="compact-label">{tr('Transaction reference (optional)', 'Tranzaksiya raqami (ixtiyoriy)')}</label>
                 <input
                   id="payCardReference"
                   value={payCardReference}
                   onChange={(e) => setPayCardReference(e.target.value)}
                   placeholder={tr('Bank / gateway reference', 'Bank / to\'lov tizimi raqami')}
                   className="compact-control"
-                  required
                 />
               </div>
             </>
@@ -761,30 +795,9 @@ export default function TransactionsPage() {
 
           <div className="sm:col-span-2 lg:col-span-3 xl:col-span-4">
             <div className="mb-2 text-xs text-muted">
-              {payCurrencyCode === 'UZS' ? (
-                <span>
-                  {tr('Preview:', 'Ko\'rinish:')} {tr('Base amount equals original amount (UZS).', 'Bazaviy summa asl summaga teng (UZS).')}
-                </span>
-              ) : previewBaseAmount != null ? (
-                <span>
-                  {tr('Preview:', 'Ko\'rinish:')} {payAmountNum.toFixed(2)} {payCurrencyCode} × {resolvedRate.rate?.toFixed(6)} = {previewBaseAmount.toFixed(2)} UZS
-                  {resolvedRate.source === 'manual'
-                    ? ` (${tr('manual rate', 'qo\'lda kurs')})`
-                    : resolvedRate.source === 'saved'
-                      ? ` (${tr('saved rate', 'saqlangan kurs')}${savedRateSource ? `: ${savedRateSource}` : ''})`
-                      : ''}
-                  {savedRateLoading && resolvedRate.source !== 'manual' ? ` · ${tr('looking up saved rate…', 'saqlangan kurs qidirilmoqda…')}` : ''}
-                </span>
-              ) : (
-                <span>
-                  {savedRateLoading
-                    ? tr('Looking up saved exchange rate…', 'Saqlangan kurs qidirilmoqda…')
-                    : tr(
-                        `No saved exchange rate found for ${rateLookupDate} — enter the rate manually.`,
-                        `${rateLookupDate} uchun saqlangan kurs topilmadi — kursni qo'lda kiriting.`
-                      )}
-                </span>
-              )}
+              {tr('Preview:', 'Ko\'rinish:')} {Number.isFinite(payAmountNum) && payAmountNum > 0 ? payAmountNum.toFixed(2) : '0.00'} {payCurrencyCode || 'UZS'}
+              {' · '}
+              {tr('No exchange conversion will be applied.', 'Valyuta kursiga aylantirilmaydi.')}
             </div>
 
             <button
@@ -795,6 +808,66 @@ export default function TransactionsPage() {
               {recordingPayment ? tr('Recording...', 'Qayd etilmoqda...') : tr('Record payment', "To'lovni qayd etish")}
             </button>
           </div>
+          </form>
+        </CollapsibleCard>
+      )}
+
+      {canFilterFirm && (
+        <CollapsibleCard
+          title={tr('Cash income / expense', 'Kassa kirim / chiqim')}
+          description={tr('Create a manual cash-in or cash-out transaction.', 'Qo\'lda kassa kirim yoki chiqim tranzaksiyasini yarating.')}
+          defaultOpen={false}
+          storageKey="jetstream-transactions-cash-movement-open"
+          className="shadow sm:rounded-lg"
+        >
+          <form onSubmit={submitCashMovement} className="compact-toolbar">
+            <div>
+              <label htmlFor="cashFlow" className="compact-label">{tr('Type', 'Turi')}</label>
+              <select id="cashFlow" value={cashFlow} onChange={(e) => setCashFlow(e.target.value as 'IN' | 'OUT')} className="compact-control">
+                <option value="IN">{tr('Income', 'Kirim')}</option>
+                <option value="OUT">{tr('Expense', 'Chiqim')}</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="cashFirm" className="compact-label">{tr('Firm', 'Firma')}</label>
+              <select id="cashFirm" value={cashFirmId} onChange={(e) => setCashFirmId(e.target.value)} className="compact-control" required>
+                <option value="">{tr('Select', 'Tanlang')}</option>
+                {firmOptions.map((f) => (
+                  <option key={f.id} value={f.id}>{f.name}{f.currency ? ` (${f.currency})` : ''}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="cashKassaDesk" className="compact-label">{tr('Kassa desk', 'Kassa')}</label>
+              <select
+                id="cashKassaDesk"
+                value={cashKassaDeskId}
+                onChange={(e) => setCashKassaDeskId(e.target.value)}
+                className="compact-control"
+              >
+                <option value="">{tr('Auto / none', 'Avto / yo‘q')}</option>
+                {deskOptions.map((desk) => (
+                  <option key={desk.id} value={desk.id}>{desk.firm?.name ? `${desk.firm.name} · ` : ''}{desk.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="cashDate" className="compact-label">{tr('Date', 'Sana')}</label>
+              <input id="cashDate" type="date" value={cashDate} onChange={(e) => setCashDate(e.target.value)} className="compact-control" required />
+            </div>
+            <div>
+              <label htmlFor="cashAmount" className="compact-label">{tr('Amount', 'Summa')} ({selectedCashFirm?.currency || 'UZS'})</label>
+              <input id="cashAmount" inputMode="decimal" value={cashAmount} onChange={(e) => setCashAmount(e.target.value)} className="compact-control" required />
+            </div>
+            <div>
+              <label htmlFor="cashNote" className="compact-label">{tr('Note', 'Izoh')}</label>
+              <input id="cashNote" value={cashNote} onChange={(e) => setCashNote(e.target.value)} className="compact-control" />
+            </div>
+            <div className="flex items-end">
+              <button type="submit" disabled={recordingCash} className="inline-flex items-center justify-center px-4 py-2 rounded-md bg-primary text-ink font-medium hover:bg-primary/90 disabled:opacity-50">
+                {recordingCash ? tr('Recording...', 'Qayd etilmoqda...') : tr('Record', 'Qayd etish')}
+              </button>
+            </div>
           </form>
         </CollapsibleCard>
       )}
@@ -850,6 +923,23 @@ export default function TransactionsPage() {
               </select>
             </div>
           )}
+
+          <div>
+            <label htmlFor="kassaDesk" className="compact-label">{tr('Kassa desk', 'Kassa')}</label>
+            <select
+              id="kassaDesk"
+              value={filterKassaDeskId}
+              onChange={(e) => { setFilterKassaDeskId(e.target.value); setPage(1); }}
+              className="compact-control"
+            >
+              <option value="">{tr('All', 'Barchasi')}</option>
+              {deskOptions.map((desk) => (
+                <option key={desk.id} value={desk.id}>
+                  {desk.firm?.name ? `${desk.firm.name} · ` : ''}{desk.name}{desk.code ? ` (${desk.code})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
 
           <div>
             <label htmlFor="flight" className="compact-label">{tr('Flight', 'Reys')}</label>
@@ -936,6 +1026,7 @@ export default function TransactionsPage() {
                 <th>{tr('Date', 'Sana')}</th>
                 <th>{tr('Description', 'Tavsif')}</th>
                 {canFilterFirm && <th>{tr('Firm', 'Firma')}</th>}
+                <th>{tr('Kassa desk', 'Kassa')}</th>
                 <th>{tr('Flight', 'Reys')}</th>
                 <th className="text-right">{tr('Debit', 'Chiqim')}</th>
                 <th className="text-right">{tr('Credit', 'Kirim')}</th>
@@ -946,7 +1037,7 @@ export default function TransactionsPage() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={canFilterFirm ? 9 : 8} className="text-center">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
+                <tr><td colSpan={canFilterFirm ? 10 : 9} className="text-center">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
               ) : visibleTransactions.map(({ tx: t, runningBalance }) => {
                 const delta = getBalanceDelta(t);
                 const debit = delta < 0 ? Math.abs(delta) : 0;
@@ -954,10 +1045,11 @@ export default function TransactionsPage() {
                 return (
                   <tr key={t.id}>
                     <td className="text-muted">{format(new Date(t.createdAt || t.created_at), 'yyyy-MM-dd HH:mm')}</td>
-                    <td className="font-medium" title={getTransactionTypeHelp(t.type)}>
-                      {getTransactionTypeLabel(t.type)}
+                    <td className="font-medium" title={getTransactionTypeHelp(t.type, t.direction)}>
+                      {getTransactionTypeLabel(t.type, t.direction)}
                     </td>
                     {canFilterFirm && <td>{t.firm?.name || t.firmId || t.firm_id}</td>}
+                    <td>{t.kassaDesk?.name || t.kassaDeskId || '-'}</td>
                     <td>{t.flight?.flightNumber || t.flightId || t.flight_id || '-'}</td>
                     <td className="text-right font-mono font-semibold text-red-600">{debit ? debit.toFixed(0) : '-'}</td>
                     <td className="text-right font-mono font-semibold text-green-700">{credit ? credit.toFixed(0) : '-'}</td>
@@ -1047,9 +1139,9 @@ export default function TransactionsPage() {
                         </div>
                         <span
                           className={`px-2 py-1 rounded-full text-xs font-bold border ${typeClass}`}
-                          title={getTransactionTypeHelp(t.type)}
+                          title={getTransactionTypeHelp(t.type, t.direction)}
                         >
-                          {getTransactionTypeLabel(t.type)}
+                          {getTransactionTypeLabel(t.type, t.direction)}
                         </span>
                       </div>
 

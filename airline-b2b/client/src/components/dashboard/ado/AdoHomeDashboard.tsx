@@ -10,7 +10,6 @@ import {
   ArrowRightLeft,
   Wallet,
   AlertCircle,
-  Settings2,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import toast from 'react-hot-toast';
@@ -21,7 +20,6 @@ import KpiCard from './KpiCard';
 import SimpleLineChart from './SimpleLineChart';
 import SimpleDonutChart from './SimpleDonutChart';
 import DashboardRightPanel from './DashboardRightPanel';
-import QuickActionBar from './QuickActionBar';
 
 type MonthlyRow = { month: string; allocations: number | string; sales: number | string; payments: number | string };
 
@@ -192,7 +190,7 @@ export default function AdoHomeDashboard() {
 
   return (
     <>
-      <div className="space-y-6 pb-24">
+      <div className="space-y-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <h1 className="font-serif text-2xl font-bold text-foreground md:text-3xl">
@@ -203,13 +201,6 @@ export default function AdoHomeDashboard() {
               ADO-SYSTEM · {tr('powered by ADO-FINANCE', 'ADO-FINANCE tomonidan')}
             </p>
           </div>
-          <Link
-            href="/settings"
-            className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-xs font-semibold text-foreground hover:border-[#C9A84C]/40"
-          >
-            <Settings2 size={14} />
-            {tr('Customize', 'Sozlash')}
-          </Link>
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -325,7 +316,6 @@ export default function AdoHomeDashboard() {
           </div>
         </div>
       </div>
-      <QuickActionBar tr={tr} isAdmin={isAdmin} />
     </>
   );
 }

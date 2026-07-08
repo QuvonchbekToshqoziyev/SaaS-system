@@ -9,9 +9,9 @@ const router = Router();
 router.get('/', isAuthenticated, getAllFlights);
 router.get('/:id', isAuthenticated, getFlightById);
 
-// RBAC: Only Superadmins can create, update, or delete flights
+// RBAC: Superadmin keeps controller rights; admins can create flights during beta operations.
 router.post('/', isAuthenticated, hasRole(['SUPERADMIN', 'ADMIN']), createFlight);
-router.put('/:id', isAuthenticated, hasRole(['SUPERADMIN', 'ADMIN']), updateFlight);
-router.delete('/:id', isAuthenticated, hasRole(['SUPERADMIN', 'ADMIN']), deleteFlight);
+router.put('/:id', isAuthenticated, hasRole(['SUPERADMIN']), updateFlight);
+router.delete('/:id', isAuthenticated, hasRole(['SUPERADMIN']), deleteFlight);
 
 export default router;

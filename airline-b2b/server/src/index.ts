@@ -17,6 +17,11 @@ import currencyRateRoutes from './routes/currency-rates';
 import searchRoutes from './routes/search';
 import kassaRoutes from './routes/kassa';
 import tourPackageRoutes from './routes/tour-packages';
+import employeeRoutes from './routes/employees';
+import siteContentRoutes from './routes/site-content';
+import maintenanceRoutes from './routes/maintenance';
+import chatRoutes from './routes/chat';
+import auditLogRoutes from './routes/audit-log';
 
 const jwtSecret = process.env.JWT_SECRET;
 if (!jwtSecret || !jwtSecret.trim()) {
@@ -90,6 +95,9 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   next();
 });
 
@@ -106,6 +114,11 @@ app.use('/currency-rates', currencyRateRoutes);
 app.use('/search', searchRoutes);
 app.use('/kassa', kassaRoutes);
 app.use('/tour-packages', tourPackageRoutes);
+app.use('/employees', employeeRoutes);
+app.use('/site-content', siteContentRoutes);
+app.use('/chat', chatRoutes);
+app.use('/audit-log', auditLogRoutes);
+app.use('/admin', maintenanceRoutes);
 
 app.use(errorHandler);
 

@@ -1,21 +1,50 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { LogIn } from 'lucide-react';
+import { CircleCheck, Eye, Lock, Mail, ShieldCheck } from 'lucide-react';
 import toast from 'react-hot-toast';
 import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
+import type { AxiosError } from 'axios';
+import { defaultLoginPageContent, normalizeLoginPageContent, resolveLocalizedText, type LoginPageContent } from '@/lib/login-content';
+
+type ApiErrorResponse = { error?: string };
+
+function apiErrorMessage(err: unknown): string | undefined {
+  return (err as AxiosError<ApiErrorResponse>)?.response?.data?.error;
+}
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [content, setContent] = useState<LoginPageContent>(defaultLoginPageContent);
   const router = useRouter();
   const { login } = useAuth();
-  const { tr, t } = useLanguage();
+  const { tr, language } = useLanguage();
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadContent = async () => {
+      try {
+        const response = await api.get('/site-content/login-page');
+        if (!cancelled) setContent(normalizeLoginPageContent(response.data?.content));
+      } catch {
+        if (!cancelled) setContent(defaultLoginPageContent);
+      }
+    };
+
+    loadContent();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,117 +60,163 @@ export default function LoginPage() {
       } else {
         router.push('/admin');
       }
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || tr('Login failed', 'Kirishda xatolik yuz berdi'));
+    } catch (err: unknown) {
+      toast.error(apiErrorMessage(err) || tr('Login failed', 'Kirishda xatolik yuz berdi'));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="flex h-screen w-full bg-background relative font-outfit">
-      {/* Left Branding Panel - Refined minimal aesthetic */}
-      <div className="relative hidden w-0 flex-1 lg:block h-full group bg-surface overflow-hidden">
-        {/* Background gradient from HTML */}
-        <div className="absolute inset-0 z-0 bg-[radial-gradient(ellipse_80%_60%_at_70%_40%,rgba(75,163,227,0.06)_0%,transparent_60%),radial-gradient(ellipse_50%_40%_at_10%_80%,rgba(201,168,76,0.05)_0%,transparent_50%)]"></div>
-        {/* Grid pattern */}
-        <div className="absolute inset-0 z-0 bg-[linear-gradient(rgba(30,45,69,0.4)_1px,transparent_1px),linear-gradient(90deg,rgba(30,45,69,0.4)_1px,transparent_1px)] bg-[size:60px_60px] [mask-image:radial-gradient(ellipse_80%_80%_at_50%_50%,black_30%,transparent_100%)]"></div>
+    <div className="min-h-screen bg-[#02050a] text-white font-outfit lg:h-screen lg:overflow-hidden">
+      <main className="relative flex min-h-screen w-full flex-col overflow-hidden bg-[#030710] px-6 py-7 sm:px-10 lg:h-screen lg:px-12 xl:px-16">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_47%_42%,rgba(235,12,33,0.2),transparent_23%),radial-gradient(circle_at_70%_72%,rgba(152,8,21,0.13),transparent_28%),linear-gradient(120deg,#040812_0%,#050915_42%,#02050b_100%)]" />
+        <div className="absolute inset-0 opacity-[0.28] [background-image:linear-gradient(rgba(239,35,60,0.16)_1px,transparent_1px),linear-gradient(90deg,rgba(239,35,60,0.12)_1px,transparent_1px)] [background-size:96px_96px] [mask-image:radial-gradient(circle_at_48%_45%,black,transparent_58%)]" />
 
-        {/* Huge Center Logo */}
-        <div className="absolute inset-0 z-0 flex items-center justify-center opacity-[0.15] transform scale-[1.5] pointer-events-none">
-           <img src="/ADO-logo.png" alt="Big ADO Logo" className="w-1/2 h-auto object-contain drop-shadow-2xl grayscale mix-blend-luminosity" />
-        </div>
-
-        <div className="absolute top-10 left-10 z-10 flex items-center gap-4">
-           <div className="w-12 h-12 bg-surface-2 flex items-center justify-center rounded-xl border border-border overflow-hidden">
-             <img src="/ADO-icon.png" alt="ADO Logo" className="w-full h-full object-contain p-[3px]" />
-           </div>
-           <div className="h-4 w-px bg-border"></div>
-           <span className="text-muted text-xs font-extrabold tracking-[0.2em] font-mono uppercase">ADO Financial</span>
-        </div>
-
-        <div className="absolute bottom-12 left-10 right-10 z-10">
-          <div className="inline-flex items-center gap-2 font-mono text-[0.72rem] text-primary uppercase tracking-[0.12em] mb-8 before:content-[''] before:w-8 before:h-px before:bg-primary before:inline-block">
-            {tr('Secure Access Portal', 'Xavfsiz Kirish Portali')}
-          </div>
-          <h2 className="text-4xl lg:text-5xl font-playfair font-bold text-foreground mb-6 tracking-wide leading-tight">
-            Distribution.<br/><em className="italic text-primary">{tr('Refined.', 'Mukammal.')}</em>
-          </h2>
-          <p className="text-muted text-base font-light max-w-md leading-relaxed">
-            {tr('A precise, ledger-driven airline inventory platform built for strict B2B financial accounting and operational integrity.', 'Qat\'iy B2B moliyaviy hisob-kitoblar va operatsion yaxlitlik uchun qurilgan havo yo\'llari inventarizatsiyasi platformasi.')}
-          </p>
-        </div>
-      </div>
-
-      {/* Right Login Panel - Dark and Elegant */}
-      <div className="flex w-full flex-col justify-center bg-background px-8 py-16 lg:w-1/2 xl:w-1/3 relative border-l border-border">
-        {/* Top Right Controls */}
-        <div className="absolute top-6 right-6 z-20">
-          <ThemeLanguageSwitcher />
-        </div>
-
-        <div className="mx-auto w-full max-w-sm relative z-10">
-          <div className="text-left mb-12">
-            <h1 className="text-3xl font-playfair font-bold text-foreground tracking-wide">
-              {tr('Welcome Back', 'Xush Kelibsiz')}
-            </h1>
-            <p className="mt-2 text-sm text-muted font-normal">
-              {tr('Enter your credentials to continue', 'Davom etish uchun ma\'lumotlaringizni kiriting')}
-            </p>
-          </div>
-
-          <form className="space-y-6" onSubmit={handleSubmit}>
-            <div>
-              <label className="block text-[11px] font-bold font-mono uppercase tracking-widest text-muted mb-2" htmlFor="email-address">
-                {tr('Email Address', 'Elektron pochta')}
-              </label>
-              <input
-                id="email-address"
-                name="email"
-                type="email"
-                required
-                className="block w-full rounded-none border-b border-border bg-transparent px-2 py-3 text-foreground placeholder-smoke focus:outline-none focus:border-primary transition-all sm:text-sm font-light"
-                placeholder="agency@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </div>
-            
-            <div>
-              <div className="flex justify-between items-center mb-2">
-                <label className="block text-[11px] font-bold font-mono uppercase tracking-widest text-muted" htmlFor="password">
-                  {tr('Password', 'Parol')}
-                </label>
+        <div className="relative z-10 flex min-h-0 flex-1 flex-col">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-4">
+              <img src="/ADO-icon.png" alt="ADO Systems" className="h-[92px] w-[92px] object-contain sm:h-[108px] sm:w-[108px] lg:h-[122px] lg:w-[122px]" />
+              <div className="leading-none">
+                <div className="text-[2.2rem] font-black tracking-[-0.03em] text-white sm:text-[2.8rem] lg:text-[3.2rem]">ADO</div>
+                <div className="mt-1 text-[1.85rem] font-medium tracking-[-0.03em] text-white sm:text-[2.35rem] lg:text-[2.7rem]">Systems</div>
+                <div className="mt-3 text-base font-medium text-white sm:text-lg">
+                  powered by <span className="font-extrabold text-[#ff2337]">ADO-FINANCE</span>
+                </div>
               </div>
-              <input
-                id="password"
-                name="password"
-                type="password"
-                required
-                className="block w-full rounded-none border-b border-border bg-transparent px-2 py-3 text-foreground placeholder-smoke focus:outline-none focus:border-primary transition-all sm:text-sm font-light tracking-widest"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
+            </div>
+            <ThemeLanguageSwitcher />
+          </div>
+
+          <section className="grid min-h-0 flex-1 gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(420px,576px)] lg:items-center xl:gap-12">
+            <div className="relative min-h-[560px] lg:min-h-0 lg:self-stretch">
+              <div className="relative z-10 max-w-[620px] pt-10 lg:pt-16 xl:pt-20">
+                <div className="mb-7 inline-flex items-center gap-3 text-base font-medium uppercase tracking-[0.08em] text-[#ff3046]">
+                  <ShieldCheck size={28} strokeWidth={1.9} />
+                  {resolveLocalizedText(content.sectionTagline, language)}
+                </div>
+
+                <h1 className="text-[clamp(3.4rem,6vw,5.35rem)] font-black leading-[0.96] tracking-normal text-white">
+                  {resolveLocalizedText(content.heroTitle, language)}
+                  <span className="mt-4 block text-[#e51428]">{resolveLocalizedText(content.heroAccent, language)}</span>
+                </h1>
+                <div className="mt-8 h-1 w-[72px] rounded-full bg-[#e51428]" />
+                <p className="mt-8 max-w-[600px] text-[1.08rem] leading-8 text-[#d5d9e2]">
+                  {resolveLocalizedText(content.heroDescription, language)}
+                </p>
+              </div>
+
+              <div className="pointer-events-none absolute right-[2%] top-[20%] hidden h-[390px] w-[390px] lg:block xl:right-[5%] xl:h-[440px] xl:w-[440px]">
+                <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle,rgba(229,20,40,0.18),transparent_58%)]" />
+                <div className="absolute inset-x-10 bottom-8 h-28 rounded-[50%] border border-[#e51428]/35 shadow-[0_0_70px_rgba(229,20,40,0.42)]" />
+                <div className="absolute left-1/2 top-16 h-56 w-48 -translate-x-1/2 rounded-[2rem] border border-[#ef4052]/45 bg-gradient-to-b from-[#232530] via-[#151822] to-[#070a12] shadow-[0_34px_90px_rgba(229,20,40,0.32)] [clip-path:polygon(50%_0%,88%_14%,82%_74%,50%_100%,18%_74%,12%_14%)] xl:h-64 xl:w-56">
+                  <div className="absolute inset-[1px] bg-gradient-to-br from-white/10 via-transparent to-black/40" />
+                  <CircleCheck className="absolute left-1/2 top-1/2 h-24 w-24 -translate-x-1/2 -translate-y-1/2 text-[#e51428] drop-shadow-[0_0_28px_rgba(229,20,40,0.8)] xl:h-28 xl:w-28" strokeWidth={2.8} />
+                </div>
+                <div className="absolute inset-0 [background-image:radial-gradient(circle,rgba(229,20,40,0.55)_1.5px,transparent_2px)] [background-size:62px_52px] opacity-60" />
+              </div>
+
+              <div className="relative z-10 mt-8 flex max-w-[520px] items-center gap-4 text-[#8f98aa] lg:absolute lg:bottom-4 lg:left-0 lg:mt-0">
+                <Lock className="h-6 w-6 shrink-0" />
+                <div>
+                  <div className="text-sm">{tr('Your trust is our responsibility.', 'Sizning ishonchingiz — bizning majburiyatimiz.')}</div>
+                  <div className="mt-1 text-sm">{tr('Protected platform with the most advanced technologies.', 'Eng ilg‘or texnologiyalar bilan himoyalangan platforma.')}</div>
+                </div>
+              </div>
             </div>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="mt-8 w-full flex items-center justify-center gap-2 bg-primary py-4 px-4 text-sm font-semibold uppercase tracking-wider text-white hover:bg-primary-hover focus:outline-none focus:ring-1 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background disabled:opacity-70 transition-all duration-200 shadow-[0_8px_32px_rgba(201,168,76,0.15)]"
-            >
-              <LogIn size={18} />
-              {loading ? tr('Authenticating...', 'Tekshirilmoqda...') : tr('Sign In', 'Tizimga Kirish')}
-            </button>
-          </form>
+            <div className="rounded-[1.375rem] border border-[#273142] bg-[#070b15]/72 p-7 shadow-[0_28px_120px_rgba(0,0,0,0.46)] backdrop-blur-xl sm:p-10 lg:self-center xl:p-11">
+              <div className="mb-10">
+                <h2 className="text-[2rem] font-black tracking-normal text-white">
+                  {resolveLocalizedText(content.panelTitle, language)}
+                </h2>
+                <p className="mt-4 text-base leading-6 text-[#b2b8c5]">
+                  {resolveLocalizedText(content.panelSubtitle, language)}
+                </p>
+              </div>
 
-          <div className="mt-16 text-left">
-            <span className="text-muted text-[10px] uppercase tracking-[0.15em] font-semibold font-mono">
-              {tr('Secured by ADO', 'ADO tomonidan himoyalangan')}
-            </span>
-          </div>
+              <form className="space-y-5" onSubmit={handleSubmit}>
+                <div>
+                  <label className="sr-only" htmlFor="email-address">{resolveLocalizedText(content.emailLabel, language)}</label>
+                  <div className="flex min-h-[72px] items-center gap-4 rounded-lg border border-[#273142] bg-[#111622]/78 px-5 text-[#a4abb8] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition focus-within:border-[#ff2337]">
+                    <Mail size={22} />
+                    <input
+                      id="email-address"
+                      name="email"
+                      type="email"
+                      required
+                      className="min-w-0 flex-1 bg-transparent text-base text-white outline-none placeholder:text-[#a4abb8]"
+                      placeholder={content.emailPlaceholder || resolveLocalizedText(content.emailLabel, language)}
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="sr-only" htmlFor="password">{resolveLocalizedText(content.passwordLabel, language)}</label>
+                  <div className="flex min-h-[72px] items-center gap-4 rounded-lg border border-[#273142] bg-[#111622]/78 px-5 text-[#a4abb8] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition focus-within:border-[#ff2337]">
+                    <Lock size={22} />
+                    <input
+                      id="password"
+                      name="password"
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      className="min-w-0 flex-1 bg-transparent text-base text-white outline-none placeholder:text-[#a4abb8]"
+                      placeholder={content.passwordPlaceholder || resolveLocalizedText(content.passwordLabel, language)}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                    />
+                    <button type="button" onClick={() => setShowPassword((value) => !value)} className="text-[#a4abb8] transition hover:text-white" aria-label={tr('Show password', 'Parolni ko‘rsatish')}>
+                      <Eye size={22} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-4 text-sm text-[#aeb4c0]">
+                  <label className="inline-flex items-center gap-3">
+                    <input type="checkbox" className="h-5 w-5 rounded border-[#303a4f] bg-[#101520] accent-[#ff2337]" />
+                    {tr('Remember me', 'Meni eslab qolish')}
+                  </label>
+                  <button type="button" className="transition hover:text-white">
+                    {tr('Forgot password?', 'Parolni unutdingizmi?')}
+                  </button>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="mt-8 flex min-h-[66px] w-full items-center justify-center gap-3 rounded-lg bg-gradient-to-r from-[#ff142c] to-[#b60919] px-4 text-base font-extrabold text-white shadow-[0_18px_48px_rgba(239,35,60,0.3)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  <Lock size={22} />
+                  {loading ? resolveLocalizedText(content.submittingLabel, language) : resolveLocalizedText(content.submitLabel, language)}
+                </button>
+              </form>
+
+              <div className="my-9 flex items-center gap-5 text-base text-[#b2b8c5]">
+                <div className="h-px flex-1 bg-[#273142]" />
+                {tr('or', 'yoki')}
+                <div className="h-px flex-1 bg-[#273142]" />
+              </div>
+
+              <div className="rounded-lg border border-[#273142] bg-[#111622]/72 p-6">
+                <div className="flex items-center gap-5">
+                  <ShieldCheck size={38} className="shrink-0 text-[#ff2337]" />
+                  <div>
+                    <div className="text-base font-extrabold leading-6 text-white">
+                      {resolveLocalizedText(content.footerNote, language)}
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-[#9ea6b5]">
+                      {tr('All data is protected by modern encryption standards.', 'Barcha ma’lumotlar zamonaviy shifrlash standartlari bilan himoyalangan.')}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
         </div>
-      </div>
+      </main>
     </div>
   );
 }

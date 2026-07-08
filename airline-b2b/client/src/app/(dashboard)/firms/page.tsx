@@ -5,7 +5,7 @@ import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { Plus, X } from 'lucide-react';
+import { Plus, Save, Trash2, X } from 'lucide-react';
 import type { AxiosError } from 'axios';
 import Link from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -25,15 +25,31 @@ type CreateFirmInviteResponse = {
   firmId?: string | null;
   expiresAt?: string;
   link?: string;
+  accountCreated?: boolean;
 };
 
 type FirmRow = {
   id: string;
   name: string;
+  contactFullName?: string | null;
+  phone?: string | null;
+  subscriptionEndsAt?: string | null;
   creditLimit?: number | string;
+  currency?: string;
+  status?: string;
   balance?: number | string;
   outstanding?: number | string;
   createdAt: string;
+};
+
+type FirmDraft = {
+  name: string;
+  contactFullName: string;
+  phone: string;
+  subscriptionEndsAt: string;
+  creditLimit: string;
+  currency: string;
+  status: string;
 };
 
 export default function FirmsPage() {
@@ -42,13 +58,20 @@ export default function FirmsPage() {
   const queryClient = useQueryClient();
 
   const role = (user?.role || '').toString().toUpperCase();
-  const canManage = role === 'ADMIN' || role === 'SUPERADMIN';
+  const canManage = role === 'ADMIN' || role === 'SUPERADMIN' || role === 'FIRM';
+  const isSuperAdmin = role === 'SUPERADMIN';
+  const isFirmUser = role === 'FIRM';
 
   const [firmName, setFirmName] = useState('');
   const [email, setEmail] = useState('');
+  const [initialPassword, setInitialPassword] = useState('');
+  const [contactFullName, setContactFullName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [subscriptionDays, setSubscriptionDays] = useState('30');
   const [submitting, setSubmitting] = useState(false);
   const [savingCreditFirmId, setSavingCreditFirmId] = useState<string | null>(null);
-  const [creditDrafts, setCreditDrafts] = useState<Record<string, string>>({});
+  const [deletingFirmId, setDeletingFirmId] = useState<string | null>(null);
+  const [firmDrafts, setFirmDrafts] = useState<Record<string, FirmDraft>>({});
   const [firmSearch, setFirmSearch] = useState('');
   const [sortKey, setSortKey] = useState<'name' | 'balance' | 'outstanding' | 'creditLimit'>('outstanding');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
@@ -75,10 +98,6 @@ export default function FirmsPage() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canManage) {
-      toast.error(tr('Not authorized', "Ruxsat yo'q"));
-      return;
-    }
 
     const trimmedName = firmName.trim();
     const trimmedEmail = email.trim();
@@ -87,20 +106,64 @@ export default function FirmsPage() {
       toast.error(tr('Firm name is required', 'Firma nomi kerak'));
       return;
     }
-    if (!trimmedEmail) {
+    if (isSuperAdmin && !trimmedEmail) {
       toast.error(tr('Firm email is required', 'Firma emaili kerak'));
+      return;
+    }
+    if (isSuperAdmin && initialPassword.length < 6) {
+      toast.error(tr('Password must be at least 6 characters', 'Parol kamida 6 ta belgidan iborat bo\'lishi kerak'));
+      return;
+    }
+    if (!contactFullName.trim()) {
+      toast.error(tr('Full name is required', 'To\'liq ism kerak'));
+      return;
+    }
+    if (!phone.trim()) {
+      toast.error(tr('Phone number is required', 'Telefon raqam kerak'));
+      return;
+    }
+    if (!subscriptionDays.trim() || !Number.isFinite(Number(subscriptionDays)) || Number(subscriptionDays) <= 0) {
+      toast.error(tr('Enter subscription duration in days', 'Obuna muddatini kunlarda kiriting'));
       return;
     }
 
     setSubmitting(true);
     try {
-      const res = await api.post<CreateFirmInviteResponse>('/invites', {
-        email: trimmedEmail,
-        role: 'FIRM',
-        firmName: trimmedName,
-      });
+      if (!isSuperAdmin) {
+        const subscriptionEndsAt = new Date(Date.now() + Number(subscriptionDays) * 24 * 60 * 60 * 1000).toISOString();
+        const res = await api.post<FirmRow>('/firms', {
+          name: trimmedName,
+          contactFullName: contactFullName.trim(),
+          phone: phone.trim(),
+          subscriptionEndsAt,
+          currency: 'USD',
+        });
 
-      const { inviteId, token, firmId, expiresAt, link } = res.data;
+        setCreatedFirmId(res.data.id);
+        setInviteLink(null);
+        setInviteExpiresAt(null);
+        setFirmName('');
+        setContactFullName('');
+        setPhone('');
+        setSubscriptionDays('30');
+        toast.success(isFirmUser
+          ? tr('Partner firm added.', 'Partner firma qo\'shildi.')
+          : tr('Firm added.', 'Firma qo\'shildi.'));
+        queryClient.invalidateQueries({ queryKey: ['firms'] });
+        return;
+      }
+
+      const res = await api.post<CreateFirmInviteResponse>('/invites', {
+          email: trimmedEmail,
+          role: 'FIRM',
+          firmName: trimmedName,
+          password: initialPassword,
+          fullName: contactFullName.trim(),
+          phone: phone.trim(),
+          subscriptionDays: Number(subscriptionDays),
+        });
+
+      const { inviteId, token, firmId, expiresAt, link, accountCreated } = res.data;
 
       let tokenFromLink: string | null = null;
       let idFromLink: string | null = null;
@@ -145,13 +208,20 @@ export default function FirmsPage() {
           : `${baseOrigin}/invite/accept`;
       })();
 
-      setInviteLink(computedLink);
-      setInviteExpiresAt(expiresAt || null);
+      setInviteLink(accountCreated ? null : computedLink);
+      setInviteExpiresAt(accountCreated ? null : (expiresAt || null));
       setCreatedFirmId(firmId ? String(firmId) : null);
 
       setFirmName('');
       setEmail('');
-      toast.success(tr('Firm created. Invite link generated.', 'Firma yaratildi. Taklif havolasi yaratildi.'));
+      setInitialPassword('');
+      setContactFullName('');
+      setPhone('');
+      setSubscriptionDays('30');
+      toast.success(accountCreated
+        ? tr('Firm and login account created.', 'Firma va login akkaunt yaratildi.')
+        : tr('Firm created. Invite link generated.', 'Firma yaratildi. Taklif havolasi yaratildi.'));
+      queryClient.invalidateQueries({ queryKey: ['firms'] });
       // Optional: Since firm is technically tracked via invite first then created on accept, wait it is created initially:
       // In this setup, maybe the firm is not instantly accepted but listed anyway if it's returning firmId. 
       // Let's refetch or window.location.reload() later, just to be safe. We don't have queryClient exposed here yet, but a page reload isn't needed. 
@@ -177,17 +247,69 @@ export default function FirmsPage() {
     return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Number.isFinite(n) ? n : 0);
   };
 
-  const saveCreditLimit = async (firmId: string, currentValue: unknown) => {
-    const value = creditDrafts[firmId] ?? String(currentValue ?? '0');
+  const getFirmDraft = (firm: FirmRow): FirmDraft => firmDrafts[firm.id] ?? {
+    name: firm.name || '',
+    contactFullName: firm.contactFullName || '',
+    phone: firm.phone || '',
+    subscriptionEndsAt: firm.subscriptionEndsAt ? String(firm.subscriptionEndsAt).slice(0, 10) : '',
+    creditLimit: String(Math.round(Number(firm.creditLimit || 0))),
+    currency: String(firm.currency || 'USD'),
+    status: String(firm.status || 'ACTIVE'),
+  };
+
+  const setFirmDraft = (firm: FirmRow, patch: Partial<FirmDraft>) => {
+    setFirmDrafts((drafts) => ({
+      ...drafts,
+      [firm.id]: { ...getFirmDraft(firm), ...patch },
+    }));
+  };
+
+  const saveFirm = async (firm: FirmRow) => {
+    if (!isSuperAdmin) return;
+    const row = getFirmDraft(firm);
+    if (!row.name.trim()) {
+      toast.error(tr('Firm name is required', 'Firma nomi kerak'));
+      return;
+    }
     try {
-      setSavingCreditFirmId(firmId);
-      await api.patch(`/firms/${firmId}`, { creditLimit: value.trim() || '0' });
-      toast.success(tr('Credit limit saved', 'Kredit limiti saqlandi'));
+      setSavingCreditFirmId(firm.id);
+      await api.patch(`/firms/${firm.id}`, {
+        name: row.name.trim(),
+        contactFullName: row.contactFullName.trim(),
+        phone: row.phone.trim(),
+        subscriptionEndsAt: row.subscriptionEndsAt || null,
+        creditLimit: row.creditLimit.trim() || '0',
+        currency: row.currency.trim().toUpperCase() || 'USD',
+        status: row.status,
+      });
+      toast.success(tr('Firm updated', 'Firma yangilandi'));
+      setFirmDrafts((drafts) => {
+        const next = { ...drafts };
+        delete next[firm.id];
+        return next;
+      });
       queryClient.invalidateQueries({ queryKey: ['firms'] });
     } catch (error: unknown) {
-      toast.error(getApiErrorMessage(error) || tr('Failed to save credit limit', 'Kredit limitini saqlab bo\'lmadi'));
+      toast.error(getApiErrorMessage(error) || tr('Failed to update firm', 'Firmani yangilab bo\'lmadi'));
     } finally {
       setSavingCreditFirmId(null);
+    }
+  };
+
+  const deleteFirm = async (firm: FirmRow) => {
+    if (!isSuperAdmin || deletingFirmId) return;
+    const confirmed = window.confirm(tr(`Delete ${firm.name}?`, `${firm.name} o'chirilsinmi?`));
+    if (!confirmed) return;
+
+    try {
+      setDeletingFirmId(firm.id);
+      await api.delete(`/firms/${firm.id}`);
+      toast.success(tr('Firm deleted', 'Firma o\'chirildi'));
+      queryClient.invalidateQueries({ queryKey: ['firms'] });
+    } catch (error: unknown) {
+      toast.error(getApiErrorMessage(error) || tr('Failed to delete firm', 'Firmani o\'chirib bo\'lmadi'));
+    } finally {
+      setDeletingFirmId(null);
     }
   };
 
@@ -219,12 +341,20 @@ export default function FirmsPage() {
   };
 
   const sortLabel = (key: typeof sortKey) => sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
+  const subscriptionLabel = (value?: string | null) => {
+    if (!value) return tr('No subscription', 'Obuna yo\'q');
+    const end = new Date(value);
+    if (Number.isNaN(end.getTime())) return '-';
+    const days = Math.ceil((end.getTime() - Date.now()) / 86400000);
+    if (days < 0) return tr('Expired', 'Muddati tugagan');
+    return `${days} ${tr('days left', 'kun qoldi')}`;
+  };
 
   if (!canManage) {
     return (
       <div className="text-foreground">
         <h2 className="text-2xl font-bold text-foreground">{tr('Firms', 'Firmalar')}</h2>
-        <p className="mt-2 text-muted">{tr('Only admins can create firms.', 'Faqat adminlar firmalarni yaratishi mumkin.')}</p>
+        <p className="mt-2 text-muted">{tr('You do not have access to firms.', 'Firmalarga kirish huquqingiz yo\'q.')}</p>
       </div>
     );
   }
@@ -235,13 +365,24 @@ export default function FirmsPage() {
         <div>
           <h2 className="text-3xl font-bold text-foreground">{tr('Firms', 'Firmalar')}</h2>
           <p className="mt-1 text-sm text-muted">
-            {tr('Create a firm and generate a one-time invite link.', 'Firma yarating va bir martalik taklif havolasini yarating.')}
+            {isSuperAdmin
+              ? tr('Create firms, edit firm names, and manage system-wide firm settings.', 'Firmalar yarating, firma nomlarini tahrirlang va system-wide sozlamalarni boshqaring.')
+              : isFirmUser
+                ? tr('Add and view partner firms created by your firm.', 'Firmangiz yaratgan partner firmalarni qo\'shing va ko\'ring.')
+                : tr('Add firms and view firms assigned to your admin access.', 'Firmalar qo\'shing va admin accessingizga biriktirilgan firmalarni ko\'ring.')}
           </p>
         </div>
       </div>
 
-      <div className="bg-surface-2 border border-border rounded-xl p-6 max-w-xl">
-        <h3 className="text-lg font-semibold text-foreground mb-4">{tr('Create new firm', 'Yangi firma yaratish')}</h3>
+      <div className="glass-panel p-6 max-w-xl">
+        <h3 className="text-lg font-semibold text-foreground mb-4">
+          {isSuperAdmin ? tr('Create new firm', 'Yangi firma yaratish') : tr('Add firm', 'Firma qo\'shish')}
+        </h3>
+        {!isSuperAdmin && (
+          <p className="mb-4 text-sm text-muted">
+            {tr('This creates a firm record without a login account or invite link.', 'Bu login akkaunt yoki invite linksiz firma record yaratadi.')}
+          </p>
+        )}
         <form onSubmit={handleCreate} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-muted mb-1">{tr('Firm name', 'Firma nomi')}</label>
@@ -254,14 +395,64 @@ export default function FirmsPage() {
             />
           </div>
 
+          {isSuperAdmin && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-muted mb-1">{tr('Firm email', 'Firma emaili')}</label>
+                <input
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  type="email"
+                  className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
+                  placeholder="firm@example.com"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-muted mb-1">{tr('Initial password', 'Boshlang\'ich parol')}</label>
+                <input
+                  value={initialPassword}
+                  onChange={(e) => setInitialPassword(e.target.value)}
+                  type="password"
+                  className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
+                  placeholder="••••••••"
+                  required
+                />
+              </div>
+            </>
+          )}
+
           <div>
-            <label className="block text-sm font-medium text-muted mb-1">{tr('Firm email', 'Firma emaili')}</label>
+            <label className="block text-sm font-medium text-muted mb-1">{tr('Full name', 'To\'liq ism')}</label>
             <input
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              type="email"
+              value={contactFullName}
+              onChange={(e) => setContactFullName(e.target.value)}
               className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
-              placeholder="firm@example.com"
+              placeholder={tr('Responsible person', 'Mas\'ul shaxs')}
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-muted mb-1">{tr('Phone number', 'Telefon raqam')}</label>
+            <input
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
+              placeholder="+998..."
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-muted mb-1">{tr('Subscription duration (days)', 'Obuna muddati (kun)')}</label>
+            <input
+              inputMode="numeric"
+              value={subscriptionDays}
+              onChange={(e) => setSubscriptionDays(e.target.value)}
+              className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
+              placeholder="30"
               required
             />
           </div>
@@ -274,12 +465,14 @@ export default function FirmsPage() {
             <Plus size={18} />
             {submitting
               ? tr('Creating...', 'Yaratilmoqda...')
-              : tr('Create firm & generate link', 'Firma yaratish va taklif havolasini yaratish')}
+              : isSuperAdmin
+                ? tr('Create firm & generate link', 'Firma yaratish va taklif havolasini yaratish')
+                : tr('Add firm', 'Firma qo\'shish')}
           </button>
         </form>
       </div>
 
-      <div className="border border-border bg-surface">
+      <div className="glass-panel">
         <div className="grid grid-cols-1 gap-2 border-b border-border px-3 py-2 md:grid-cols-[1fr_auto] md:items-end">
           <div>
             <label htmlFor="firmSearch" className="compact-label">{tr('Search firms', 'Firmalarni qidirish')}</label>
@@ -321,19 +514,38 @@ export default function FirmsPage() {
                   </button>
                 </th>
                 <th>{tr('Registered', 'Ro\'yxatdan o\'tgan')}</th>
+                <th>{tr('Subscription', 'Obuna')}</th>
                 <th>{tr('Actions', 'Amallar')}</th>
               </tr>
             </thead>
             <tbody>
               {loadingFirms ? (
-                <tr><td colSpan={6} className="text-center text-muted">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
+                <tr><td colSpan={7} className="text-center text-muted">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
               ) : visibleFirms.length === 0 ? (
-                <tr><td colSpan={6} className="text-center text-muted">{tr('No firms found.', 'Guruhlar topilmadi.')}</td></tr>
-              ) : visibleFirms.map((firm) => (
+                <tr><td colSpan={7} className="text-center text-muted">{tr('No firms found.', 'Guruhlar topilmadi.')}</td></tr>
+              ) : visibleFirms.map((firm) => {
+                const draft = getFirmDraft(firm);
+                return (
                 <tr key={firm.id}>
                   <td>
-                    <div className="font-semibold">{firm.name}</div>
+                    {isSuperAdmin ? (
+                      <input
+                        value={draft.name}
+                        onChange={(e) => setFirmDraft(firm, { name: e.target.value })}
+                        className="compact-control min-w-[180px] font-semibold"
+                      />
+                    ) : (
+                      <div className="font-semibold">{firm.name}</div>
+                    )}
                     <div className="font-mono text-xs text-muted">{firm.id.slice(0, 8)}...</div>
+                    {isSuperAdmin ? (
+                      <div className="mt-2 grid gap-1">
+                        <input value={draft.contactFullName} onChange={(e) => setFirmDraft(firm, { contactFullName: e.target.value })} className="compact-control" placeholder={tr('Full name', 'To\'liq ism')} />
+                        <input value={draft.phone} onChange={(e) => setFirmDraft(firm, { phone: e.target.value })} className="compact-control" placeholder={tr('Phone', 'Telefon')} />
+                      </div>
+                    ) : (
+                      <div className="mt-1 text-xs text-muted">{firm.contactFullName || '-'} {firm.phone ? `· ${firm.phone}` : ''}</div>
+                    )}
                   </td>
                   <td className={`text-right font-mono font-bold ${Number(firm.balance || 0) < 0 ? 'text-red-600' : 'text-green-700'}`}>
                     {formatMoney(firm.balance)}
@@ -342,38 +554,68 @@ export default function FirmsPage() {
                     {formatMoney(firm.outstanding)}
                   </td>
                   <td className="text-right">
-                    <div className="flex min-w-[190px] items-center justify-end gap-2">
-                      <input
-                        type="number"
-                        min="0"
-                        step="1"
-                        value={creditDrafts[firm.id] ?? String(Math.round(Number(firm.creditLimit || 0)))}
-                        onChange={(e) => setCreditDrafts((drafts) => ({ ...drafts, [firm.id]: e.target.value }))}
-                        className="h-8 w-28 border border-border bg-surface px-2 text-right font-mono text-sm text-foreground outline-none focus:border-primary"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => saveCreditLimit(firm.id, firm.creditLimit)}
-                        disabled={savingCreditFirmId === firm.id}
-                        className="h-8 border border-border bg-surface-2 px-2 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50"
-                      >
-                        {savingCreditFirmId === firm.id ? tr('Saving', 'Saqlanmoqda') : tr('Save', 'Saqlash')}
-                      </button>
-                    </div>
+                    {isSuperAdmin ? (
+                      <div className="flex min-w-[190px] items-center justify-end gap-2">
+                        <input
+                          inputMode="decimal"
+                          value={draft.creditLimit}
+                          onChange={(e) => setFirmDraft(firm, { creditLimit: e.target.value })}
+                          className="compact-control w-28 text-right font-mono"
+                        />
+                        <input
+                          maxLength={3}
+                          value={draft.currency}
+                          onChange={(e) => setFirmDraft(firm, { currency: e.target.value.toUpperCase() })}
+                          className="compact-control w-20 uppercase"
+                        />
+                      </div>
+                    ) : (
+                      <span className="font-mono">{formatMoney(firm.creditLimit)}</span>
+                    )}
                   </td>
                   <td>{new Date(firm.createdAt).toLocaleDateString()}</td>
                   <td>
-                    <div className="flex gap-2">
+                    {isSuperAdmin ? (
+                      <div className="space-y-1">
+                        <input type="date" value={draft.subscriptionEndsAt} onChange={(e) => setFirmDraft(firm, { subscriptionEndsAt: e.target.value })} className="compact-control min-w-[150px]" />
+                        <div className="text-xs text-muted">{subscriptionLabel(draft.subscriptionEndsAt)}</div>
+                      </div>
+                    ) : subscriptionLabel(firm.subscriptionEndsAt)}
+                  </td>
+                  <td>
+                    <div className="flex flex-wrap gap-2">
+                      {isSuperAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => saveFirm(firm)}
+                          disabled={savingCreditFirmId === firm.id}
+                          className="inline-flex items-center gap-1 border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50"
+                        >
+                          <Save size={14} />
+                          {savingCreditFirmId === firm.id ? tr('Saving', 'Saqlanmoqda') : tr('Update', 'Yangilash')}
+                        </button>
+                      )}
                       <Link href={`/transactions?firmId=${encodeURIComponent(firm.id)}`} className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface">
                         {tr('History', 'Tarix')}
                       </Link>
                       <Link href={`/reports?firmId=${encodeURIComponent(firm.id)}`} className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface">
                         {tr('Report', 'Hisobot')}
                       </Link>
+                      {isSuperAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => deleteFirm(firm)}
+                          disabled={deletingFirmId === firm.id}
+                          className="inline-flex items-center gap-1 border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-500/20 disabled:opacity-50"
+                        >
+                          <Trash2 size={14} />
+                          {deletingFirmId === firm.id ? tr('Deleting', 'O\'chirilmoqda') : tr('Delete', 'O\'chirish')}
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         </div>

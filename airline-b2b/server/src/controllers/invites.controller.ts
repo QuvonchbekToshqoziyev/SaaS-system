@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcrypt';
 import { Role } from '@prisma/client';
 import jwt from 'jsonwebtoken';
+import { canAccessFirm } from '../utils/access';
 
 const ALLOWED_ROLES = new Set(Object.values(Role));
 
@@ -60,8 +61,13 @@ function resolvePublicWebOrigin(req: Request): string | undefined {
 }
 
 export const createInvite = async (req: Request, res: Response) => {
-  const { email, role, firmId, firmName } = req.body;
-  const createdBy = (req as any).user.userId;
+  const { email, role, firmId, firmName, fullName, phone, subscriptionDays, password: initialPassword } = req.body;
+  const authUser = ((req as any).user || {}) as { userId?: string; role?: string };
+  const createdBy = authUser.userId;
+  const actorRole = String(authUser.role || '').toUpperCase();
+  if (!createdBy) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
 
   if (!email || typeof email !== 'string') {
     return res.status(400).json({ error: 'Email is required' });
@@ -71,16 +77,36 @@ export const createInvite = async (req: Request, res: Response) => {
   if (!normalizedEmail) {
     return res.status(400).json({ error: 'Email is required' });
   }
+  const initialPasswordValue = typeof initialPassword === 'string' ? initialPassword : '';
+  if (initialPasswordValue && initialPasswordValue.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  }
 
   const upperRole = typeof role === 'string' ? role.toUpperCase() : '';
   const roleValue: Role = ALLOWED_ROLES.has(upperRole as Role) ? (upperRole as Role) : Role.FIRM;
+  const normalizedFullName = typeof fullName === 'string' ? fullName.trim() : '';
+  const normalizedPhone = typeof phone === 'string' ? phone.trim() : '';
+  const durationDays = Number(subscriptionDays || 0);
+  const subscriptionEndsAt = Number.isFinite(durationDays) && durationDays > 0
+    ? new Date(Date.now() + Math.floor(durationDays) * 24 * 60 * 60 * 1000)
+    : undefined;
 
   let resolvedFirmId: string | undefined = typeof firmId === 'string' ? firmId : undefined;
+
+  if (actorRole !== 'SUPERADMIN' && roleValue !== Role.FIRM) {
+    return res.status(403).json({ error: 'Only superadmin can invite admins' });
+  }
+  if (actorRole !== 'SUPERADMIN' && !resolvedFirmId) {
+    return res.status(403).json({ error: 'Only superadmin can create new firms' });
+  }
 
   if (resolvedFirmId) {
     const firm = await prisma.firm.findUnique({ where: { id: resolvedFirmId } });
     if (!firm) {
       return res.status(400).json({ error: 'Firm not found' });
+    }
+    if (!(await canAccessFirm(authUser, resolvedFirmId))) {
+      return res.status(403).json({ error: 'Forbidden' });
     }
   }
 
@@ -92,9 +118,23 @@ export const createInvite = async (req: Request, res: Response) => {
     const newFirm = await prisma.firm.create({
       data: {
         name: firmName.trim(),
+        contactFullName: normalizedFullName || undefined,
+        phone: normalizedPhone || undefined,
+        subscriptionEndsAt,
+        createdByUserId: createdBy,
+        createdByRole: actorRole,
       },
     });
     resolvedFirmId = newFirm.id;
+  } else if (resolvedFirmId && roleValue === Role.FIRM) {
+    await prisma.firm.update({
+      where: { id: resolvedFirmId },
+      data: {
+        ...(normalizedFullName ? { contactFullName: normalizedFullName } : {}),
+        ...(normalizedPhone ? { phone: normalizedPhone } : {}),
+        ...(subscriptionEndsAt ? { subscriptionEndsAt } : {}),
+      },
+    });
   }
   
   const rawToken = crypto.randomBytes(32).toString('hex');
@@ -106,13 +146,48 @@ export const createInvite = async (req: Request, res: Response) => {
   const invite = await prisma.invitation.create({
     data: {
       email: normalizedEmail,
+      fullName: normalizedFullName || undefined,
+      phone: normalizedPhone || undefined,
       role: roleValue,
       firmId: resolvedFirmId,
       token: hashedToken,
       expiresAt,
+      subscriptionEndsAt,
       createdBy,
     }
   });
+
+  if (initialPasswordValue && roleValue === Role.FIRM) {
+    const hashedPassword = await bcrypt.hash(initialPasswordValue, 10);
+    await prisma.$transaction(async (tx) => {
+      const existingUser = await tx.user.findFirst({
+        where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+      });
+      if (existingUser) {
+        throw new Error('Account already exists for this email');
+      }
+      await tx.user.create({
+        data: {
+          email: normalizedEmail,
+          password: hashedPassword,
+          fullName: normalizedFullName || undefined,
+          phone: normalizedPhone || undefined,
+          role: roleValue,
+          firmId: resolvedFirmId,
+        },
+      });
+      await tx.invitation.update({
+        where: { id: invite.id },
+        data: { usedAt: new Date() },
+      });
+    });
+    return res.json({
+      inviteId: invite.id,
+      firmId: invite.firmId,
+      expiresAt: invite.expiresAt,
+      accountCreated: true,
+    });
+  }
 
   const origin = resolvePublicWebOrigin(req);
   const link = origin ? `${origin}/invite/accept?token=${rawToken}&id=${invite.id}` : undefined;
@@ -176,17 +251,26 @@ export const acceptInvite = async (req: Request, res: Response) => {
         data: {
           email: normalizedUserEmail,
           password: hashedPassword,
+          fullName: invite.fullName,
+          phone: invite.phone,
           role: invite.role,
           firmId: invite.firmId,
         }
       });
+
+      if (invite.firmId && invite.subscriptionEndsAt) {
+        await tx.firm.update({
+          where: { id: invite.firmId },
+          data: { subscriptionEndsAt: invite.subscriptionEndsAt },
+        });
+      }
 
       await tx.invitation.update({
         where: { id: invite.id },
         data: { usedAt: new Date() }
       });
 
-      return { id: user.id, email: user.email, role: user.role, firmId: user.firmId };
+      return { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, role: user.role, firmId: user.firmId };
     });
 
     const jwtToken = jwt.sign(

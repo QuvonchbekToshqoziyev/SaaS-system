@@ -3,7 +3,7 @@
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { usePathname } from 'next/navigation';
-import { PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, Wallet, PackageOpen } from 'lucide-react';
+import { PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, Wallet, PackageOpen, Users, ShieldCheck, MessageCircle, History } from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
 import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
@@ -31,19 +31,26 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   const navLinks = user.role === 'firm' ? [
     { key: 'navDashboard' as const, href: '/firm', icon: LayoutDashboard },
-    { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
-    { key: 'navTours' as const, href: '/tours', icon: PackageOpen },
-    { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
-    { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
-    { key: 'navReports' as const, href: '/reports', icon: BarChart3 },
-    { key: 'navSettings' as const, href: '/settings', icon: Settings },
-  ] : [
-    { key: 'navAdminDashboard' as const, href: '/admin', icon: LayoutDashboard },
     { key: 'navFirms' as const, href: '/firms', icon: UserCircle },
     { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
     { key: 'navTours' as const, href: '/tours', icon: PackageOpen },
     { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
     { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
+    { key: 'navEmployees' as const, href: '/employees', icon: Users },
+    { key: 'navChat' as const, href: '/chat', icon: MessageCircle },
+    { key: 'navReports' as const, href: '/reports', icon: BarChart3 },
+    { key: 'navSettings' as const, href: '/settings', icon: Settings },
+  ] : [
+    { key: 'navAdminDashboard' as const, href: '/admin', icon: LayoutDashboard },
+    ...(user.role === 'superadmin' ? [{ key: 'navAdmins' as const, href: '/admins', icon: ShieldCheck }] : []),
+    ...(user.role === 'superadmin' ? [{ key: 'navAuditLog' as const, href: '/audit-log', icon: History }] : []),
+    { key: 'navFirms' as const, href: '/firms', icon: UserCircle },
+    { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
+    { key: 'navTours' as const, href: '/tours', icon: PackageOpen },
+    { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
+    { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
+    { key: 'navEmployees' as const, href: '/employees', icon: Users },
+    { key: 'navChat' as const, href: '/chat', icon: MessageCircle },
     { key: 'navReports' as const, href: '/reports', icon: BarChart3 },
     { key: 'navSettings' as const, href: '/settings', icon: Settings },
   ];
@@ -58,12 +65,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const pageTitle = t(activeNavLink?.key ?? navLinks[0].key);
 
   return (
-    <div className="flex min-h-screen md:h-screen bg-background text-foreground w-full font-sans overflow-hidden">
+    <div className="flex min-h-screen md:h-screen bg-transparent text-foreground w-full font-sans overflow-hidden">
       {/* Sidebar (desktop) */}
-      <div className="hidden w-[260px] md:flex flex-col h-full overflow-visible bg-surface border-r border-border z-30">
+      <div className="hidden w-[260px] md:flex flex-col h-full overflow-visible glass-soft border-r border-border z-30">
         {/* Sidebar Header */}
         <div className="h-[72px] px-6 flex items-center gap-3 shrink-0 relative border-b border-border">
-          <div className="w-[38px] h-[38px] shrink-0 bg-transparent flex items-center justify-center rounded-xl overflow-hidden shadow-sm shadow-primary/20">
+          <div className="w-[38px] h-[38px] shrink-0 bg-gradient-to-br from-emerald-500 to-yellow-600 flex items-center justify-center rounded-xl overflow-hidden shadow-sm shadow-primary/20">
             <img src="/ADO-icon.png" alt="ADO Logo" className="w-full h-full object-contain p-1" />
           </div>
           <div className="flex flex-col justify-center">
@@ -85,8 +92,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 href={link.href}
                 aria-label={t(link.key)}
                 className={`flex items-center gap-3 px-3 py-2 rounded-md text-[14px] font-medium tracking-wide ${
-                  isActive 
-                    ? 'bg-surface-2 text-foreground border border-border' 
+                  isActive
+                    ? 'bg-surface-2 text-foreground border border-border shadow-sm'
                     : 'text-muted hover:bg-surface-2 hover:text-foreground'
                 }`}
               >
@@ -100,7 +107,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         {/* User Info / Logout */}
         <div className="p-4 mt-auto border-t border-border shrink-0 flex flex-col gap-3">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-surface-2 border border-border flex items-center justify-center shadow-inner shrink-0">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-yellow-600 border border-border flex items-center justify-center shadow-inner shrink-0">
               <UserCircle size={22} className="text-muted" />
             </div>
             <div className="overflow-hidden w-full px-2">
@@ -120,9 +127,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       </div>
 
       {/* Main Container */}
-      <div className="flex-1 flex flex-col overflow-hidden relative bg-surface-2/30">
+      <div className="flex-1 flex flex-col overflow-hidden relative">
         {/* Top Header */}
-        <header className="h-[72px] px-4 lg:px-6 flex items-center justify-between gap-4 bg-surface border-b border-border shrink-0 sticky top-0 z-20">
+        <header className="h-[72px] px-4 lg:px-6 flex items-center justify-between gap-4 glass-soft border-b border-border shrink-0 sticky top-0 z-20">
           <div className="flex items-center gap-4">
             <h2 className="text-xl md:text-2xl font-bold tracking-tight text-foreground">
               {pageTitle}
@@ -143,7 +150,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
         </header>
 
-        <nav className="md:hidden flex gap-1 overflow-x-auto border-b border-border bg-surface px-2 py-2 scroller-minimal">
+        <nav className="md:hidden flex gap-1 overflow-x-auto border-b border-border glass-soft px-2 py-2 scroller-minimal">
           {navLinks.map((link) => {
             const isActive = pathname === link.href || (link.href !== '/firm' && link.href !== '/admin' && pathname.startsWith(link.href));
             return (

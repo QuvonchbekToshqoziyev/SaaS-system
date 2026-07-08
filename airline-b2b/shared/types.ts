@@ -23,6 +23,7 @@ export type Firm = {
 export type Transaction = {
   id: string;
   firmId?: string;
+  kassaDeskId?: string | null;
   flightId?: string;
   ticketId?: string;
   createdByUserId?: string;
@@ -35,6 +36,14 @@ export type Transaction = {
   createdAt: string;
   firm?: Firm;
   flight?: Flight;
+  kassaDesk?: {
+    id: string;
+    firmId?: string;
+    firm?: Firm | null;
+    name: string;
+    code?: string | null;
+    status?: string;
+  } | null;
 };
 
 export type ApiErrorResponse = {
@@ -58,6 +67,19 @@ export type KassaDay = {
   notes?: string | null;
 };
 
+export type KassaDesk = {
+  id: string;
+  firmId: string;
+  firm?: Firm | null;
+  name: string;
+  code?: string | null;
+  status: string;
+  createdByUserId?: string | null;
+  createdBy?: { id: string; email: string } | null;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type KassaDuePayment = {
   firmId: string;
   firmName: string | null;
@@ -73,6 +95,7 @@ export type KassaDaySummary = {
   businessDate: string;
   status: KassaStatus;
   kassa: KassaDay | null;
+  kassaDesks?: KassaDesk[];
   totals: {
     cashTotal: number;
     cardTotal: number;

@@ -1,12 +1,18 @@
 import { Request, Response } from 'express';
 import {
   closeKassaService,
+  createKassaDeskService,
+  createPaymentCardService,
   getKassaDayService,
   getKassaHistoryService,
+  listKassaDesksService,
+  listPaymentCardsService,
   openKassaService,
+  reopenKassaService,
   ServiceError,
   type AuthUser,
 } from '../services/kassa.service';
+import { writeAuditLog } from '../utils/audit';
 
 function getAuthUser(req: Request): AuthUser {
   return ((req as any).user || {}) as AuthUser;
@@ -23,7 +29,9 @@ function sendError(res: Response, err: unknown) {
 export const getKassaDay = async (req: Request, res: Response) => {
   try {
     const rawDate = req.query.date ?? req.body?.businessDate ?? req.body?.date;
-    const result = await getKassaDayService(getAuthUser(req), rawDate);
+    const result = await getKassaDayService(getAuthUser(req), rawDate, {
+      kassaDeskId: req.query.kassaDeskId ?? req.body?.kassaDeskId,
+    });
     return res.json(result);
   } catch (err) {
     return sendError(res, err);
@@ -35,6 +43,14 @@ export const openKassa = async (req: Request, res: Response) => {
     const result = await openKassaService(getAuthUser(req), {
       businessDate: req.body?.businessDate,
       openingBalance: req.body?.openingBalance,
+    });
+    await writeAuditLog(req, {
+      action: 'OPEN',
+      entityType: 'kassaDay',
+      entityId: result.kassa.id,
+      entityLabel: result.kassa.businessDate,
+      summary: `Opened kassa for ${result.kassa.businessDate}`,
+      after: result.kassa,
     });
     return res.status(201).json(result);
   } catch (err) {
@@ -49,6 +65,34 @@ export const closeKassa = async (req: Request, res: Response) => {
       closingBalance: req.body?.closingBalance,
       notes: req.body?.notes,
     });
+    await writeAuditLog(req, {
+      action: 'CLOSE',
+      entityType: 'kassaDay',
+      entityId: result.kassa.id,
+      entityLabel: result.kassa.businessDate,
+      summary: `Closed kassa for ${result.kassa.businessDate}`,
+      after: result.kassa,
+    });
+    return res.json(result);
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
+export const reopenKassa = async (req: Request, res: Response) => {
+  try {
+    const result = await reopenKassaService(getAuthUser(req), {
+      businessDate: req.body?.businessDate,
+      notes: req.body?.notes,
+    });
+    await writeAuditLog(req, {
+      action: 'REOPEN',
+      entityType: 'kassaDay',
+      entityId: result.kassa.id,
+      entityLabel: result.kassa.businessDate,
+      summary: `Reopened kassa for ${result.kassa.businessDate}`,
+      after: result.kassa,
+    });
     return res.json(result);
   } catch (err) {
     return sendError(res, err);
@@ -62,6 +106,68 @@ export const getKassaHistory = async (req: Request, res: Response) => {
       limit: req.query.limit,
     });
     return res.json(result);
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
+export const listPaymentCards = async (req: Request, res: Response) => {
+  try {
+    const result = await listPaymentCardsService(getAuthUser(req));
+    return res.json(result);
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
+export const listKassaDesks = async (req: Request, res: Response) => {
+  try {
+    const result = await listKassaDesksService(getAuthUser(req));
+    return res.json(result);
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
+export const createKassaDesk = async (req: Request, res: Response) => {
+  try {
+    const result = await createKassaDeskService(getAuthUser(req), {
+      firmId: req.body?.firmId,
+      name: req.body?.name,
+      code: req.body?.code,
+      status: req.body?.status,
+    });
+    await writeAuditLog(req, {
+      action: 'CREATE',
+      entityType: 'kassaDesk',
+      entityId: result.id,
+      entityLabel: result.name,
+      summary: `Created kassa desk ${result.name}`,
+      after: result,
+    });
+    return res.status(201).json(result);
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
+export const createPaymentCard = async (req: Request, res: Response) => {
+  try {
+    const result = await createPaymentCardService(getAuthUser(req), {
+      ownerName: req.body?.ownerName,
+      cardNumber: req.body?.cardNumber,
+      currency: req.body?.currency,
+      firmId: req.body?.firmId,
+    });
+    await writeAuditLog(req, {
+      action: 'CREATE',
+      entityType: 'paymentCard',
+      entityId: result.id,
+      entityLabel: result.ownerName,
+      summary: `Created payment card ${result.ownerName}`,
+      after: result,
+    });
+    return res.status(201).json(result);
   } catch (err) {
     return sendError(res, err);
   }

@@ -8,6 +8,8 @@ export type NormalizedRole = 'superadmin' | 'admin' | 'firm';
 export interface User {
   id: string;
   email: string;
+  fullName?: string | null;
+  phone?: string | null;
   role: NormalizedRole;
   firmId: string | null;
 }
@@ -41,6 +43,8 @@ function normalizeUser(raw: unknown): User | null {
   return {
     id: typeof idVal === 'string' ? idVal : idVal ? String(idVal) : '',
     email: emailVal,
+    fullName: typeof obj.fullName === 'string' ? obj.fullName : null,
+    phone: typeof obj.phone === 'string' ? obj.phone : null,
     role: normalizeRole(obj.role),
     firmId,
   };

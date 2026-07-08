@@ -1,9 +1,9 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma, Role } from '@prisma/client';
-import { assertKassaOpenForDate, startOfDayUtc, nextDayUtc } from '../utils/kassa';
-
-const BASE_CURRENCY = 'UZS' as const;
+import { assertKassaOpenForDate, startOfDayUtc } from '../utils/kassa';
+import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
+import { assertActiveKassaDesk, assertKassaDeskForFirmSelection } from '../utils/kassa-desk-policy';
 
 type AuthUser = {
   userId?: string;
@@ -28,17 +28,46 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function parseDecimal(value: unknown): Prisma.Decimal | undefined {
-  if (value instanceof Prisma.Decimal) return value;
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) return undefined;
-    return new Prisma.Decimal(String(value));
-  }
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!trimmed) return undefined;
-    return new Prisma.Decimal(trimmed);
+  try {
+    if (value instanceof Prisma.Decimal) return value;
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) return undefined;
+      return new Prisma.Decimal(String(value));
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return undefined;
+      return new Prisma.Decimal(trimmed);
+    }
+  } catch {
+    return undefined;
   }
   return undefined;
+}
+
+async function resolveKassaDesk(authUser: AuthUser, rawKassaDeskId: unknown) {
+  const kassaDeskId = typeof rawKassaDeskId === 'string' ? rawKassaDeskId.trim() : '';
+  if (!kassaDeskId) return null;
+
+  const desk = await prisma.kassaDesk.findUnique({
+    where: { id: kassaDeskId },
+    select: { id: true, firmId: true, name: true, status: true, deletedAt: true },
+  });
+  assertActiveKassaDesk(desk);
+
+  const accessibleFirmIds = await getAccessibleFirmIds(authUser);
+  if (accessibleFirmIds && !accessibleFirmIds.includes(desk.firmId)) {
+    throw new Error('Forbidden');
+  }
+
+  return desk;
+}
+
+async function assertKassaDeskForFirm(kassaDesk: Awaited<ReturnType<typeof resolveKassaDesk>>, firmId: string) {
+  const activeDeskCount = await prisma.kassaDesk.count({
+    where: { firmId, status: 'ACTIVE', deletedAt: null },
+  });
+  assertKassaDeskForFirmSelection(kassaDesk, firmId, activeDeskCount);
 }
 
 const PAYMENT_METHODS = new Set(['cash', 'card']);
@@ -54,12 +83,13 @@ export const processPayment = async (req: Request, res: Response) => {
   const rawCurrency = (req.body as any)?.currency;
   const rawMethod = (req.body as any)?.method;
   const rawMetadata = (req.body as any)?.metadata;
-  const rawExchangeRate = (req.body as any)?.exchangeRate;
+  const rawPaymentCardId = (req.body as any)?.paymentCardId ?? (req.body as any)?.cardId;
+  const rawKassaDeskId = (req.body as any)?.kassaDeskId;
 
   const method = String(rawMethod || '').trim().toLowerCase();
   const currency = normalizeCurrency(rawCurrency);
   const amount = parseDecimal(rawAmount);
-  const manualExchangeRate = parseDecimal(rawExchangeRate);
+  const paymentCardId = typeof rawPaymentCardId === 'string' ? rawPaymentCardId.trim() : '';
 
   let firmId = typeof rawFirmId === 'string' ? rawFirmId.trim() : '';
   const flightId = typeof rawFlightId === 'string' ? rawFlightId.trim() : '';
@@ -73,6 +103,8 @@ export const processPayment = async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Forbidden' });
     }
     firmId = ownFirmId;
+  } else if (role === 'ADMIN' && firmId && !(await canAccessFirm(authUser, firmId))) {
+    return res.status(403).json({ error: 'Forbidden' });
   }
 
   if (!firmId || !amount || !currency || !method) {
@@ -86,6 +118,14 @@ export const processPayment = async (req: Request, res: Response) => {
   }
   if (!amount.gt(0)) {
     return res.status(400).json({ error: 'Amount must be greater than 0' });
+  }
+
+  let kassaDesk: Awaited<ReturnType<typeof resolveKassaDesk>> = null;
+  try {
+    kassaDesk = await resolveKassaDesk(authUser, rawKassaDeskId);
+    await assertKassaDeskForFirm(kassaDesk, firmId);
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message || 'Invalid kassa desk' });
   }
 
   if (!isPlainObject(rawMetadata)) {
@@ -104,25 +144,28 @@ export const processPayment = async (req: Request, res: Response) => {
   }
 
   if (method === 'card') {
-    const ref = rawMetadata.transaction_reference;
-    const provider = rawMetadata.payment_provider;
-    if (typeof ref !== 'string' || !ref.trim()) {
-      return res.status(400).json({ error: 'Card requires transaction_reference in metadata' });
-    }
-    if (typeof provider !== 'string' || !provider.trim()) {
-      return res.status(400).json({ error: 'Card requires payment_provider in metadata' });
+    if (!paymentCardId) {
+      return res.status(400).json({ error: 'Card payment requires paymentCardId' });
     }
   }
 
   try {
     await prisma.$transaction(async (tx) => {
-      const [firm, flight] = await Promise.all([
+      const [firm, flight, paymentCard] = await Promise.all([
         tx.firm.findUnique({ where: { id: firmId }, select: { id: true, name: true } }),
         flightId ? tx.flight.findUnique({ where: { id: flightId }, select: { id: true } }) : Promise.resolve(null),
+        paymentCardId
+          ? tx.paymentCard.findUnique({ where: { id: paymentCardId }, select: { id: true, ownerName: true, cardNumber: true, currency: true, status: true } })
+          : Promise.resolve(null),
       ]);
 
       if (!firm) throw new Error('Firm not found');
       if (flightId && !flight) throw new Error('Flight not found');
+      if (method === 'card') {
+        if (!paymentCard) throw new Error('Payment card not found');
+        if (paymentCard.status !== 'ACTIVE') throw new Error('Payment card is not active');
+        if (paymentCard.currency !== currency) throw new Error(`Selected card currency is ${paymentCard.currency}`);
+      }
 
       let paymentDate = new Date();
       if (method === 'cash') {
@@ -136,74 +179,12 @@ export const processPayment = async (req: Request, res: Response) => {
       }
 
       const dayStart = startOfDayUtc(paymentDate);
-      const dayEnd = nextDayUtc(paymentDate);
-      const dayKey = dayStart.toISOString().slice(0, 10);
-
       await assertKassaOpenForDate(dayStart);
 
+      // Payments are kept in the currency they were paid in. Do not force
+      // exchange-rate conversion for mixed-currency operational tracking.
       let exchangeRate = new Prisma.Decimal(1);
-      if (currency !== BASE_CURRENCY) {
-        if (manualExchangeRate) {
-          if (!manualExchangeRate.gt(0)) {
-            throw new Error('Invalid exchange rate');
-          }
-          exchangeRate = manualExchangeRate;
-
-          const existing = await tx.currencyRate.findFirst({
-            where: {
-              baseCurrency: BASE_CURRENCY,
-              targetCurrency: currency,
-              recordedAt: { gte: dayStart, lt: dayEnd },
-              rate: manualExchangeRate,
-            },
-            orderBy: { recordedAt: 'desc' },
-          });
-
-          if (!existing) {
-            await tx.currencyRate.create({
-              data: {
-                baseCurrency: BASE_CURRENCY,
-                targetCurrency: currency,
-                rate: manualExchangeRate.toDecimalPlaces(6),
-                source: 'manual',
-                recordedAt: dayStart,
-              },
-            });
-          }
-        } else {
-          const rate = await tx.currencyRate.findFirst({
-            where: {
-              baseCurrency: BASE_CURRENCY,
-              targetCurrency: currency,
-              recordedAt: { gte: dayStart, lt: dayEnd },
-            },
-            orderBy: { recordedAt: 'desc' },
-          });
-
-          const legacyRate = rate
-            ? null
-            : await tx.currencyRate.findFirst({
-                where: {
-                  baseCurrency: currency,
-                  targetCurrency: BASE_CURRENCY,
-                  recordedAt: { gte: dayStart, lt: dayEnd },
-                },
-                orderBy: { recordedAt: 'desc' },
-              });
-
-          const resolved = rate ?? legacyRate;
-          if (!resolved) {
-            throw new Error(`Missing exchange rate for ${currency} on ${dayKey}`);
-          }
-          exchangeRate = new Prisma.Decimal(String(resolved.rate));
-        }
-      }
-
-      if (!exchangeRate.gt(0)) {
-        throw new Error('Invalid exchange rate');
-      }
-
-      const baseAmount = amount.mul(exchangeRate).toDecimalPlaces(4);
+      const baseAmount = amount.toDecimalPlaces(4);
 
       await tx.transaction.create({
         data: {
@@ -214,14 +195,21 @@ export const processPayment = async (req: Request, res: Response) => {
           subjectId: flightId || firmId,
           flightId: flightId || undefined,
           createdByUserId: actorUserId,
+          kassaDeskId: kassaDesk?.id,
           type: 'PAYMENT',
           originalAmount: amount.toDecimalPlaces(4),
           currency,
           exchangeRate: exchangeRate.toDecimalPlaces(6),
           baseAmount,
           paymentMethod: method,
+          paymentCardId: method === 'card' ? paymentCardId : undefined,
           metadata: {
             ...(rawMetadata as Record<string, unknown>),
+            paymentCardId: method === 'card' ? paymentCardId : undefined,
+            kassaDeskId: kassaDesk?.id,
+            kassaDeskLabel: kassaDesk?.name,
+            paymentCardOwner: paymentCard?.ownerName,
+            paymentCardNumber: paymentCard?.cardNumber,
             payerLabel: firm.name,
             receiverLabel: 'Admin / Airline',
             directionLabel: `${firm.name} -> Admin / Airline`,

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { closeKassa, getKassaDay, getKassaHistory, openKassa } from '../controllers/kassa.controller';
+import { closeKassa, createKassaDesk, createPaymentCard, getKassaDay, getKassaHistory, listKassaDesks, listPaymentCards, openKassa, reopenKassa } from '../controllers/kassa.controller';
 import { authMiddleware } from '../middleware/auth';
 import { roleMiddleware } from '../middleware/role';
 
@@ -9,7 +9,12 @@ router.use(roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']));
 
 router.get('/', getKassaDay);
 router.get('/history', getKassaHistory);
-router.post('/open', roleMiddleware(['SUPERADMIN', 'ADMIN']), openKassa);
-router.post('/close', roleMiddleware(['SUPERADMIN', 'ADMIN']), closeKassa);
+router.get('/desks', listKassaDesks);
+router.get('/cards', listPaymentCards);
+router.post('/desks', roleMiddleware(['SUPERADMIN', 'ADMIN']), createKassaDesk);
+router.post('/cards', roleMiddleware(['SUPERADMIN', 'ADMIN']), createPaymentCard);
+router.post('/open', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), openKassa);
+router.post('/close', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), closeKassa);
+router.post('/reopen', roleMiddleware(['SUPERADMIN']), reopenKassa);
 
 export default router;

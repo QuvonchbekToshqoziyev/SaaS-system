@@ -1,8 +1,8 @@
 import { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../db';
-
-const BASE_CURRENCY = 'UZS';
+import { canAccessFirm } from '../utils/access';
+import { writeAuditLog } from '../utils/audit';
 
 type AuthUser = {
   userId?: string;
@@ -29,25 +29,6 @@ function parseDecimal(value: unknown): Prisma.Decimal | undefined {
   return undefined;
 }
 
-function parseOptionalDate(value: unknown): Date | undefined {
-  if (!value) return undefined;
-  const parsed = new Date(String(value));
-  if (Number.isNaN(parsed.getTime())) return undefined;
-  return parsed;
-}
-
-async function resolveExchangeRate(currency: string, explicitRate: Prisma.Decimal | undefined) {
-  if (currency === BASE_CURRENCY) return new Prisma.Decimal(1);
-  if (explicitRate?.gt(0)) return explicitRate;
-
-  const rate = await prisma.currencyRate.findFirst({
-    where: { baseCurrency: BASE_CURRENCY, targetCurrency: currency },
-    orderBy: { recordedAt: 'desc' },
-  });
-  if (!rate) throw new Error(`Missing exchange rate for ${currency}`);
-  return new Prisma.Decimal(String(rate.rate));
-}
-
 function actorFirmScope(req: Request) {
   const authUser = getAuthUser(req);
   const role = normalizeRole(authUser.role);
@@ -59,8 +40,8 @@ export const listTourPackages = async (req: Request, res: Response) => {
   const { role, firmId } = actorFirmScope(req);
   const status = String(req.query.status || 'ACTIVE').trim().toUpperCase();
 
-  const where: Prisma.TourPackageWhereInput = {};
-  if (status && status !== 'ALL') where.status = status;
+  const where: Prisma.TourPackageWhereInput = { status: { not: 'DELETED' }, deletedAt: null };
+  if (status && status !== 'ALL') where.status = status === 'DELETED' ? { not: 'DELETED' } : status;
   if (role === 'FIRM') {
     if (!firmId) return res.status(400).json({ error: 'Firm account is missing firmId' });
     where.OR = [
@@ -73,6 +54,7 @@ export const listTourPackages = async (req: Request, res: Response) => {
     where,
     include: {
       ownerFirm: { select: { id: true, name: true } },
+      flight: { select: { id: true, flightNumber: true, route: true, departure: true, arrival: true, currency: true } },
       sales: {
         include: {
           buyerFirm: { select: { id: true, name: true } },
@@ -93,38 +75,97 @@ export const createTourPackage = async (req: Request, res: Response) => {
   const body = req.body || {};
   const name = String(body.name || '').trim();
   const destination = String(body.destination || '').trim();
+  const flightId = String(body.flightId || '').trim();
   const quantity = Math.floor(Number(body.quantity || 0));
-  const unitPrice = parseDecimal(body.unitPrice);
+  const ticketPrice = parseDecimal(body.ticketPrice);
+  const servicePrice = parseDecimal(body.servicePrice);
+  const explicitUnitPrice = parseDecimal(body.unitPrice);
   const currency = normalizeCurrency(body.currency || 'UZS');
-  const ownerFirmId = role === 'FIRM' ? firmId : String(body.ownerFirmId || '').trim();
+  const ownerFirmId = firmId;
 
   if (role === 'FIRM' && !firmId) return res.status(400).json({ error: 'Firm account is missing firmId' });
-  if (!ownerFirmId || !name || !destination || !unitPrice || !currency) {
+  if (role !== 'FIRM') return res.status(403).json({ error: 'Only firm admins can create tour packages' });
+  if (!ownerFirmId || !flightId || !name || !ticketPrice || !servicePrice || !currency) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
   if (quantity <= 0) return res.status(400).json({ error: 'Quantity must be greater than 0' });
+  if (ticketPrice.lt(0) || servicePrice.lt(0)) return res.status(400).json({ error: 'Price parts cannot be negative' });
+  const unitPrice = explicitUnitPrice?.gt(0) ? explicitUnitPrice : ticketPrice.add(servicePrice);
   if (!unitPrice.gt(0)) return res.status(400).json({ error: 'Unit price must be greater than 0' });
+  if (!unitPrice.equals(ticketPrice.add(servicePrice))) {
+    return res.status(400).json({ error: 'Unit price must equal ticket price plus service price' });
+  }
   if (!/^[A-Z]{3}$/.test(currency)) return res.status(400).json({ error: 'Invalid currency code' });
 
-  const owner = await prisma.firm.findUnique({ where: { id: ownerFirmId }, select: { id: true } });
+  const [owner, flight] = await Promise.all([
+    prisma.firm.findUnique({ where: { id: ownerFirmId }, select: { id: true } }),
+    prisma.flight.findUnique({
+      where: { id: flightId },
+      select: { id: true, route: true },
+    }),
+  ]);
   if (!owner) return res.status(404).json({ error: 'Owner firm not found' });
+  if (!flight) return res.status(404).json({ error: 'Flight not found' });
 
-  const created = await prisma.tourPackage.create({
-    data: {
-      ownerFirmId,
-      name,
-      destination,
-      startDate: parseOptionalDate(body.startDate),
-      endDate: parseOptionalDate(body.endDate),
-      quantity,
-      availableQuantity: quantity,
-      unitPrice: unitPrice.toDecimalPlaces(4),
-      currency,
-      notes: typeof body.notes === 'string' ? body.notes.trim() : undefined,
-    },
-    include: { ownerFirm: { select: { id: true, name: true } }, sales: true },
+  let created: Awaited<ReturnType<typeof prisma.tourPackage.create>>;
+  try {
+    created = await prisma.$transaction(async (tx) => {
+      const tickets: Array<{ id: string }> = await tx.$queryRaw`
+        SELECT id
+        FROM "Ticket"
+        WHERE "flightId" = ${flightId}
+          AND "allocatedFirmId" = ${ownerFirmId}
+          AND status = 'ASSIGNED'
+          AND "deletedAt" IS NULL
+        ORDER BY "createdAt" ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT ${quantity}
+      `;
+
+      if (tickets.length < quantity) {
+        throw new Error(`Not enough assigned tickets to create this tour (requested ${quantity}, available ${tickets.length})`);
+      }
+
+      const ticketIds = tickets.map((ticket) => ticket.id);
+      await tx.ticket.updateMany({
+        where: { id: { in: ticketIds } },
+        data: { status: 'ALLOCATED' },
+      });
+
+      return tx.tourPackage.create({
+        data: {
+          ownerFirmId,
+          flightId,
+          name,
+          destination: destination || flight.route,
+          quantity,
+          availableQuantity: quantity,
+          unitPrice: unitPrice.toDecimalPlaces(4),
+          ticketPrice: ticketPrice.toDecimalPlaces(4),
+          servicePrice: servicePrice.toDecimalPlaces(4),
+          currency,
+          notes: typeof body.notes === 'string' ? body.notes.trim() : undefined,
+        },
+        include: {
+          ownerFirm: { select: { id: true, name: true } },
+          flight: { select: { id: true, flightNumber: true, route: true, departure: true, arrival: true, currency: true } },
+          sales: true,
+        },
+      });
+    });
+  } catch (err: any) {
+    return res.status(400).json({ error: err?.message || 'Failed to reserve tickets for tour package' });
+  }
+
+  await writeAuditLog(req, {
+    action: 'CREATE',
+    entityType: 'tourPackage',
+    entityId: created.id,
+    entityLabel: created.name,
+    summary: `Created tour package ${created.name}`,
+    after: created,
+    metadata: { reservedTicketCount: quantity },
   });
-
   res.status(201).json(created);
 };
 
@@ -135,20 +176,28 @@ export const sellTourPackage = async (req: Request, res: Response) => {
   const buyerFirmId = String(body.buyerFirmId || '').trim();
   const quantity = Math.floor(Number(body.quantity || 0));
   const overrideUnitPrice = parseDecimal(body.unitPrice);
-  const explicitRate = parseDecimal(body.exchangeRate);
 
   if (!packageId || !buyerFirmId) return res.status(400).json({ error: 'Missing required fields' });
   if (quantity <= 0) return res.status(400).json({ error: 'Quantity must be greater than 0' });
+  if (!['SUPERADMIN', 'ADMIN', 'FIRM'].includes(role)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
 
   try {
     const result = await prisma.$transaction(async (tx) => {
       const pkg = await tx.tourPackage.findUnique({
         where: { id: packageId },
-        include: { ownerFirm: { select: { id: true, name: true } } },
+        include: {
+          ownerFirm: { select: { id: true, name: true } },
+          flight: { select: { id: true, flightNumber: true, route: true } },
+        },
       });
       if (!pkg) throw new Error('Tour package not found');
       if (pkg.status !== 'ACTIVE') throw new Error('Tour package is not active');
       if (role === 'FIRM' && pkg.ownerFirmId !== firmId) throw new Error('Only the owner firm can sell this package');
+      if (role === 'ADMIN' && !(await canAccessFirm(authUser, pkg.ownerFirmId))) {
+        throw new Error('Only the owner firm admin can sell this package');
+      }
       if (buyerFirmId === pkg.ownerFirmId) throw new Error('Buyer and seller must be different firms');
       if (pkg.availableQuantity < quantity) throw new Error('Not enough package quantity available');
 
@@ -158,12 +207,13 @@ export const sellTourPackage = async (req: Request, res: Response) => {
       const unitPrice = overrideUnitPrice?.gt(0) ? overrideUnitPrice : new Prisma.Decimal(String(pkg.unitPrice));
       const totalAmount = unitPrice.mul(quantity).toDecimalPlaces(4);
       const currency = normalizeCurrency(pkg.currency);
-      const exchangeRate = await resolveExchangeRate(currency, explicitRate);
-      const baseAmount = totalAmount.mul(exchangeRate).toDecimalPlaces(4);
+      const exchangeRate = new Prisma.Decimal(1);
+      const baseAmount = totalAmount.toDecimalPlaces(4);
 
       const txRow = await tx.transaction.create({
         data: {
           firmId: pkg.ownerFirmId,
+          flightId: pkg.flightId || undefined,
           payerFirmId: buyerFirmId,
           receiverFirmId: pkg.ownerFirmId,
           direction: 'FIRM_TO_FIRM',
@@ -179,8 +229,13 @@ export const sellTourPackage = async (req: Request, res: Response) => {
             packageId,
             packageName: pkg.name,
             destination: pkg.destination,
+            flightId: pkg.flightId,
+            flightNumber: pkg.flight?.flightNumber,
+            flightRoute: pkg.flight?.route,
             quantity,
             unitPrice: unitPrice.toString(),
+            ticketPrice: pkg.ticketPrice.toString(),
+            servicePrice: pkg.servicePrice.toString(),
             payerLabel: buyer.name,
             receiverLabel: pkg.ownerFirm.name,
             directionLabel: `${buyer.name} -> ${pkg.ownerFirm.name}`,
@@ -217,6 +272,15 @@ export const sellTourPackage = async (req: Request, res: Response) => {
       return sale;
     });
 
+    await writeAuditLog(req, {
+      action: 'CREATE',
+      entityType: 'tourPackageSale',
+      entityId: result.id,
+      entityLabel: result.package?.name || packageId,
+      summary: `Sold tour package ${result.package?.name || packageId}`,
+      after: result,
+      metadata: { packageId, buyerFirmId, quantity },
+    });
     res.status(201).json(result);
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to sell tour package' });
@@ -234,7 +298,11 @@ export const listTourPackageSales = async (req: Request, res: Response) => {
   const sales = await prisma.tourPackageSale.findMany({
     where,
     include: {
-      package: true,
+      package: {
+        include: {
+          flight: { select: { id: true, flightNumber: true, route: true, departure: true, arrival: true, currency: true } },
+        },
+      },
       sellerFirm: { select: { id: true, name: true } },
       buyerFirm: { select: { id: true, name: true } },
       transaction: true,

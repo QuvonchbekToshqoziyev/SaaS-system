@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${BASE_URL:-https://quvonchbek.me}"
+BASE_URL="${BASE_URL:-https://b2b.booking.ado-finance.com}"
 
 get_etag() {
   local path="$1"

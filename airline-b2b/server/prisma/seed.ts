@@ -19,6 +19,9 @@ async function clearApplicationData() {
     prisma.flight.deleteMany({}),
     prisma.invitation.deleteMany({}),
     prisma.currencyRate.deleteMany({}),
+    prisma.siteContent.deleteMany({}),
+    prisma.employee.deleteMany({}),
+    prisma.userFirmAccess.deleteMany({}),
     prisma.user.deleteMany({}),
     prisma.firm.deleteMany({}),
   ]);

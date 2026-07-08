@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, Suspense, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, Suspense, type FormEvent } from 'react';
 import { api } from '@/lib/api';
 import toast from 'react-hot-toast';
 import { useSearchParams } from 'next/navigation';
@@ -13,6 +13,7 @@ function FlightDetailContent() {
   const id = searchParams.get("id");
   const [data, setData] = useState<any>(null);
   const [firms, setFirms] = useState<any[]>([]);
+  const [kassaDesks, setKassaDesks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const { user } = useAuth();
   const { tr } = useLanguage();
@@ -25,6 +26,7 @@ function FlightDetailContent() {
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [selectedFirmId, setSelectedFirmId] = useState<string>('');
   const [allocateQuantity, setAllocateQuantity] = useState<string>('1');
+  const [allocatePrice, setAllocatePrice] = useState<string>('');
   const [allocateBusy, setAllocateBusy] = useState(false);
 
   const [sellConfirmTicketId, setSellConfirmTicketId] = useState<string | null>(null);
@@ -38,6 +40,8 @@ function FlightDetailContent() {
   const [sellPurchaserPhone, setSellPurchaserPhone] = useState<string>('');
   const [sellPurchaserEmail, setSellPurchaserEmail] = useState<string>('');
   const [sellPurchaserNotes, setSellPurchaserNotes] = useState<string>('');
+  const [sellFirmId, setSellFirmId] = useState<string>('');
+  const [sellKassaDeskId, setSellKassaDeskId] = useState<string>('');
 
   const [sellBatchModalOpen, setSellBatchModalOpen] = useState(false);
   const [sellBatchQuantity, setSellBatchQuantity] = useState<string>('1');
@@ -51,6 +55,8 @@ function FlightDetailContent() {
   const [sellBatchPurchaserPhone, setSellBatchPurchaserPhone] = useState<string>('');
   const [sellBatchPurchaserEmail, setSellBatchPurchaserEmail] = useState<string>('');
   const [sellBatchPurchaserNotes, setSellBatchPurchaserNotes] = useState<string>('');
+  const [sellBatchFirmId, setSellBatchFirmId] = useState<string>('');
+  const [sellBatchKassaDeskId, setSellBatchKassaDeskId] = useState<string>('');
 
   const [confirmAllocationTicketId, setConfirmAllocationTicketId] = useState<string | null>(null);
   const [confirmAllocationBusy, setConfirmAllocationBusy] = useState(false);
@@ -78,11 +84,12 @@ function FlightDetailContent() {
       const role = String(user?.role || '').toUpperCase();
       const canAllocate = role === 'SUPERADMIN' || role === 'ADMIN';
 
-      const [reportRes, ticketsRes, firmsRes, cancelReqRes] = await Promise.all([
+      const [reportRes, ticketsRes, firmsRes, cancelReqRes, desksRes] = await Promise.all([
         api.get(`/reports/flight?flight_id=${id}`),
         api.get(`/tickets?flight_id=${id}`),
         canAllocate ? api.get('/firms') : Promise.resolve({ data: [] }),
         api.get(`/tickets/cancel-sale-requests?flight_id=${id}&status=PENDING`).catch(() => ({ data: [] })),
+        api.get('/kassa/desks').catch(() => ({ data: [] })),
       ]);
       
       const report = Array.isArray(reportRes.data) 
@@ -96,6 +103,7 @@ function FlightDetailContent() {
       
       const firmsList = Array.isArray(firmsRes.data) ? firmsRes.data : [];
       setFirms(firmsList);
+      setKassaDesks(Array.isArray((desksRes as any).data) ? (desksRes as any).data : []);
       if (firmsList.length > 0) setSelectedFirmId(String(firmsList[0].id));
 
     } catch (err: any) {
@@ -112,12 +120,16 @@ function FlightDetailContent() {
   const openAllocateModal = (ticketId: string) => {
     setSelectedTicketId(ticketId);
     setAllocateQuantity('1');
+    const ticket = Array.isArray(data?.tickets) ? data.tickets.find((t: any) => String(t.id) === String(ticketId)) : null;
+    setAllocatePrice(ticket?.price != null ? String(ticket.price) : '');
     setIsAllocateModalOpen(true);
   };
 
   const openAllocateBatchModal = () => {
     setSelectedTicketId(null);
     setAllocateQuantity('1');
+    const firstAvailable = Array.isArray(data?.tickets) ? data.tickets.find((t: any) => String(t.status).toUpperCase() === 'AVAILABLE') : null;
+    setAllocatePrice(firstAvailable?.price != null ? String(firstAvailable.price) : '');
     setIsAllocateModalOpen(true);
   };
 
@@ -125,11 +137,16 @@ function FlightDetailContent() {
     e.preventDefault();
     if (allocateBusy) return;
     if (!selectedFirmId) return;
+    const priceNum = Number(allocatePrice);
+    if (!allocatePrice.trim() || !Number.isFinite(priceNum) || priceNum <= 0) {
+      toast.error(tr('Enter allocation price', 'Ajratma narxini kiriting'));
+      return;
+    }
     
     try {
       setAllocateBusy(true);
       if (selectedTicketId) {
-        await api.post(`/tickets/allocate`, { ticketId: selectedTicketId, firmId: selectedFirmId });
+        await api.post(`/tickets/allocate`, { ticketId: selectedTicketId, firmId: selectedFirmId, allocationPrice: allocatePrice.trim() });
         toast.success('Allocation created (pending firm confirmation)');
       } else {
         const qty = Number.parseInt(String(allocateQuantity || '').trim(), 10);
@@ -141,7 +158,7 @@ function FlightDetailContent() {
           toast.error('Enter a valid quantity');
           return;
         }
-        const res = await api.post(`/tickets/allocate`, { flightId: id, firmId: selectedFirmId, quantity: qty });
+        const res = await api.post(`/tickets/allocate`, { flightId: id, firmId: selectedFirmId, quantity: qty, allocationPrice: allocatePrice.trim() });
         const count = res?.data?.count ?? qty;
         toast.success(`Allocated ${count} ticket(s) (pending confirmation)`);
       }
@@ -153,6 +170,15 @@ function FlightDetailContent() {
       setAllocateBusy(false);
     }
   };
+
+  const sellDeskOptions = useMemo(
+    () => kassaDesks.filter((desk) => !sellFirmId || String(desk.firmId) === sellFirmId),
+    [kassaDesks, sellFirmId],
+  );
+  const sellBatchDeskOptions = useMemo(
+    () => kassaDesks.filter((desk) => !sellBatchFirmId || String(desk.firmId) === sellBatchFirmId),
+    [kassaDesks, sellBatchFirmId],
+  );
 
   const handleSell = async (ticketId: string, body: any) => {
     try {
@@ -169,6 +195,10 @@ function FlightDetailContent() {
     const price = ticket?.price != null ? String(ticket.price) : '';
 
     setSellConfirmTicketId(String(ticket?.id || ''));
+    const ticketFirmId = String(ticket?.assignedFirmId || user?.firmId || '');
+    setSellFirmId(ticketFirmId);
+    const firstDesk = kassaDesks.find((desk) => String(desk.firmId) === ticketFirmId);
+    setSellKassaDeskId(firstDesk ? String(firstDesk.id) : '');
     setSellPrice(price);
     if (currencyCode === 'USD' || currencyCode === 'UZS') {
       setSellCurrency(currencyCode as any);
@@ -211,6 +241,10 @@ function FlightDetailContent() {
       toast.error('Purchaser name and ID are required');
       return;
     }
+    if (sellDeskOptions.length > 0 && !sellKassaDeskId) {
+      toast.error(tr('Select a kassa desk', 'Kassani tanlang'));
+      return;
+    }
 
     const purchaser: any = {
       name: purchaserName,
@@ -226,6 +260,7 @@ function FlightDetailContent() {
         salePrice: priceRaw,
         saleCurrency: currencyCode,
         purchaser,
+        kassaDeskId: sellKassaDeskId || undefined,
       });
       setSellConfirmTicketId(null);
     } finally {
@@ -252,6 +287,22 @@ function FlightDetailContent() {
     setSellBatchPurchaserPhone('');
     setSellBatchPurchaserEmail('');
     setSellBatchPurchaserNotes('');
+    const role = String(user?.role || '').toUpperCase();
+    const assignedFirmIds = Array.from(new Set<string>(
+      (Array.isArray(data?.tickets) ? data.tickets : [])
+        .filter((ticket: any) => String(ticket?.status || '').toUpperCase() === 'ASSIGNED')
+        .map((ticket: any) => ticket?.assignedFirmId)
+        .filter(Boolean)
+        .map(String),
+    ));
+    const sellerFirmId = role === 'FIRM'
+      ? String(user?.firmId || '')
+      : assignedFirmIds.length === 1
+        ? assignedFirmIds[0]
+        : '';
+    setSellBatchFirmId(sellerFirmId);
+    const firstDesk = kassaDesks.find((desk) => String(desk.firmId) === sellerFirmId);
+    setSellBatchKassaDeskId(firstDesk ? String(firstDesk.id) : '');
     setSellBatchModalOpen(true);
   };
 
@@ -299,14 +350,39 @@ function FlightDetailContent() {
     if (sellBatchPurchaserEmail.trim()) purchaser.email = sellBatchPurchaserEmail.trim();
     if (sellBatchPurchaserNotes.trim()) purchaser.notes = sellBatchPurchaserNotes.trim();
 
+    const role = String(user?.role || '').toUpperCase();
+    const assignedFirmIds = Array.from(new Set<string>(
+      (Array.isArray(data?.tickets) ? data.tickets : [])
+        .filter((ticket: any) => String(ticket?.status || '').toUpperCase() === 'ASSIGNED')
+        .map((ticket: any) => ticket?.assignedFirmId)
+        .filter(Boolean)
+        .map(String),
+    ));
+    const sellerFirmId = role === 'FIRM'
+      ? String(user?.firmId || '')
+      : assignedFirmIds.length === 1
+        ? assignedFirmIds[0]
+        : '';
+
+    if (!sellerFirmId) {
+      toast.error(tr('Sell tickets one by one when multiple firms are assigned.', 'Bir nechta firma biriktirilgan bo‘lsa, chiptalarni bittalab soting.'));
+      return;
+    }
+    if (sellBatchDeskOptions.length > 0 && !sellBatchKassaDeskId) {
+      toast.error(tr('Select a kassa desk', 'Kassani tanlang'));
+      return;
+    }
+
     setSellBatchBusy(true);
     try {
       const res = await api.post('/tickets/sell', {
         flightId: id,
+        firmId: sellerFirmId,
         quantity: qty,
         salePrice: priceRaw,
         saleCurrency: currencyCode,
         purchaser,
+        kassaDeskId: sellBatchKassaDeskId || undefined,
       });
       const count = res?.data?.count ?? qty;
       toast.success(`Marked ${count} ticket(s) as sold`);
@@ -513,7 +589,7 @@ function FlightDetailContent() {
 
   const role = String(user?.role || '').toUpperCase();
   const canAllocate = ['SUPERADMIN', 'ADMIN'].includes(role);
-  const canBatchSell = role === 'FIRM';
+  const canBatchSell = ['SUPERADMIN', 'ADMIN', 'FIRM'].includes(role);
   const canConfirmAllocations = role === 'FIRM';
 
   const getTicketStatusLabel = (status?: string) => {
@@ -720,7 +796,7 @@ function FlightDetailContent() {
                           {tr('Confirm', 'Tasdiqlash')}
                         </button>
                       )}
-                      {ticket.status === 'ASSIGNED' && (
+                      {canBatchSell && ticket.status === 'ASSIGNED' && (
                         <button
                           onClick={() => openSellConfirm(ticket)} 
                           disabled={flightCancelled}
@@ -839,7 +915,7 @@ function FlightDetailContent() {
                           {tr('Confirm', 'Tasdiqlash')}
                         </button>
                       )}
-                      {ticket.status === 'ASSIGNED' && (
+                      {canBatchSell && ticket.status === 'ASSIGNED' && (
                         <button
                           onClick={() => openSellConfirm(ticket)}
                           disabled={flightCancelled}
@@ -950,6 +1026,19 @@ function FlightDetailContent() {
                   </p>
                 </div>
               )}
+
+              <div>
+                <label className="block text-sm font-medium text-muted mb-2">{tr('Allocation price (per ticket)', 'Ajratma narxi (har chipta)')}</label>
+                <input
+                  inputMode="decimal"
+                  required
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground outline-none focus:border-primary transition"
+                  placeholder="0"
+                  value={allocatePrice}
+                  onChange={(e) => setAllocatePrice(e.target.value)}
+                  disabled={allocateBusy}
+                />
+              </div>
               
               <div className="mt-6 flex justify-end gap-3">
                 <button
@@ -1027,6 +1116,23 @@ function FlightDetailContent() {
                   />
                 </div>
               )}
+
+              <div>
+                <label className="block text-sm font-medium text-muted mb-1">{tr('Kassa desk', 'Kassa')}</label>
+                <select
+                  value={sellKassaDeskId}
+                  onChange={(e) => setSellKassaDeskId(e.target.value)}
+                  disabled={sellBusy}
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
+                >
+                  <option value="">{tr('Select kassa', 'Kassani tanlang')}</option>
+                  {sellDeskOptions.map((desk) => (
+                    <option key={desk.id} value={desk.id}>
+                      {desk.firm?.name ? `${desk.firm.name} · ` : ''}{desk.name}{desk.code ? ` (${desk.code})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
               <div>
                 <label className="block text-sm font-medium text-muted mb-1">{tr('Purchaser full name', 'Xaridor to\'liq ismi')}</label>
@@ -1415,6 +1521,23 @@ function FlightDetailContent() {
                   />
                 </div>
               )}
+
+              <div>
+                <label className="block text-sm font-medium text-muted mb-1">{tr('Kassa desk', 'Kassa')}</label>
+                <select
+                  value={sellBatchKassaDeskId}
+                  onChange={(e) => setSellBatchKassaDeskId(e.target.value)}
+                  disabled={sellBatchBusy}
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
+                >
+                  <option value="">{tr('Select kassa', 'Kassani tanlang')}</option>
+                  {sellBatchDeskOptions.map((desk) => (
+                    <option key={desk.id} value={desk.id}>
+                      {desk.firm?.name ? `${desk.firm.name} · ` : ''}{desk.name}{desk.code ? ` (${desk.code})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
               <div>
                 <label className="block text-sm font-medium text-muted mb-1">{tr('Purchaser full name', 'Xaridor to\'liq ismi')}</label>

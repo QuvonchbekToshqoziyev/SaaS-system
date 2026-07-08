@@ -25,6 +25,16 @@ Initial login:
 
 After the first login, open `Settings` and change the password before using the system for real work. The bootstrap does not create test firms, sample flights, tickets, transactions, or demo users.
 
+For a pre-data-entry clean wipe that preserves the existing superadmin login/password, use the guarded wipe command:
+
+```bash
+cd airline-b2b/server
+npm run wipe:keep-superadmin
+CLEAN_WIPE_CONFIRM=WIPE_ALL_KEEP_SUPERADMIN npm run wipe:keep-superadmin
+```
+
+The first command is a dry run and prints counts. The second command deletes application data, all firms, all non-kept users, chats, audit logs, flights, tickets, transactions, kassa records, tours, invites, and settings while keeping one active `SUPERADMIN`. Set `KEEP_SUPERADMIN_EMAIL=admin@example.com` to choose which superadmin to keep.
+
 For local development from the repository root:
 
 ```bash
@@ -115,7 +125,73 @@ Firm users can only see their own firm data.
 cd airline-b2b/server
 npm run bootstrap:superadmin
 
+# Guarded clean wipe that keeps the existing superadmin login/password
+cd airline-b2b/server
+CLEAN_WIPE_CONFIRM=WIPE_ALL_KEEP_SUPERADMIN npm run wipe:keep-superadmin
+
 # Run backend tests
 cd airline-b2b/server
 npm test
 ```
+
+## Optional Docker Run
+
+Docker support is additive. The current production deployment still uses `deploy.sh`, nginx, and PM2 as documented in `FINAL_RELEASE_PLAN.md`.
+
+Run the app in containers from the repository root:
+
+```bash
+cd airline-b2b
+docker compose up --build
+```
+
+Default local container URLs:
+
+- Web: `http://localhost:3000`
+- API: `http://localhost:5000`
+- PostgreSQL host port: `5433`
+
+The Docker client serves the static Next.js export with nginx and proxies `/api/*` to the server container. The server runs Prisma `db push` on container startup when `DOCKER_APPLY_SCHEMA=true`, which is the compose default for local container use.
+
+Override defaults with environment variables:
+
+```bash
+CLIENT_HOST_PORT=3002 SERVER_HOST_PORT=5002 POSTGRES_HOST_PORT=5434 docker compose up --build
+```
+
+Set a real `JWT_SECRET` for any shared or long-running Docker environment.
+Set a stable, secret `CHAT_ENCRYPTION_KEY` to encrypt new chat messages and attachment metadata at rest. Use a 32-byte random base64 value, keep it backed up in the password manager, and do not rotate or lose it without a migration plan.
+
+## Maintained Documentation
+
+Use these files as the current documentation set:
+
+- `AI_QUICK_FIX_GUIDE.md`: first-read guide for agents and quick fixes.
+- `FINAL_RELEASE_PLAN.md`: production release gate and rollback plan.
+- `DEV_PROD_SPLIT.md`: production vs dev/staging deployment split.
+- `WORKFLOW_DOCUMENTATION.md`: current end-to-end product workflows, role access, API surfaces, financial effects, audit behavior, and smoke checklist.
+- `memories/repo/mistakes.md`: known historical mistakes and prevention notes.
+- `AGENTS.md`: repository instructions for coding agents.
+
+Historical prompt/spec/roadmap drafts were merged into the maintained docs and removed to avoid stale guidance.
+
+`server_credentials.md` is a private operational note, not product documentation. Do not copy its contents into public docs, tickets, or prompts.
+
+## Project Layout
+
+```text
+airline-b2b/
+  client/   Next.js App Router frontend
+  server/   Express + Prisma backend
+  shared/   Shared TypeScript types and validation helpers
+```
+
+Common entry points:
+
+- Frontend pages: `airline-b2b/client/src/app`
+- Frontend layout: `airline-b2b/client/src/components/layout/DashboardLayout.tsx`
+- Frontend API helper: `airline-b2b/client/src/lib/api.ts`
+- Backend routes: `airline-b2b/server/src/routes`
+- Backend controllers: `airline-b2b/server/src/controllers`
+- Backend services: `airline-b2b/server/src/services`
+- Prisma schema: `airline-b2b/server/prisma/schema.prisma`

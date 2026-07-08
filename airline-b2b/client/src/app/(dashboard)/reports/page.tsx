@@ -8,6 +8,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import CollapsibleCard from '@/components/ui/CollapsibleCard';
 import { useSearchParams } from 'next/navigation';
+import { FileSpreadsheet, FileText } from 'lucide-react';
 
 type FlightOption = {
   id: string;
@@ -36,6 +37,8 @@ type ReportsScopePrefs = {
 };
 
 const REPORTS_SCOPE_PREFS_KEY = 'jetstream-reports-scope';
+
+type ExportRow = Record<string, string | number | null | undefined>;
 
 function normalizeDateParam(value: string): string {
   const raw = String(value || '').trim();
@@ -338,16 +341,256 @@ export default function ReportsPage() {
 
   const flightOptionsDisabled = loadingMeta || flights.length === 0;
   const firmOptionsDisabled = loadingMeta || firms.length === 0;
+  const selectedFlight = flights.find((flight) => flight.id === selectedFlightId);
+  const selectedFirm = firms.find((firm) => firm.id === selectedFirmId);
+
+  const buildExportSections = () => {
+    const sections: Array<{ title: string; rows: ExportRow[] }> = [];
+
+    sections.push({
+      title: tr('Scope', 'Qamrov'),
+      rows: [
+        {
+          [tr('Flight', 'Reys')]: selectedFlight?.flightNumber || selectedFlightId || tr('All', 'Barchasi'),
+          [tr('Firm', 'Firma')]: isAdmin ? (selectedFirm?.name || selectedFirmId || tr('All', 'Barchasi')) : tr('My firm', 'Firmam'),
+          [tr('Date from', 'Sana (dan)')]: dateFrom || '-',
+          [tr('Date to', 'Sana (gacha)')]: dateTo || '-',
+        },
+      ],
+    });
+
+    if (flightReport) {
+      sections.push({
+        title: tr('Flight report', 'Reys hisoboti'),
+        rows: [
+          {
+            [tr('Debt', 'Qarz')]: Number(flightReport.debt || 0).toFixed(2),
+            [tr('Revenue', 'Tushum')]: Number(flightReport.revenue || 0).toFixed(2),
+            [tr('Paid', "To'langan")]: Number(flightReport.paid || 0).toFixed(2),
+            [tr('Outstanding', 'Qoldiq')]: Number(flightReport.outstanding || 0).toFixed(2),
+            [tr('Profit', 'Foyda')]: Number(flightReport.profit || 0).toFixed(2),
+          },
+        ],
+      });
+      sections.push({
+        title: tr('Flight firms', 'Reys firmalari'),
+        rows: (flightReport.firms || []).map((row: any) => ({
+          [tr('Firm', 'Firma')]: row.firmName || row.firmId,
+          [tr('Tickets', 'Biletlar')]: row.ticketsAssigned || 0,
+          [tr('Sold', 'Sotilgan')]: row.ticketsSold || 0,
+          [tr('Debt', 'Qarz')]: Number(row.debt || 0).toFixed(2),
+          [tr('Revenue', 'Tushum')]: Number(row.revenue || 0).toFixed(2),
+          [tr('Paid', "To'langan")]: Number(row.paid || 0).toFixed(2),
+          [tr('Outstanding', 'Qoldiq')]: Number(row.outstanding || 0).toFixed(2),
+        })),
+      });
+    }
+
+    if (firmReport) {
+      sections.push({
+        title: tr('Firm report', 'Firma hisoboti'),
+        rows: [
+          {
+            [tr('Debt', 'Qarz')]: Number(firmReport.totals?.debt || 0).toFixed(2),
+            [tr('Revenue', 'Tushum')]: Number(firmReport.totals?.revenue || 0).toFixed(2),
+            [tr('Paid', "To'langan")]: Number(firmReport.totals?.paid || 0).toFixed(2),
+            [tr('Outstanding', 'Qoldiq')]: Number(firmReport.totals?.outstanding || 0).toFixed(2),
+            [tr('Profit', 'Foyda')]: Number(firmReport.totals?.profit || 0).toFixed(2),
+            [tr('Assigned tickets', 'Biriktirilgan biletlar')]: firmReport.tickets?.assigned || 0,
+            [tr('Sold tickets', 'Sotilgan biletlar')]: firmReport.tickets?.sold || 0,
+          },
+        ],
+      });
+      sections.push({
+        title: tr('Firm by flight', 'Firma reys bo\'yicha'),
+        rows: (firmReport.byFlight || []).map((row: any) => ({
+          [tr('Flight', 'Reys')]: row.flightNumber || row.flightId,
+          [tr('Debt', 'Qarz')]: Number(row.debt || 0).toFixed(2),
+          [tr('Revenue', 'Tushum')]: Number(row.revenue || 0).toFixed(2),
+          [tr('Paid', "To'langan")]: Number(row.paid || 0).toFixed(2),
+          [tr('Outstanding', 'Qoldiq')]: Number(row.outstanding || 0).toFixed(2),
+          [tr('Tickets', 'Biletlar')]: row.ticketsAssigned || 0,
+          [tr('Sold', 'Sotilgan')]: row.ticketsSold || 0,
+        })),
+      });
+    }
+
+    if (paymentsReport) {
+      sections.push({
+        title: tr('Payments by method', "To'lovlar usul bo'yicha"),
+        rows: (paymentsReport.byMethod || []).map((row: any) => ({
+          [tr('Method', 'Usul')]: getPaymentMethodLabel(row.method),
+          [tr('Count', 'Soni')]: row.count || 0,
+          [tr('Total', 'Jami')]: Number(row.totalBaseAmount || 0).toFixed(2),
+        })),
+      });
+      sections.push({
+        title: tr('Payments by currency', "To'lovlar valyuta bo'yicha"),
+        rows: (paymentsReport.byCurrency || []).map((row: any) => ({
+          [tr('Currency', 'Valyuta')]: row.currency,
+          [tr('Count', 'Soni')]: row.count || 0,
+          [tr('Total', 'Jami')]: `${Number(row.totalOriginalAmount ?? row.totalBaseAmount ?? 0).toFixed(2)} ${row.currency}`,
+        })),
+      });
+    }
+
+    if (transactionsReport) {
+      sections.push({
+        title: tr('Transactions by type', 'Tranzaksiyalar turi bo\'yicha'),
+        rows: (transactionsReport.byType || []).map((row: any) => ({
+          [tr('Type', 'Turi')]: getTransactionTypeLabel(row.type),
+          [tr('Count', 'Soni')]: row.count || 0,
+          [tr('Total', 'Jami')]: Number(row.totalBaseAmount || 0).toFixed(2),
+        })),
+      });
+      sections.push({
+        title: tr('Transactions by currency', 'Tranzaksiyalar valyuta bo\'yicha'),
+        rows: (transactionsReport.byCurrency || []).map((row: any) => ({
+          [tr('Currency', 'Valyuta')]: row.currency,
+          [tr('Count', 'Soni')]: row.count || 0,
+          [tr('Total', 'Jami')]: `${Number(row.totalOriginalAmount ?? row.totalBaseAmount ?? 0).toFixed(2)} ${row.currency}`,
+        })),
+      });
+    }
+
+    if (interactionsReport) {
+      sections.push({
+        title: tr('Admin firm interactions', 'Admin firma aloqalari'),
+        rows: (interactionsReport.pairs || []).map((row: any) => ({
+          [tr('Admin', 'Admin')]: row.adminEmail,
+          [tr('Firm', 'Firma')]: row.firmName || row.firmId,
+          [tr('Invites', 'Takliflar')]: row.invitesSent || 0,
+          [tr('Allocations (UZS)', 'Ajratmalar (UZS)')]: Number(row.allocationsBaseAmount || 0).toFixed(2),
+          [tr('Payments (UZS)', "To'lovlar (UZS)")]: Number(row.paymentsBaseAmount || 0).toFixed(2),
+          [tr('Sales (UZS)', 'Sotuv (UZS)')]: Number(row.salesBaseAmount || 0).toFixed(2),
+        })),
+      });
+    }
+
+    return sections.map((section) => ({
+      ...section,
+      rows: section.rows.length ? section.rows : [{ [tr('No data', "Ma'lumot yo'q")]: '-' }],
+    }));
+  };
+
+  const exportFileName = () => {
+    const scope = [
+      selectedFirm?.name || selectedFirmId || (isFirm ? 'my-firm' : 'all-firms'),
+      selectedFlight?.flightNumber || selectedFlightId || 'all-flights',
+      dateFrom || 'from-start',
+      dateTo || 'to-now',
+    ]
+      .join('-')
+      .replace(/[^a-z0-9-]+/gi, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .toLowerCase();
+    return `reports-${scope || 'export'}`;
+  };
+
+  const downloadSpreadsheet = () => {
+    const csvEscape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const lines: string[] = [];
+    for (const section of buildExportSections()) {
+      const headers = Array.from(new Set(section.rows.flatMap((row) => Object.keys(row))));
+      lines.push(csvEscape(section.title));
+      lines.push(headers.map(csvEscape).join(','));
+      for (const row of section.rows) {
+        lines.push(headers.map((header) => csvEscape(row[header])).join(','));
+      }
+      lines.push('');
+    }
+    const blob = new Blob([`\uFEFF${lines.join('\n')}`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${exportFileName()}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadPdf = () => {
+    const escapeHtml = (value: unknown) => String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+    const sections = buildExportSections();
+    const html = `
+      <!doctype html>
+      <html>
+        <head>
+          <title>${escapeHtml(tr('Reports', 'Hisobotlar'))}</title>
+          <style>
+            body { font-family: Arial, sans-serif; color: #111827; margin: 32px; }
+            h1 { margin: 0 0 6px; font-size: 24px; }
+            .meta { color: #6b7280; font-size: 12px; margin-bottom: 24px; }
+            h2 { margin: 24px 0 8px; font-size: 16px; }
+            table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
+            th, td { border: 1px solid #d1d5db; padding: 7px 8px; font-size: 12px; text-align: left; }
+            th { background: #f3f4f6; }
+            @media print { button { display: none; } body { margin: 18mm; } }
+          </style>
+        </head>
+        <body>
+          <button onclick="window.print()" style="margin-bottom:16px;padding:8px 12px;">${escapeHtml(tr('Save as PDF', 'PDF saqlash'))}</button>
+          <h1>${escapeHtml(tr('Reports', 'Hisobotlar'))}</h1>
+          <div class="meta">${escapeHtml(new Date().toLocaleString())}</div>
+          ${sections.map((section) => {
+            const headers = Array.from(new Set(section.rows.flatMap((row) => Object.keys(row))));
+            return `
+              <h2>${escapeHtml(section.title)}</h2>
+              <table>
+                <thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead>
+                <tbody>
+                  ${section.rows.map((row) => `<tr>${headers.map((header) => `<td>${escapeHtml(row[header])}</td>`).join('')}</tr>`).join('')}
+                </tbody>
+              </table>
+            `;
+          }).join('')}
+        </body>
+      </html>
+    `;
+    const popup = window.open('', '_blank', 'noopener,noreferrer');
+    if (!popup) {
+      toast.error(tr('Allow popups to export PDF', 'PDF eksport uchun popupga ruxsat bering'));
+      return;
+    }
+    popup.document.open();
+    popup.document.write(html);
+    popup.document.close();
+    popup.focus();
+  };
 
   return (
     <div className="space-y-8 text-foreground">
-      <div>
-        <h2 className="text-3xl font-bold">{tr('Reports', 'Hisobotlar')}</h2>
-        <p className="mt-1 text-sm text-muted">
-          {isFirm
-            ? tr('Your firm-scoped performance and finance reports.', 'Firmangiz bo\'yicha natija va moliyaviy hisobotlar.')
-            : tr('Flight, firm, payments, transactions — plus superadmin interaction overview.', 'Reys, firma, to\'lovlar, tranzaksiyalar — va superadmin uchun o\'zaro aloqalar ko\'rinishi.')}
-        </p>
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="text-3xl font-bold">{tr('Reports', 'Hisobotlar')}</h2>
+          <p className="mt-1 text-sm text-muted">
+            {isFirm
+              ? tr('Your firm-scoped performance and finance reports.', 'Firmangiz bo\'yicha natija va moliyaviy hisobotlar.')
+              : tr('Flight, firm, payments, transactions — plus superadmin interaction overview.', 'Reys, firma, to\'lovlar, tranzaksiyalar — va superadmin uchun o\'zaro aloqalar ko\'rinishi.')}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={downloadPdf}
+            className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-sm font-semibold text-foreground hover:bg-surface-2"
+          >
+            <FileText size={16} />
+            {tr('Download PDF', 'PDF yuklab olish')}
+          </button>
+          <button
+            type="button"
+            onClick={downloadSpreadsheet}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-ink hover:bg-primary/90"
+          >
+            <FileSpreadsheet size={16} />
+            {tr('Download spreadsheet', 'Spreadsheet yuklab olish')}
+          </button>
+        </div>
       </div>
 
       <CollapsibleCard
@@ -664,7 +907,7 @@ export default function ReportsPage() {
         {paymentsReport && (
           <div className="space-y-4">
             <div className="text-sm text-muted">
-              {tr('Total payments', "Jami to'lovlar")}: {paymentsReport.totals?.count || 0} — {Number(paymentsReport.totals?.totalBaseAmount || 0).toFixed(2)} UZS
+              {tr('Total payments', "Jami to'lovlar")}: {paymentsReport.totals?.count || 0}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -676,7 +919,7 @@ export default function ReportsPage() {
                       <tr>
                         <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Method', 'Usul')}</th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total (UZS)', 'Jami (UZS)')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total', 'Jami')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
@@ -705,7 +948,7 @@ export default function ReportsPage() {
                       <tr>
                         <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Currency', 'Valyuta')}</th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total (UZS)', 'Jami (UZS)')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total', 'Jami')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
@@ -713,7 +956,7 @@ export default function ReportsPage() {
                         <tr key={r.currency}>
                           <td className="px-3 py-2 text-sm text-foreground">{r.currency}</td>
                           <td className="px-3 py-2 text-sm text-foreground">{r.count}</td>
-                          <td className="px-3 py-2 text-sm text-foreground">{Number(r.totalBaseAmount || 0).toFixed(2)}</td>
+                          <td className="px-3 py-2 text-sm text-foreground">{Number(r.totalOriginalAmount ?? r.totalBaseAmount ?? 0).toFixed(2)} {r.currency}</td>
                         </tr>
                       ))}
                       {(paymentsReport.byCurrency || []).length === 0 && (
@@ -742,7 +985,7 @@ export default function ReportsPage() {
         {transactionsReport && (
           <div className="space-y-4">
             <div className="text-sm text-muted">
-              {tr('Total transactions', 'Jami tranzaksiyalar')}: {transactionsReport.totals?.count || 0} — {Number(transactionsReport.totals?.totalBaseAmount || 0).toFixed(2)} UZS
+              {tr('Total transactions', 'Jami tranzaksiyalar')}: {transactionsReport.totals?.count || 0}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -754,7 +997,7 @@ export default function ReportsPage() {
                       <tr>
                         <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Type', 'Turi')}</th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total (UZS)', 'Jami (UZS)')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total', 'Jami')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
@@ -783,7 +1026,7 @@ export default function ReportsPage() {
                       <tr>
                         <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Currency', 'Valyuta')}</th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total (UZS)', 'Jami (UZS)')}</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total', 'Jami')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
@@ -791,7 +1034,7 @@ export default function ReportsPage() {
                         <tr key={r.currency}>
                           <td className="px-3 py-2 text-sm text-foreground">{r.currency}</td>
                           <td className="px-3 py-2 text-sm text-foreground">{r.count}</td>
-                          <td className="px-3 py-2 text-sm text-foreground">{Number(r.totalBaseAmount || 0).toFixed(2)}</td>
+                          <td className="px-3 py-2 text-sm text-foreground">{Number(r.totalOriginalAmount ?? r.totalBaseAmount ?? 0).toFixed(2)} {r.currency}</td>
                         </tr>
                       ))}
                       {(transactionsReport.byCurrency || []).length === 0 && (
