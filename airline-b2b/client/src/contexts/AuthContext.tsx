@@ -11,6 +11,8 @@ export interface User {
   fullName?: string | null;
   phone?: string | null;
   role: NormalizedRole;
+  firmRole: 'FIRM_ADMIN' | 'MANAGER' | 'KASSIR';
+  firmKind?: 'AGENCY' | 'AIRLINE' | 'CONTRACTOR' | null;
   firmId: string | null;
 }
 
@@ -30,6 +32,13 @@ function normalizeRole(role: unknown): NormalizedRole {
   return 'firm';
 }
 
+function normalizeFirmRole(role: unknown): User['firmRole'] {
+  const r = String(role || '').toUpperCase();
+  if (r === 'KASSIR' || r === 'KASSA' || r === 'KASSA_OPERATOR' || r === 'CASHIER') return 'KASSIR';
+  if (r === 'MANAGER') return 'MANAGER';
+  return 'FIRM_ADMIN';
+}
+
 function normalizeUser(raw: unknown): User | null {
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as any;
@@ -46,6 +55,10 @@ function normalizeUser(raw: unknown): User | null {
     fullName: typeof obj.fullName === 'string' ? obj.fullName : null,
     phone: typeof obj.phone === 'string' ? obj.phone : null,
     role: normalizeRole(obj.role),
+    firmRole: normalizeFirmRole(obj.firmRole ?? obj.firm_role),
+    firmKind: typeof (obj.firmKind ?? obj.firm_kind) === 'string'
+      ? String(obj.firmKind ?? obj.firm_kind).toUpperCase() as User['firmKind']
+      : null,
     firmId,
   };
 }

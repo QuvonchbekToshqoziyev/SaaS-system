@@ -13,6 +13,12 @@ enum Role {
   FIRM
 }
 
+enum FirmUserRole {
+  FIRM_ADMIN
+  MANAGER
+  KASSIR
+}
+
 enum FlightSettlementStatus {
   OPEN
   CLOSING
@@ -34,6 +40,12 @@ enum FirmStatus {
   ACTIVE
   SUSPENDED
   DELETED
+}
+
+enum FirmKind {
+  AGENCY
+  AIRLINE
+  CONTRACTOR
 }
 
 enum TransactionType {
@@ -94,6 +106,7 @@ model User {
   fullName                        String?
   phone                           String?
   role                            Role                      @default(FIRM)
+  firmRole                        FirmUserRole              @default(FIRM_ADMIN)
   status                          String                    @default("ACTIVE")
   firmId                          String?
   firm                            Firm?                     @relation(fields: [firmId], references: [id])
@@ -108,6 +121,7 @@ model User {
   chatParticipants                ChatParticipant[]
   sentChatMessages                ChatMessage[]             @relation("ChatMessageSender")
   auditLogs                       AuditLog[]                @relation("AuditLogActor")
+  notifications                   Notification[]            @relation("NotificationUser")
   deletedAt                       DateTime?
   deletedByUserId                 String?
   deleteReason                    String?
@@ -115,6 +129,7 @@ model User {
   updatedAt                       DateTime                  @updatedAt
 
   @@index([status])
+  @@index([firmRole])
   @@index([deletedAt])
 }
 
@@ -126,6 +141,7 @@ model Firm {
   subscriptionEndsAt       DateTime?
   creditLimit              Decimal                   @default(0) @db.Decimal(12, 4)
   currency                 String                    @default("USD")
+  kind                     FirmKind                  @default(AGENCY)
   status                   FirmStatus                @default(ACTIVE)
   deletedAt                DateTime?
   deletedByUserId          String?
@@ -149,13 +165,56 @@ model Firm {
   boughtTourPackageSales   TourPackageSale[]         @relation("TourPackageBuyer")
   soldTourPackageSales     TourPackageSale[]         @relation("TourPackageSeller")
   chatConversations        ChatConversation[]
+  airlineProfiles          Airline[]
+  notifications            Notification[]
+  airlineConnections       AirlineFirmConnection[]  @relation("AirlineConnectionAirline")
+  firmAirlineConnections   AirlineFirmConnection[]  @relation("AirlineConnectionFirm")
   createdAt                DateTime                  @default(now())
   updatedAt                DateTime                  @updatedAt
 
+  @@index([kind])
   @@index([createdByUserId])
   @@index([createdByFirmId])
   @@index([status])
   @@index([deletedAt])
+}
+
+model Notification {
+  id          String   @id @default(uuid())
+  firmId      String?
+  firm        Firm?    @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?    @relation("NotificationUser", fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  body        String
+  type        String   @default("INFO")
+  entityType  String?
+  entityId    String?
+  metadata    Json?
+  readAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([firmId, readAt, createdAt])
+  @@index([userId, readAt, createdAt])
+  @@index([type, createdAt])
+  @@index([entityType, entityId])
+}
+
+model AirlineFirmConnection {
+  id              String   @id @default(uuid())
+  airlineFirmId   String
+  airlineFirm     Firm     @relation("AirlineConnectionAirline", fields: [airlineFirmId], references: [id], onDelete: Cascade)
+  firmId          String
+  firm            Firm     @relation("AirlineConnectionFirm", fields: [firmId], references: [id], onDelete: Cascade)
+  status          String   @default("ACTIVE")
+  createdByUserId String?
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([airlineFirmId, firmId])
+  @@index([airlineFirmId, status])
+  @@index([firmId, status])
 }
 
 model UserFirmAccess {
@@ -300,6 +359,7 @@ model Invitation {
   firmId    String?
   firm      Firm?     @relation(fields: [firmId], references: [id])
   role      Role      @default(FIRM)
+  firmRole  FirmUserRole @default(FIRM_ADMIN)
   token     String    @unique
   expiresAt DateTime
   subscriptionEndsAt DateTime?
@@ -321,6 +381,8 @@ model Flight {
   id                       String                    @id @default(uuid())
   route                    String
   flightNumber             String
+  airlineId                String?
+  airline                  Airline?                  @relation(fields: [airlineId], references: [id])
   departure                DateTime                  @map("departureTime")
   arrival                  DateTime?                 @map("arrivalTime")
   currency                 String
@@ -335,6 +397,26 @@ model Flight {
   saleCancellationRequests SaleCancellationRequest[]
   createdAt                DateTime                  @default(now())
   updatedAt                DateTime                  @updatedAt
+
+  @@index([airlineId])
+}
+
+model Airline {
+  id        String   @id @default(uuid())
+  name      String
+  code      String?
+  firmId    String?
+  firm      Firm?    @relation(fields: [firmId], references: [id])
+  status    String   @default("ACTIVE")
+  deletedAt DateTime?
+  flights   Flight[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([name])
+  @@index([firmId])
+  @@index([status])
+  @@index([deletedAt])
 }
 
 model Ticket {

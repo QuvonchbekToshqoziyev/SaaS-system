@@ -36,6 +36,7 @@ type FirmRow = {
   subscriptionEndsAt?: string | null;
   creditLimit?: number | string;
   currency?: string;
+  kind?: 'AGENCY' | 'AIRLINE' | 'CONTRACTOR' | string;
   status?: string;
   balance?: number | string;
   outstanding?: number | string;
@@ -49,7 +50,24 @@ type FirmDraft = {
   subscriptionEndsAt: string;
   creditLimit: string;
   currency: string;
+  kind: string;
   status: string;
+};
+
+type AirlineOption = {
+  id: string;
+  name: string;
+  firmId?: string | null;
+  firm?: { id: string; name: string | null; kind?: string | null } | null;
+};
+
+type AirlineConnection = {
+  id: string;
+  airlineFirmId: string;
+  firmId: string;
+  status: string;
+  airlineFirm?: { id: string; name: string | null };
+  firm?: { id: string; name: string | null };
 };
 
 export default function FirmsPage() {
@@ -79,6 +97,8 @@ export default function FirmsPage() {
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [inviteExpiresAt, setInviteExpiresAt] = useState<string | null>(null);
   const [createdFirmId, setCreatedFirmId] = useState<string | null>(null);
+  const [connectionDraft, setConnectionDraft] = useState({ airlineFirmId: '', firmId: '' });
+  const [savingConnection, setSavingConnection] = useState(false);
 
   const closeModal = () => {
     setInviteLink(null);
@@ -94,6 +114,18 @@ export default function FirmsPage() {
       return res.data;
     },
     enabled: canManage,
+  });
+
+  const { data: airlines = [] } = useQuery<AirlineOption[]>({
+    queryKey: ['airlines'],
+    queryFn: async () => (await api.get('/airlines')).data,
+    enabled: isSuperAdmin,
+  });
+
+  const { data: airlineConnections = [] } = useQuery<AirlineConnection[]>({
+    queryKey: ['airline-connections'],
+    queryFn: async () => (await api.get('/airlines/connections')).data,
+    enabled: isSuperAdmin,
   });
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -254,6 +286,7 @@ export default function FirmsPage() {
     subscriptionEndsAt: firm.subscriptionEndsAt ? String(firm.subscriptionEndsAt).slice(0, 10) : '',
     creditLimit: String(Math.round(Number(firm.creditLimit || 0))),
     currency: String(firm.currency || 'USD'),
+    kind: String(firm.kind || 'AGENCY'),
     status: String(firm.status || 'ACTIVE'),
   };
 
@@ -280,6 +313,7 @@ export default function FirmsPage() {
         subscriptionEndsAt: row.subscriptionEndsAt || null,
         creditLimit: row.creditLimit.trim() || '0',
         currency: row.currency.trim().toUpperCase() || 'USD',
+        kind: row.kind,
         status: row.status,
       });
       toast.success(tr('Firm updated', 'Firma yangilandi'));
@@ -313,11 +347,34 @@ export default function FirmsPage() {
     }
   };
 
+  const saveAirlineConnection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!connectionDraft.airlineFirmId || !connectionDraft.firmId) {
+      toast.error(tr('Select airline and firm', 'Aviakompaniya va firmani tanlang'));
+      return;
+    }
+    try {
+      setSavingConnection(true);
+      await api.post('/airlines/connections', {
+        airlineFirmId: connectionDraft.airlineFirmId,
+        firmId: connectionDraft.firmId,
+        status: 'ACTIVE',
+      });
+      toast.success(tr('Airline connected to firm', 'Aviakompaniya firmaga ulandi'));
+      setConnectionDraft({ airlineFirmId: '', firmId: '' });
+      queryClient.invalidateQueries({ queryKey: ['airline-connections'] });
+    } catch (error: unknown) {
+      toast.error(getApiErrorMessage(error) || tr('Failed to connect airline', 'Aviakompaniyani ulab bo\'lmadi'));
+    } finally {
+      setSavingConnection(false);
+    }
+  };
+
   const visibleFirms = useMemo(() => {
     const text = firmSearch.trim().toLowerCase();
     const rows = (firms || []).filter((firm) => {
       if (!text) return true;
-      return [firm.name, firm.id, firm.balance, firm.outstanding, firm.creditLimit]
+      return [firm.name, firm.id, firm.kind, firm.balance, firm.outstanding, firm.creditLimit]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
@@ -472,6 +529,49 @@ export default function FirmsPage() {
         </form>
       </div>
 
+      {isSuperAdmin && (
+        <div className="glass-panel p-6">
+          <h3 className="text-lg font-semibold text-foreground mb-4">{tr('Airline firm connections', 'Aviakompaniya-firma ulanishlari')}</h3>
+          <form onSubmit={saveAirlineConnection} className="compact-toolbar">
+            <div>
+              <label className="compact-label">{tr('Airline', 'Aviakompaniya')}</label>
+              <select value={connectionDraft.airlineFirmId} onChange={(e) => setConnectionDraft({ ...connectionDraft, airlineFirmId: e.target.value })} className="compact-control">
+                <option value="">{tr('Select airline', 'Aviakompaniyani tanlang')}</option>
+                {airlines.filter((airline) => airline.firmId).map((airline) => (
+                  <option key={airline.id} value={airline.firmId || ''}>{airline.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="compact-label">{tr('Firm', 'Firma')}</label>
+              <select value={connectionDraft.firmId} onChange={(e) => setConnectionDraft({ ...connectionDraft, firmId: e.target.value })} className="compact-control">
+                <option value="">{tr('Select firm', 'Firmani tanlang')}</option>
+                {(firms || []).filter((firm) => firm.kind !== 'AIRLINE').map((firm) => (
+                  <option key={firm.id} value={firm.id}>{firm.name}{firm.kind === 'CONTRACTOR' ? ` · ${tr('Contractor', 'Pudratchi')}` : ''}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-end">
+              <button type="submit" disabled={savingConnection} className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold uppercase tracking-wide text-ink hover:bg-primary/90 disabled:opacity-50">
+                <Plus size={16} />
+                {savingConnection ? tr('Saving...', 'Saqlanmoqda...') : tr('Connect', 'Ulash')}
+              </button>
+            </div>
+          </form>
+          <div className="mt-4 grid gap-2 md:grid-cols-2">
+            {airlineConnections.length === 0 ? (
+              <p className="text-sm text-muted">{tr('No airline connections yet.', 'Hali aviakompaniya ulanishlari yo\'q.')}</p>
+            ) : airlineConnections.map((row) => (
+              <div key={row.id} className="border border-border bg-surface-2 px-3 py-2 text-sm">
+                <span className="font-semibold">{row.airlineFirm?.name || row.airlineFirmId}</span>
+                <span className="text-muted"> {'->'} </span>
+                <span>{row.firm?.name || row.firmId}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="glass-panel">
         <div className="grid grid-cols-1 gap-2 border-b border-border px-3 py-2 md:grid-cols-[1fr_auto] md:items-end">
           <div>
@@ -498,6 +598,7 @@ export default function FirmsPage() {
                     {tr('Firm', 'Firma')}{sortLabel('name')}
                   </button>
                 </th>
+                <th>{tr('Type', 'Turi')}</th>
                 <th className="text-right">
                   <button type="button" onClick={() => setSort('balance')} className="font-bold">
                     {tr('Balance', 'Balans')}{sortLabel('balance')}
@@ -520,9 +621,9 @@ export default function FirmsPage() {
             </thead>
             <tbody>
               {loadingFirms ? (
-                <tr><td colSpan={7} className="text-center text-muted">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
+                <tr><td colSpan={8} className="text-center text-muted">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
               ) : visibleFirms.length === 0 ? (
-                <tr><td colSpan={7} className="text-center text-muted">{tr('No firms found.', 'Guruhlar topilmadi.')}</td></tr>
+                <tr><td colSpan={8} className="text-center text-muted">{tr('No firms found.', 'Guruhlar topilmadi.')}</td></tr>
               ) : visibleFirms.map((firm) => {
                 const draft = getFirmDraft(firm);
                 return (
@@ -545,6 +646,19 @@ export default function FirmsPage() {
                       </div>
                     ) : (
                       <div className="mt-1 text-xs text-muted">{firm.contactFullName || '-'} {firm.phone ? `· ${firm.phone}` : ''}</div>
+                    )}
+                  </td>
+                  <td>
+                    {isSuperAdmin ? (
+                      <select value={draft.kind} onChange={(e) => setFirmDraft(firm, { kind: e.target.value })} className="compact-control min-w-[130px]">
+                        <option value="AGENCY">{tr('Firm', 'Firma')}</option>
+                        <option value="AIRLINE">{tr('Airline', 'Aviakompaniya')}</option>
+                        <option value="CONTRACTOR">{tr('Contractor', 'Pudratchi')}</option>
+                      </select>
+                    ) : (
+                      <span className="rounded border border-border bg-surface-2 px-2 py-1 text-xs font-semibold">
+                        {firm.kind === 'AIRLINE' ? tr('Airline', 'Aviakompaniya') : firm.kind === 'CONTRACTOR' ? tr('Contractor', 'Pudratchi') : tr('Firm', 'Firma')}
+                      </span>
                     )}
                   </td>
                   <td className={`text-right font-mono font-bold ${Number(firm.balance || 0) < 0 ? 'text-red-600' : 'text-green-700'}`}>

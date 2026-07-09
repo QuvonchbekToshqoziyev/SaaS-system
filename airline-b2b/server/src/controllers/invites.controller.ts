@@ -5,6 +5,7 @@ import bcrypt from 'bcrypt';
 import { Role } from '@prisma/client';
 import jwt from 'jsonwebtoken';
 import { canAccessFirm } from '../utils/access';
+import { isFirmAdminLike, normalizeFirmUserRole } from '../utils/firm-user-roles';
 
 const ALLOWED_ROLES = new Set(Object.values(Role));
 
@@ -62,7 +63,7 @@ function resolvePublicWebOrigin(req: Request): string | undefined {
 
 export const createInvite = async (req: Request, res: Response) => {
   const { email, role, firmId, firmName, fullName, phone, subscriptionDays, password: initialPassword } = req.body;
-  const authUser = ((req as any).user || {}) as { userId?: string; role?: string };
+  const authUser = ((req as any).user || {}) as { userId?: string; role?: string; firmId?: string | null; firmRole?: string | null };
   const createdBy = authUser.userId;
   const actorRole = String(authUser.role || '').toUpperCase();
   if (!createdBy) {
@@ -84,6 +85,7 @@ export const createInvite = async (req: Request, res: Response) => {
 
   const upperRole = typeof role === 'string' ? role.toUpperCase() : '';
   const roleValue: Role = ALLOWED_ROLES.has(upperRole as Role) ? (upperRole as Role) : Role.FIRM;
+  const firmRole = roleValue === Role.FIRM ? normalizeFirmUserRole(req.body?.firmRole) : normalizeFirmUserRole('FIRM_ADMIN');
   const normalizedFullName = typeof fullName === 'string' ? fullName.trim() : '';
   const normalizedPhone = typeof phone === 'string' ? phone.trim() : '';
   const durationDays = Number(subscriptionDays || 0);
@@ -92,6 +94,19 @@ export const createInvite = async (req: Request, res: Response) => {
     : undefined;
 
   let resolvedFirmId: string | undefined = typeof firmId === 'string' ? firmId : undefined;
+
+  if (actorRole === 'FIRM') {
+    if (!isFirmAdminLike(authUser)) {
+      return res.status(403).json({ error: 'Only firm admins can create firm staff accounts' });
+    }
+    if (roleValue !== Role.FIRM) {
+      return res.status(403).json({ error: 'Firm admins can only create firm staff accounts' });
+    }
+    if (!authUser.firmId) {
+      return res.status(400).json({ error: 'Firm account is missing firmId' });
+    }
+    resolvedFirmId = String(authUser.firmId);
+  }
 
   if (actorRole !== 'SUPERADMIN' && roleValue !== Role.FIRM) {
     return res.status(403).json({ error: 'Only superadmin can invite admins' });
@@ -149,6 +164,7 @@ export const createInvite = async (req: Request, res: Response) => {
       fullName: normalizedFullName || undefined,
       phone: normalizedPhone || undefined,
       role: roleValue,
+      firmRole,
       firmId: resolvedFirmId,
       token: hashedToken,
       expiresAt,
@@ -173,6 +189,7 @@ export const createInvite = async (req: Request, res: Response) => {
           fullName: normalizedFullName || undefined,
           phone: normalizedPhone || undefined,
           role: roleValue,
+          firmRole,
           firmId: resolvedFirmId,
         },
       });
@@ -254,6 +271,7 @@ export const acceptInvite = async (req: Request, res: Response) => {
           fullName: invite.fullName,
           phone: invite.phone,
           role: invite.role,
+          firmRole: invite.firmRole,
           firmId: invite.firmId,
         }
       });
@@ -270,11 +288,15 @@ export const acceptInvite = async (req: Request, res: Response) => {
         data: { usedAt: new Date() }
       });
 
-      return { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, role: user.role, firmId: user.firmId };
+      const firm = user.firmId
+        ? await tx.firm.findUnique({ where: { id: user.firmId }, select: { kind: true } })
+        : null;
+
+      return { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, role: user.role, firmRole: user.firmRole, firmId: user.firmId, firmKind: firm?.kind || null };
     });
 
     const jwtToken = jwt.sign(
-      { userId: createdUser.id, role: createdUser.role, firmId: createdUser.firmId },
+      { userId: createdUser.id, role: createdUser.role, firmRole: createdUser.firmRole, firmId: createdUser.firmId, firmKind: createdUser.firmKind },
       jwtSecret,
       { expiresIn: '1d' },
     );

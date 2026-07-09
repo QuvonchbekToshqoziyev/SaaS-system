@@ -22,6 +22,8 @@ import siteContentRoutes from './routes/site-content';
 import maintenanceRoutes from './routes/maintenance';
 import chatRoutes from './routes/chat';
 import auditLogRoutes from './routes/audit-log';
+import airlineRoutes from './routes/airlines';
+import notificationRoutes from './routes/notifications';
 
 const jwtSecret = process.env.JWT_SECRET;
 if (!jwtSecret || !jwtSecret.trim()) {
@@ -118,6 +120,8 @@ app.use('/employees', employeeRoutes);
 app.use('/site-content', siteContentRoutes);
 app.use('/chat', chatRoutes);
 app.use('/audit-log', auditLogRoutes);
+app.use('/airlines', airlineRoutes);
+app.use('/notifications', notificationRoutes);
 app.use('/admin', maintenanceRoutes);
 
 app.use(errorHandler);

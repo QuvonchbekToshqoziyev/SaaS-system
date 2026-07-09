@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { isPayableDebtType, payableAndPaymentTypeFilter } from '../utils/transaction-types';
 import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
 import { writeAuditLog } from '../utils/audit';
+import { canManageFirmWork } from '../utils/firm-user-roles';
 
 type AuthUser = {
   userId?: string;
@@ -22,37 +23,69 @@ function sumToNumber(value: unknown): number {
 }
 
 async function getFirmBalances(firmIds?: string[]) {
-  const groups = await prisma.transaction.groupBy({
-    by: ['firmId', 'type'],
+  const rows = await prisma.transaction.findMany({
     where: {
       type: payableAndPaymentTypeFilter,
-      ...(firmIds?.length ? { firmId: { in: firmIds } } : {}),
+      ...(firmIds?.length
+        ? {
+            OR: [
+              { firmId: { in: firmIds } },
+              { payerFirmId: { in: firmIds } },
+              { receiverFirmId: { in: firmIds } },
+            ],
+          }
+        : {}),
     },
-    _sum: { baseAmount: true },
+    select: { firmId: true, payerFirmId: true, receiverFirmId: true, type: true, baseAmount: true },
   });
 
-  const byFirm = new Map<string, { debt: number; paid: number }>();
-  for (const row of groups) {
-    const current = byFirm.get(row.firmId) || { debt: 0, paid: 0 };
-    const value = sumToNumber(row._sum?.baseAmount);
-    if (isPayableDebtType(row.type)) current.debt += value;
-    if (row.type === 'PAYMENT') current.paid += value;
-    byFirm.set(row.firmId, current);
+  const byFirm = new Map<string, { debt: number; paid: number; receivable: number; received: number }>();
+  const get = (firmId: string) => byFirm.get(firmId) || { debt: 0, paid: 0, receivable: 0, received: 0 };
+  const put = (firmId: string, value: { debt: number; paid: number; receivable: number; received: number }) => byFirm.set(firmId, value);
+
+  for (const row of rows) {
+    const value = sumToNumber(row.baseAmount);
+    if (isPayableDebtType(row.type)) {
+      const debtorId = row.payerFirmId || row.firmId;
+      const debtor = get(debtorId);
+      debtor.debt += value;
+      put(debtorId, debtor);
+      if (row.receiverFirmId) {
+        const creditor = get(row.receiverFirmId);
+        creditor.receivable += value;
+        put(row.receiverFirmId, creditor);
+      }
+    }
+    if (row.type === 'PAYMENT') {
+      const payerId = row.payerFirmId || row.firmId;
+      const payer = get(payerId);
+      payer.paid += value;
+      put(payerId, payer);
+      if (row.receiverFirmId) {
+        const receiver = get(row.receiverFirmId);
+        receiver.received += value;
+        put(row.receiverFirmId, receiver);
+      }
+    }
   }
 
   return byFirm;
 }
 
-function withBalance<T extends { id: string }>(firm: T, balances: Map<string, { debt: number; paid: number }>) {
-  const totals = balances.get(firm.id) || { debt: 0, paid: 0 };
+function withBalance<T extends { id: string }>(firm: T, balances: Map<string, { debt: number; paid: number; receivable: number; received: number }>) {
+  const totals = balances.get(firm.id) || { debt: 0, paid: 0, receivable: 0, received: 0 };
   const balance = totals.paid - totals.debt;
+  const receivableOutstanding = Math.max(totals.receivable - totals.received, 0);
   return {
     ...firm,
     debt: totals.debt,
     paid: totals.paid,
+    receivable: totals.receivable,
+    received: totals.received,
+    receivableOutstanding,
     balance,
     outstanding: Math.max(-balance, 0),
-    credit: Math.max(balance, 0),
+    credit: Math.max(balance, 0) + receivableOutstanding,
   };
 }
 
@@ -96,6 +129,7 @@ export const listFirms = async (req: Request, res: Response) => {
       subscriptionEndsAt: true,
       creditLimit: true,
       currency: true,
+      kind: true,
       status: true,
       createdByUserId: true,
       createdByFirmId: true,
@@ -138,6 +172,7 @@ export const getFirmById = async (req: Request, res: Response) => {
       subscriptionEndsAt: true,
       creditLimit: true,
       currency: true,
+      kind: true,
       status: true,
       createdByUserId: true,
       createdByFirmId: true,
@@ -172,6 +207,9 @@ export const createFirm = async (req: Request, res: Response) => {
   if (!['SUPERADMIN', 'ADMIN', 'FIRM'].includes(role)) {
     return res.status(403).json({ error: 'Forbidden' });
   }
+  if (role === 'FIRM' && !canManageFirmWork(authUser)) {
+    return res.status(403).json({ error: 'Only firm admins and managers can add partner firms' });
+  }
   if (!actorUserId) return res.status(401).json({ error: 'Unauthorized' });
 
   const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
@@ -190,6 +228,11 @@ export const createFirm = async (req: Request, res: Response) => {
           subscriptionEndsAt,
           creditLimit,
           currency: normalizeCurrency(req.body?.currency || 'USD'),
+          kind: role === 'FIRM'
+            ? 'CONTRACTOR'
+            : String(req.body?.kind || '').toUpperCase() === 'AIRLINE'
+              ? 'AIRLINE'
+              : 'AGENCY',
           status: 'ACTIVE',
           createdByUserId: actorUserId,
           createdByFirmId: role === 'FIRM' ? actorFirmId : null,
@@ -203,6 +246,7 @@ export const createFirm = async (req: Request, res: Response) => {
           subscriptionEndsAt: true,
           creditLimit: true,
           currency: true,
+          kind: true,
           status: true,
           createdByUserId: true,
           createdByFirmId: true,
@@ -255,6 +299,7 @@ export const updateFirm = async (req: Request, res: Response) => {
         subscriptionEndsAt: true,
         creditLimit: true,
         currency: true,
+        kind: true,
         status: true,
       },
     });
@@ -286,6 +331,9 @@ export const updateFirm = async (req: Request, res: Response) => {
     if (typeof req.body?.currency === 'string' && req.body.currency.trim()) {
       data.currency = req.body.currency.trim().toUpperCase();
     }
+    if (typeof req.body?.kind === 'string' && ['AGENCY', 'AIRLINE', 'CONTRACTOR'].includes(req.body.kind.toUpperCase())) {
+      data.kind = req.body.kind.toUpperCase() as any;
+    }
     if (typeof req.body?.status === 'string' && ['ACTIVE', 'SUSPENDED'].includes(req.body.status.toUpperCase())) {
       data.status = req.body.status.toUpperCase() as any;
     }
@@ -308,6 +356,7 @@ export const updateFirm = async (req: Request, res: Response) => {
         subscriptionEndsAt: true,
         creditLimit: true,
         currency: true,
+        kind: true,
         status: true,
         createdAt: true,
         updatedAt: true,

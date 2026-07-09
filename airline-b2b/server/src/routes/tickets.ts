@@ -18,8 +18,8 @@ import { deleteRecord, updateRecord } from '../controllers/maintenance.controlle
 const router = Router();
 router.use(authMiddleware);
 router.get('/', getTickets);
-router.post('/', roleMiddleware(['SUPERADMIN', 'ADMIN']), createTickets);
-router.post('/allocate', roleMiddleware(['SUPERADMIN', 'ADMIN']), allocateTicket);
+router.post('/', roleMiddleware(['FIRM']), createTickets);
+router.post('/allocate', roleMiddleware(['FIRM']), allocateTicket);
 router.post('/confirm', roleMiddleware(['FIRM']), confirmAllocation);
 router.post('/deallocate', roleMiddleware(['SUPERADMIN', 'ADMIN']), deallocateTicket);
 router.post('/sell', sellTicket); // Firms can sell their assigned tickets

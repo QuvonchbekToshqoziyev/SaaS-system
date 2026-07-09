@@ -270,6 +270,7 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
 
   const flow = String(body.flow || '').trim().toUpperCase();
   const rawFirmId = String(body.firmId || '').trim();
+  const counterpartyFirmId = String(body.counterpartyFirmId || body.counterpartyId || '').trim() || undefined;
   const flightId = String(body.flightId || '').trim() || undefined;
   const amount = parseDecimal(body.amount);
   const currency = normalizeCurrency(body.currency || DEFAULT_CURRENCY);
@@ -305,6 +306,9 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
   if (!(await canAccessFirm(authUser, firmId))) {
     return res.status(403).json({ error: 'Forbidden' });
   }
+  if (counterpartyFirmId && !(await canAccessFirm(authUser, counterpartyFirmId))) {
+    return res.status(403).json({ error: 'Counterparty is not accessible' });
+  }
   try {
     kassaDesk = await resolveKassaDesk(authUser, body.kassaDeskId);
     await assertKassaDeskBelongsToOneOf(kassaDesk, [firmId], firmId);
@@ -316,14 +320,16 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
   }
 
   try {
-    const [firm, flight, paymentCard] = await Promise.all([
-      prisma.firm.findUnique({ where: { id: firmId }, select: { id: true, name: true } }),
+    const [firm, counterparty, flight, paymentCard] = await Promise.all([
+      prisma.firm.findUnique({ where: { id: firmId }, select: { id: true, name: true, kind: true } }),
+      counterpartyFirmId ? prisma.firm.findUnique({ where: { id: counterpartyFirmId }, select: { id: true, name: true, kind: true } }) : Promise.resolve(null),
       flightId ? prisma.flight.findUnique({ where: { id: flightId }, select: { id: true, flightNumber: true } }) : Promise.resolve(null),
       paymentCardId
         ? prisma.paymentCard.findUnique({ where: { id: paymentCardId }, select: { id: true, ownerName: true, cardNumber: true, currency: true, status: true } })
         : Promise.resolve(null),
     ]);
     if (!firm) return res.status(404).json({ error: 'Firm not found' });
+    if (counterpartyFirmId && !counterparty) return res.status(404).json({ error: 'Counterparty not found' });
     if (flightId && !flight) return res.status(404).json({ error: 'Flight not found' });
     if (method === 'card') {
       if (!paymentCard) return res.status(404).json({ error: 'Payment card not found' });
@@ -336,8 +342,8 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
     const created = await prisma.transaction.create({
       data: {
         firmId,
-        payerFirmId: flow === 'IN' ? firmId : undefined,
-        receiverFirmId: flow === 'OUT' ? firmId : undefined,
+        payerFirmId: flow === 'IN' ? (counterpartyFirmId || firmId) : firmId,
+        receiverFirmId: flow === 'OUT' ? (counterpartyFirmId || firmId) : firmId,
         flightId,
         createdByUserId: authUser.userId ? String(authUser.userId) : undefined,
         type: 'ADJUSTMENT',
@@ -361,6 +367,9 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
           paymentCardOwner: paymentCard?.ownerName,
           paymentCardNumber: paymentCard?.cardNumber,
           firmLabel: firm.name,
+          counterpartyFirmId,
+          counterpartyLabel: counterparty?.name,
+          counterpartyKind: counterparty?.kind,
           flightNumber: flight?.flightNumber,
         },
       },

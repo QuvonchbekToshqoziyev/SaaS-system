@@ -1,11 +1,13 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { canAccessFirm, getAccessibleFirmIds, isSuperAdmin, normalizeRole } from '../utils/access';
+import { isFirmAdminLike } from '../utils/firm-user-roles';
 
 export type AuthUser = {
   userId?: string;
   role?: string;
   firmId?: string | null;
+  firmRole?: string | null;
 };
 
 export class ServiceError extends Error {
@@ -64,6 +66,7 @@ export async function createEmployeeService(authUser: AuthUser, input: Record<st
 
   if (!name) throw new ServiceError('Employee name is required');
   if (!employeeRole) throw new ServiceError('Employee role is required');
+  if (actorRole === 'FIRM' && !isFirmAdminLike(authUser)) throw new ServiceError('Only firm admins can create employees', 403);
   if (firmId && !(await canAccessFirm(authUser, firmId))) throw new ServiceError('Forbidden', 403);
   if (!firmId && !isSuperAdmin(authUser)) throw new ServiceError('Firm is required');
 
@@ -89,6 +92,7 @@ export async function updateEmployeeService(authUser: AuthUser, id: string, inpu
   if (!isSuperAdmin(authUser) && !existing.firmId) {
     throw new ServiceError('Only superadmin can update system-wide employees', 403);
   }
+  if (actorRole === 'FIRM' && !isFirmAdminLike(authUser)) throw new ServiceError('Only firm admins can update employees', 403);
   if (existing.firmId && !(await canAccessFirm(authUser, existing.firmId))) {
     throw new ServiceError('Forbidden', 403);
   }
@@ -130,6 +134,7 @@ export async function softDeleteEmployeeService(authUser: AuthUser, id: string, 
   if (!isSuperAdmin(authUser) && !existing.firmId) {
     throw new ServiceError('Only superadmin can delete system-wide employees', 403);
   }
+  if (normalizeRole(authUser.role) === 'FIRM' && !isFirmAdminLike(authUser)) throw new ServiceError('Only firm admins can delete employees', 403);
   if (existing.firmId && !(await canAccessFirm(authUser, existing.firmId))) {
     throw new ServiceError('Forbidden', 403);
   }

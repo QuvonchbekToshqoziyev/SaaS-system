@@ -23,6 +23,8 @@ type LocalFlight = {
   id?: string;
   flight_id?: string;
   flightNumber?: string;
+  airlineId?: string | null;
+  airline?: { id: string; name: string; code?: string | null } | null;
   departure: string;
   arrival: string;
   status?: string;
@@ -48,6 +50,10 @@ export default function FlightsPage() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const { tr } = useLanguage();
+  const role = user?.role?.toUpperCase() || '';
+  const canCreateFlight = role === 'FIRM' && user?.firmKind === 'AIRLINE';
+  const canEdit = role === 'SUPERADMIN';
+  const showFlightActions = canCreateFlight || canEdit;
   
   const { data: flights = [], isLoading: loading } = useQuery<LocalFlight[]>({
     queryKey: ['flights'],
@@ -127,7 +133,6 @@ export default function FlightsPage() {
       toast.error(tr('Flight Number is required', 'Reys raqami kerak'));
       return;
     }
-
     setConfirm({
       kind: 'create',
       payload: {
@@ -252,11 +257,6 @@ export default function FlightsPage() {
       </div>
     );
   }
-
-  const role = user?.role?.toUpperCase() || '';
-  const canCreateFlight = role === 'SUPERADMIN' || role === 'ADMIN';
-  const canEdit = role === 'SUPERADMIN';
-  const showFlightActions = canCreateFlight || canEdit;
 
   const getStatusLabel = (status?: string) => {
     const normalized = String(status || 'SCHEDULED').trim().toUpperCase();
@@ -384,6 +384,10 @@ export default function FlightsPage() {
                 
                 <div className="text-sm text-foreground space-y-3">
                   <div className="flex items-center justify-between">
+                    <span className="font-medium text-muted">{tr('Airline', 'Aviakompaniya')}:</span>
+                    <span>{flight.airline?.name || '-'}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
                     <span className="font-medium text-muted">{tr('Departure', 'Jo\'nab ketish')}:</span>
                     <span>{new Date(flight.departure).toLocaleString()}</span>
                   </div>
@@ -454,6 +458,7 @@ export default function FlightsPage() {
             <thead className="bg-surface">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Flight', 'Reys')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Airline', 'Aviakompaniya')}</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Status', 'Holat')}</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Departure', 'Jo\'nab ketish')}</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Arrival', 'Yetib kelish')}</th>
@@ -477,6 +482,11 @@ export default function FlightsPage() {
                       value={formData.flightNumber}
                       onChange={(e) => setFormData({ ...formData, flightNumber: e.target.value })}
                     />
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="text-sm font-medium text-muted">
+                      {tr('Your airline account', 'Sizning aviakompaniya akkauntingiz')}
+                    </span>
                   </td>
                   <td className="px-4 py-3">
                     <span className="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-900/50 text-green-300 border border-green-700">
@@ -591,6 +601,7 @@ export default function FlightsPage() {
                         <span>{flight.flightNumber || tr('Flight', 'Reys')}</span>
                       )}
                     </td>
+                    <td className="px-4 py-3 text-sm text-muted whitespace-nowrap">{flight.airline?.name || '-'}</td>
                     <td className="px-4 py-3 text-sm">
                       <span
                         className={
@@ -642,7 +653,7 @@ export default function FlightsPage() {
               })}
               {flights.length === 0 && (
                 <tr>
-                  <td colSpan={showFlightActions ? 8 : 7} className="px-4 py-10 text-center text-sm text-muted">
+                  <td colSpan={showFlightActions ? 9 : 8} className="px-4 py-10 text-center text-sm text-muted">
                     {tr('No flights available.', 'Reyslar mavjud emas.')}
                   </td>
                 </tr>

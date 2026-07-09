@@ -1,5 +1,6 @@
 import { prisma } from '../db';
 import { getAccessibleFirmIds, normalizeRole } from './access';
+import { canOperateFirmKassa } from './firm-user-roles';
 
 export type KassaAuthUser = {
   userId?: string;
@@ -16,6 +17,7 @@ function roleLooksLikeKassir(role: unknown) {
 export async function canOperateKassa(authUser: KassaAuthUser): Promise<boolean> {
   const role = normalizeRole(authUser.role);
   if (role === 'SUPERADMIN') return true;
+  if (canOperateFirmKassa(authUser)) return true;
 
   const userId = authUser.userId ? String(authUser.userId) : '';
   if (!userId) return false;

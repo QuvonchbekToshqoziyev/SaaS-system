@@ -9,8 +9,8 @@ const router = Router();
 router.get('/', isAuthenticated, getAllFlights);
 router.get('/:id', isAuthenticated, getFlightById);
 
-// RBAC: Superadmin keeps controller rights; admins can create flights during beta operations.
-router.post('/', isAuthenticated, hasRole(['SUPERADMIN', 'ADMIN']), createFlight);
+// Airline accounts create flights and their origin ticket inventory.
+router.post('/', isAuthenticated, hasRole(['FIRM']), createFlight);
 router.put('/:id', isAuthenticated, hasRole(['SUPERADMIN']), updateFlight);
 router.delete('/:id', isAuthenticated, hasRole(['SUPERADMIN']), deleteFlight);
 

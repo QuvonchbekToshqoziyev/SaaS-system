@@ -2,6 +2,8 @@ export type Flight = {
   id: string;
   flight_id?: string;
   flightNumber: string | null;
+  airlineId?: string | null;
+  airline?: { id: string; name: string; code?: string | null } | null;
   departure: string;
   arrival: string;
   status: string;

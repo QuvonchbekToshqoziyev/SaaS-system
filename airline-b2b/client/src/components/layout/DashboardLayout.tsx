@@ -2,17 +2,85 @@
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { usePathname } from 'next/navigation';
-import { PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, Wallet, PackageOpen, Users, ShieldCheck, MessageCircle, History } from 'lucide-react';
+import { usePathname, useRouter } from 'next/navigation';
+import { Plane, PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, Wallet, PackageOpen, Users, ShieldCheck, MessageCircle, History, Bell, CheckCheck } from 'lucide-react';
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
+import { api } from '@/lib/api';
+
+type NotificationRow = {
+  id: string;
+  title: string;
+  body: string;
+  type?: string;
+  readAt?: string | null;
+  createdAt: string;
+  firm?: { id: string; name: string | null; kind?: string | null } | null;
+};
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { user, logout, isLoading } = useAuth();
   const { t } = useLanguage();
   const pathname = usePathname();
+  const router = useRouter();
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState<NotificationRow[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const firmRole = user?.firmRole || 'FIRM_ADMIN';
+  const isAirlineFirm = user?.role === 'firm' && user?.firmKind === 'AIRLINE';
+  const isFirmKassir = user?.role === 'firm' && firmRole === 'KASSIR';
+  const isFirmManager = user?.role === 'firm' && firmRole === 'MANAGER';
+  const isKassirAllowedPath = pathname.startsWith('/kassa') || pathname.startsWith('/settings');
+
+  useEffect(() => {
+    if (!isLoading && isFirmKassir && !isKassirAllowedPath) {
+      router.replace('/kassa');
+    }
+  }, [isLoading, isFirmKassir, isKassirAllowedPath, router]);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const loadNotifications = async () => {
+      try {
+        const res = await api.get('/notifications', { params: { limit: 20 } });
+        if (cancelled) return;
+        setNotifications(Array.isArray(res.data?.items) ? res.data.items : []);
+        setUnreadCount(Number(res.data?.unreadCount || 0));
+      } catch {
+        // Non-fatal; the rest of the dashboard should stay usable.
+      }
+    };
+    loadNotifications();
+    const id = window.setInterval(loadNotifications, 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [user]);
+
+  const markNotificationRead = async (id: string) => {
+    try {
+      await api.post(`/notifications/${id}/read`);
+      setNotifications((rows) => rows.map((row) => row.id === id ? { ...row, readAt: row.readAt || new Date().toISOString() } : row));
+      setUnreadCount((count) => Math.max(0, count - 1));
+    } catch {
+      // ignore
+    }
+  };
+
+  const markAllNotificationsRead = async () => {
+    try {
+      await api.post('/notifications/read-all');
+      const now = new Date().toISOString();
+      setNotifications((rows) => rows.map((row) => ({ ...row, readAt: row.readAt || now })));
+      setUnreadCount(0);
+    } catch {
+      // ignore
+    }
+  };
 
   if (isLoading) {
     return (
@@ -29,21 +97,36 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return null;
   }
 
-  const navLinks = user.role === 'firm' ? [
+  const airlineNavLinks = [
+    { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
+    { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
+    { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
+    { key: 'navChat' as const, href: '/chat', icon: MessageCircle },
+    { key: 'navReports' as const, href: '/reports', icon: BarChart3 },
+    { key: 'navSettings' as const, href: '/settings', icon: Settings },
+  ];
+
+  const firmNavLinks = isAirlineFirm ? airlineNavLinks : isFirmKassir ? [
+    { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
+    { key: 'navSettings' as const, href: '/settings', icon: Settings },
+  ] : [
     { key: 'navDashboard' as const, href: '/firm', icon: LayoutDashboard },
-    { key: 'navFirms' as const, href: '/firms', icon: UserCircle },
+    ...(isFirmManager ? [] : [{ key: 'navFirms' as const, href: '/firms', icon: UserCircle }]),
     { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
     { key: 'navTours' as const, href: '/tours', icon: PackageOpen },
     { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
     { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
-    { key: 'navEmployees' as const, href: '/employees', icon: Users },
+    ...(isFirmManager ? [] : [{ key: 'navEmployees' as const, href: '/employees', icon: Users }]),
     { key: 'navChat' as const, href: '/chat', icon: MessageCircle },
     { key: 'navReports' as const, href: '/reports', icon: BarChart3 },
     { key: 'navSettings' as const, href: '/settings', icon: Settings },
-  ] : [
+  ];
+
+  const navLinks = user.role === 'firm' ? firmNavLinks : [
     { key: 'navAdminDashboard' as const, href: '/admin', icon: LayoutDashboard },
     ...(user.role === 'superadmin' ? [{ key: 'navAdmins' as const, href: '/admins', icon: ShieldCheck }] : []),
     ...(user.role === 'superadmin' ? [{ key: 'navAuditLog' as const, href: '/audit-log', icon: History }] : []),
+    ...(user.role === 'superadmin' ? [{ key: 'navAirlines' as const, href: '/airlines', icon: Plane }] : []),
     { key: 'navFirms' as const, href: '/firms', icon: UserCircle },
     { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
     { key: 'navTours' as const, href: '/tours', icon: PackageOpen },
@@ -82,7 +165,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         {/* Sidebar Nav */}
         <div className="flex-1 min-h-0 overflow-y-auto scroller-minimal py-4 flex flex-col gap-1 px-3">
           <div className="px-2 mb-2 text-[10px] text-muted uppercase tracking-widest font-semibold select-none">
-            {user.role === 'firm' ? 'Agency Actions' : 'Platform Setup'}
+            {user.role === 'firm' ? (isAirlineFirm ? 'Airline Actions' : isFirmKassir ? 'Kassa Access' : 'Agency Actions') : 'Platform Setup'}
           </div>
           {navLinks.map((link) => {
             const isActive = pathname === link.href || (link.href !== '/firm' && link.href !== '/admin' && pathname.startsWith(link.href));
@@ -112,7 +195,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </div>
             <div className="overflow-hidden w-full px-2">
               <p className="text-[14px] font-bold text-foreground truncate">{user.email}</p>
-              <p className="text-[12px] text-muted truncate uppercase tracking-widest">{user.role}</p>
+              <p className="text-[12px] text-muted truncate uppercase tracking-widest">{user.role === 'firm' ? firmRole.replace('_', ' ') : user.role}</p>
             </div>
           </div>
 
@@ -137,6 +220,58 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
           
           <div className="flex items-center gap-4">
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsNotificationsOpen((open) => !open)}
+                className="relative p-2 bg-surface-2 border border-border hover:border-primary text-muted rounded-full transition-all shadow-sm"
+                aria-label="Notifications"
+              >
+                <Bell size={18} />
+                {unreadCount > 0 && (
+                  <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold text-ink">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+              </button>
+              {isNotificationsOpen && (
+                <div className="absolute right-0 top-12 z-50 w-[340px] max-w-[calc(100vw-2rem)] border border-border bg-surface shadow-2xl">
+                  <div className="flex items-center justify-between border-b border-border px-3 py-2">
+                    <div className="text-sm font-bold text-foreground">Notifications</div>
+                    <button type="button" onClick={markAllNotificationsRead} className="inline-flex items-center gap-1 text-xs font-semibold text-muted hover:text-foreground">
+                      <CheckCheck size={14} />
+                      Mark all
+                    </button>
+                  </div>
+                  <div className="max-h-[420px] overflow-y-auto scroller-minimal">
+                    {notifications.length === 0 ? (
+                      <div className="px-3 py-6 text-center text-sm text-muted">No notifications</div>
+                    ) : notifications.map((item) => {
+                      const unread = !item.readAt;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => markNotificationRead(item.id)}
+                          className={`block w-full border-b border-border px-3 py-3 text-left hover:bg-surface-2 ${unread ? 'bg-primary/10' : 'bg-surface'}`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-semibold text-foreground">{item.title}</div>
+                              <div className="mt-1 line-clamp-2 text-xs text-muted">{item.body}</div>
+                              <div className="mt-2 text-[11px] text-muted">
+                                {item.firm?.name ? `${item.firm.name} · ` : ''}{new Date(item.createdAt).toLocaleString()}
+                              </div>
+                            </div>
+                            {unread && <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-primary" />}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
             <ThemeLanguageSwitcher />
 
             <button
@@ -195,7 +330,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </div>
               <div>
                 <p className="font-bold text-lg text-foreground leading-tight truncate max-w-[200px]">{user.email}</p>
-                <p className="text-sm text-primary font-medium mt-1 uppercase tracking-wide">{user.role}</p>
+                <p className="text-sm text-primary font-medium mt-1 uppercase tracking-wide">{user.role === 'firm' ? firmRole.replace('_', ' ') : user.role}</p>
               </div>
             </div>
             

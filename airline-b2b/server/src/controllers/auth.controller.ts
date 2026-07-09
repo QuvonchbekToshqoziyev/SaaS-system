@@ -4,11 +4,13 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { Prisma, Role } from '@prisma/client';
 import { writeAuditLog } from '../utils/audit';
+import { normalizeFirmUserRole } from '../utils/firm-user-roles';
 
 const adminUserSelect = {
   id: true,
   email: true,
   role: true,
+  firmRole: true,
   status: true,
   fullName: true,
   phone: true,
@@ -17,6 +19,7 @@ const adminUserSelect = {
     select: {
       id: true,
       name: true,
+      kind: true,
       currency: true,
       subscriptionEndsAt: true,
     },
@@ -24,7 +27,7 @@ const adminUserSelect = {
   firmAccesses: {
     select: {
       firmId: true,
-      firm: { select: { id: true, name: true, currency: true, subscriptionEndsAt: true } },
+      firm: { select: { id: true, name: true, kind: true, currency: true, subscriptionEndsAt: true } },
     },
     orderBy: { firm: { name: 'asc' } },
   },
@@ -97,6 +100,7 @@ export const login = async (req: Request, res: Response) => {
       status: { not: 'DELETED' },
       deletedAt: null,
     },
+    include: { firm: { select: { kind: true } } },
   });
   if (!user) return res.status(401).json({ error: 'Invalid credentials' });
   
@@ -104,11 +108,11 @@ export const login = async (req: Request, res: Response) => {
   if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
   const token = jwt.sign(
-    { userId: user.id, role: user.role, firmId: user.firmId },
+    { userId: user.id, role: user.role, firmRole: user.firmRole, firmId: user.firmId, firmKind: user.firm?.kind || null },
     jwtSecret,
     { expiresIn: '1d' },
   );
-  res.json({ token, user: { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, role: user.role, firmId: user.firmId } });
+  res.json({ token, user: { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, role: user.role, firmRole: user.firmRole, firmId: user.firmId, firmKind: user.firm?.kind || null } });
 };
 
 export const changePassword = async (req: Request, res: Response) => {
@@ -160,6 +164,7 @@ export const listUsers = async (req: Request, res: Response) => {
       id: true,
       email: true,
       role: true,
+      firmRole: true,
       status: true,
       fullName: true,
       phone: true,
@@ -385,6 +390,9 @@ export const updateUser = async (req: Request, res: Response) => {
     if (typeof req.body?.email === 'string' && req.body.email.trim()) data.email = req.body.email.trim().toLowerCase();
     if (typeof req.body?.fullName === 'string') data.fullName = req.body.fullName.trim() || null;
     if (typeof req.body?.phone === 'string') data.phone = req.body.phone.trim() || null;
+    if (nextRole === Role.FIRM) {
+      data.firmRole = normalizeFirmUserRole(req.body?.firmRole ?? existing.firmRole);
+    }
     if (typeof req.body?.password === 'string' && req.body.password) {
       if (req.body.password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
       data.password = await bcrypt.hash(req.body.password, 10);
@@ -526,6 +534,7 @@ export const setUserFirmAccess = async (req: Request, res: Response) => {
       id: true,
       email: true,
       role: true,
+      firmRole: true,
       status: true,
       fullName: true,
       phone: true,

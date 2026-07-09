@@ -4,9 +4,34 @@ import { Prisma } from '@prisma/client';
 import { payableDebtTypeFilter } from '../utils/transaction-types';
 import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
 import { assertActiveKassaDesk, assertKassaDeskForFirmSelection } from '../utils/kassa-desk-policy';
+import { canManageFirmWork } from '../utils/firm-user-roles';
+import { createFirmNotification } from '../utils/notifications';
 
 function normalizeRole(role: unknown): string {
   return String(role || '').toUpperCase();
+}
+
+async function getFirmKind(firmId: string) {
+  if (!firmId) return null;
+  const firm = await prisma.firm.findUnique({
+    where: { id: firmId },
+    select: { kind: true },
+  });
+  return firm?.kind || null;
+}
+
+async function assertCanManageAirlineFlight(user: any, flightId: string) {
+  const role = normalizeRole(user?.role);
+  const firmId = user?.firmId ? String(user.firmId) : '';
+  if (role !== 'FIRM' || !firmId) throw new Error('Forbidden');
+  const firmKind = await getFirmKind(firmId);
+  if (firmKind !== 'AIRLINE') throw new Error('Only airline accounts can manage origin ticket stock');
+
+  const flight = await prisma.flight.findUnique({
+    where: { id: flightId },
+    select: { airline: { select: { firmId: true } } },
+  });
+  if (!flight || flight.airline?.firmId !== firmId) throw new Error('Flight not found');
 }
 
 function parsePositiveInt(value: unknown): number | null {
@@ -107,9 +132,15 @@ export const getTickets = async (req: Request, res: Response) => {
   const user = (req as any).user;
   const role = String(user?.role || '').toUpperCase();
   const ownFirmId = user?.firmId ? String(user.firmId) : '';
+  const firmKind = role === 'FIRM' ? await getFirmKind(ownFirmId) : null;
 
   const where: any = id ? { flightId: String(id) } : {};
-  if (role === 'FIRM') {
+  if (role === 'FIRM' && firmKind === 'AIRLINE') {
+    if (!ownFirmId) {
+      return res.status(400).json({ error: 'Firm account is missing firmId' });
+    }
+    where.flight = { airline: { firmId: ownFirmId } };
+  } else if (role === 'FIRM') {
     if (!ownFirmId) {
       return res.status(400).json({ error: 'Firm account is missing firmId' });
     }
@@ -139,6 +170,12 @@ export const createTickets = async (req: Request, res: Response) => {
   if (flight.status === 'CANCELLED') {
     return res.status(400).json({ error: 'Cannot create tickets for a cancelled flight' });
   }
+  try {
+    await assertCanManageAirlineFlight((req as any).user, flightId.trim());
+  } catch (err: any) {
+    const message = err?.message || 'Forbidden';
+    return res.status(message === 'Flight not found' ? 404 : 403).json({ error: message });
+  }
 
   const newTickets = Array.from({ length: resolvedQuantity }).map(() => ({
     flightId: flightId.trim(),
@@ -151,6 +188,7 @@ export const createTickets = async (req: Request, res: Response) => {
 };
 
 export const allocateTicket = async (req: Request, res: Response) => {
+  const user = (req as any).user;
   const { ticketId, firmId, flightId, flight_id, quantity, count, allocationPrice, price } = req.body;
   const overridePrice = parsePositiveDecimal(allocationPrice ?? price);
 
@@ -170,14 +208,25 @@ export const allocateTicket = async (req: Request, res: Response) => {
     }
 
     try {
+      await assertCanManageAirlineFlight(user, resolvedFlightId);
       const result = await prisma.$transaction(async (tx) => {
         const [firm, flight] = await Promise.all([
-          tx.firm.findUnique({ where: { id: targetFirmId }, select: { id: true } }),
-          tx.flight.findUnique({ where: { id: resolvedFlightId }, select: { id: true, status: true } }),
+          tx.firm.findUnique({ where: { id: targetFirmId }, select: { id: true, name: true } }),
+          tx.flight.findUnique({
+            where: { id: resolvedFlightId },
+            select: { id: true, status: true, flightNumber: true, airline: { select: { id: true, name: true, firmId: true } } },
+          }),
         ]);
         if (!firm) throw new Error('Firm not found');
         if (!flight) throw new Error('Flight not found');
         if (flight.status === 'CANCELLED') throw new Error('Cannot allocate tickets for a cancelled flight');
+        if (flight.airline?.firmId) {
+          const connection = await tx.airlineFirmConnection.findFirst({
+            where: { airlineFirmId: flight.airline.firmId, firmId: targetFirmId, status: 'ACTIVE' },
+            select: { id: true },
+          });
+          if (!connection) throw new Error('Airline is not connected to this firm');
+        }
 
         const tickets: any[] = await tx.$queryRaw`
           SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
@@ -203,6 +252,29 @@ export const allocateTicket = async (req: Request, res: Response) => {
             ...(overridePrice?.gt(0) ? { basePrice: overridePrice.toDecimalPlaces(4) } : {}),
           },
         });
+        await createFirmNotification(tx, targetFirmId, {
+          title: 'Ticket allocation pending',
+          body: `${ticketIds.length} ticket(s) for ${flight.flightNumber || 'flight'} were allocated to your firm. Accept them to start managing these tickets.`,
+          type: 'TICKET_ALLOCATION_PENDING',
+          entityType: 'flight',
+          entityId: resolvedFlightId,
+          metadata: {
+            flightId: resolvedFlightId,
+            flightNumber: flight.flightNumber,
+            count: ticketIds.length,
+            airlineId: flight.airline?.id,
+            airlineName: flight.airline?.name,
+            airlineFirmId: flight.airline?.firmId,
+          },
+        });
+        await createFirmNotification(tx, flight.airline?.firmId, {
+          title: 'Tickets allocated',
+          body: `${ticketIds.length} ticket(s) for ${flight.flightNumber || 'flight'} were allocated to ${firm.name}.`,
+          type: 'TICKET_ALLOCATED',
+          entityType: 'flight',
+          entityId: resolvedFlightId,
+          metadata: { flightId: resolvedFlightId, flightNumber: flight.flightNumber, count: ticketIds.length, firmId: targetFirmId, firmName: firm.name },
+        });
         return { count: ticketIds.length };
       });
 
@@ -220,6 +292,12 @@ export const allocateTicket = async (req: Request, res: Response) => {
   }
   
   try {
+    const ticketFlight = await prisma.ticket.findUnique({
+      where: { id: ticketId },
+      select: { flightId: true },
+    });
+    if (!ticketFlight) return res.status(404).json({ error: 'Ticket not found' });
+    await assertCanManageAirlineFlight(user, ticketFlight.flightId);
     await prisma.$transaction(async (tx) => {
       // Find ticket
       const tickets: any[] = await tx.$queryRaw`
@@ -233,15 +311,22 @@ export const allocateTicket = async (req: Request, res: Response) => {
 
       const flight = await tx.flight.findUnique({
         where: { id: String(ticket.flightId) },
-        select: { status: true },
+        select: { id: true, status: true, flightNumber: true, airline: { select: { id: true, name: true, firmId: true } } },
       });
       if (!flight) throw new Error('Flight not found');
       if (flight.status === 'CANCELLED') throw new Error('Cannot allocate tickets for a cancelled flight');
+      if (flight.airline?.firmId) {
+        const connection = await tx.airlineFirmConnection.findFirst({
+          where: { airlineFirmId: flight.airline.firmId, firmId, status: 'ACTIVE' },
+          select: { id: true },
+        });
+        if (!connection) throw new Error('Airline is not connected to this firm');
+      }
       
       if (ticket.status !== 'AVAILABLE') throw new Error('Ticket is not available for allocation');
       if (ticket.assignedFirmId) throw new Error('Ticket is already allocated');
 
-      const firm = await tx.firm.findUnique({ where: { id: firmId }, select: { id: true } });
+      const firm = await tx.firm.findUnique({ where: { id: firmId }, select: { id: true, name: true } });
       if (!firm) throw new Error('Firm not found');
 
       // Update ticket
@@ -252,6 +337,22 @@ export const allocateTicket = async (req: Request, res: Response) => {
           assignedFirmId: firmId,
           ...(overridePrice?.gt(0) ? { basePrice: overridePrice.toDecimalPlaces(4) } : {}),
         }
+      });
+      await createFirmNotification(tx, firmId, {
+        title: 'Ticket allocation pending',
+        body: `A ticket for ${flight.flightNumber || 'flight'} was allocated to your firm. Accept it to start managing this ticket.`,
+        type: 'TICKET_ALLOCATION_PENDING',
+        entityType: 'ticket',
+        entityId: ticketId,
+        metadata: { flightId: flight.id, flightNumber: flight.flightNumber, ticketId, airlineId: flight.airline?.id, airlineName: flight.airline?.name, airlineFirmId: flight.airline?.firmId },
+      });
+      await createFirmNotification(tx, flight.airline?.firmId, {
+        title: 'Ticket allocated',
+        body: `A ticket for ${flight.flightNumber || 'flight'} was allocated to ${firm.name}.`,
+        type: 'TICKET_ALLOCATED',
+        entityType: 'ticket',
+        entityId: ticketId,
+        metadata: { flightId: flight.id, flightNumber: flight.flightNumber, ticketId, firmId, firmName: firm.name },
       });
     });
     res.json({ success: true });
@@ -267,6 +368,9 @@ export const confirmAllocation = async (req: Request, res: Response) => {
 
   if (role !== 'FIRM') {
     return res.status(403).json({ error: 'Forbidden' });
+  }
+  if (!canManageFirmWork(user)) {
+    return res.status(403).json({ error: 'Only firm admins and managers can confirm ticket allocations' });
   }
 
   const ownFirmId = user?.firmId ? String(user.firmId) : '';
@@ -288,10 +392,11 @@ export const confirmAllocation = async (req: Request, res: Response) => {
       const result = await prisma.$transaction(async (tx) => {
         const flight = await tx.flight.findUnique({
           where: { id: resolvedFlightId },
-          select: { status: true },
+          select: { status: true, flightNumber: true, airline: { select: { id: true, name: true, firmId: true } } },
         });
         if (!flight) throw new Error('Flight not found');
         if (flight.status === 'CANCELLED') throw new Error('Cannot confirm allocation for a cancelled flight');
+        const airlineFirmId = flight.airline?.firmId || null;
 
         const tickets: any[] = await tx.$queryRaw`
           SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
@@ -322,6 +427,8 @@ export const confirmAllocation = async (req: Request, res: Response) => {
 
           return {
             firmId: ownFirmId,
+            payerFirmId: ownFirmId,
+            receiverFirmId: airlineFirmId,
             flightId: String(t.flightId),
             ticketId: String(t.id),
             createdByUserId: actorUserId,
@@ -331,11 +438,35 @@ export const confirmAllocation = async (req: Request, res: Response) => {
             currency,
             exchangeRate: exchangeRate.toDecimalPlaces(6),
             baseAmount,
-            metadata: { note: 'Allocation confirmed by firm, debt incurred', kassaDeskId: kassaDesk?.id, kassaDeskLabel: kassaDesk?.name } as any,
+            direction: airlineFirmId ? 'AIRLINE_TO_FIRM' : undefined,
+            metadata: {
+              note: airlineFirmId ? 'Airline ticket allocation confirmed, firm owes airline' : 'Allocation confirmed by firm, debt incurred',
+              airlineId: flight.airline?.id,
+              airlineName: flight.airline?.name,
+              airlineFirmId,
+              kassaDeskId: kassaDesk?.id,
+              kassaDeskLabel: kassaDesk?.name,
+            } as any,
           };
         });
 
         await tx.transaction.createMany({ data: transactionRows });
+        await createFirmNotification(tx, ownFirmId, {
+          title: 'Ticket allocation accepted',
+          body: `${ticketIds.length} ticket(s) for ${flight.flightNumber || 'flight'} are now active in your firm inventory.`,
+          type: 'TICKET_ALLOCATION_ACCEPTED',
+          entityType: 'flight',
+          entityId: resolvedFlightId,
+          metadata: { flightId: resolvedFlightId, flightNumber: flight.flightNumber, count: ticketIds.length, airlineId: flight.airline?.id, airlineName: flight.airline?.name, airlineFirmId },
+        });
+        await createFirmNotification(tx, airlineFirmId, {
+          title: 'Firm accepted tickets',
+          body: `${ticketIds.length} ticket(s) for ${flight.flightNumber || 'flight'} were accepted by the firm.`,
+          type: 'TICKET_ALLOCATION_ACCEPTED',
+          entityType: 'flight',
+          entityId: resolvedFlightId,
+          metadata: { flightId: resolvedFlightId, flightNumber: flight.flightNumber, count: ticketIds.length, firmId: ownFirmId },
+        });
         return { count: ticketIds.length };
       });
 
@@ -362,7 +493,7 @@ export const confirmAllocation = async (req: Request, res: Response) => {
 
       const flight = await tx.flight.findUnique({
         where: { id: String(ticket.flightId) },
-        select: { status: true },
+        select: { status: true, flightNumber: true, airline: { select: { id: true, name: true, firmId: true } } },
       });
       if (!flight) throw new Error('Flight not found');
       if (flight.status === 'CANCELLED') throw new Error('Cannot confirm allocation for a cancelled flight');
@@ -375,6 +506,7 @@ export const confirmAllocation = async (req: Request, res: Response) => {
 
       const exchangeRate = new Prisma.Decimal(1);
       const baseAmount = originalAmount.toDecimalPlaces(4);
+      const airlineFirmId = flight.airline?.firmId || null;
 
       await tx.ticket.update({
         where: { id: ticketId },
@@ -384,6 +516,8 @@ export const confirmAllocation = async (req: Request, res: Response) => {
       await tx.transaction.create({
         data: {
           firmId: ownFirmId,
+          payerFirmId: ownFirmId,
+          receiverFirmId: airlineFirmId,
           flightId: String(ticket.flightId),
           ticketId: String(ticketId),
           createdByUserId: actorUserId,
@@ -393,8 +527,32 @@ export const confirmAllocation = async (req: Request, res: Response) => {
           currency,
           exchangeRate: exchangeRate.toDecimalPlaces(6),
           baseAmount,
-          metadata: { note: 'Allocation confirmed by firm, debt incurred', kassaDeskId: kassaDesk?.id, kassaDeskLabel: kassaDesk?.name },
+          direction: airlineFirmId ? 'AIRLINE_TO_FIRM' : undefined,
+          metadata: {
+            note: airlineFirmId ? 'Airline ticket allocation confirmed, firm owes airline' : 'Allocation confirmed by firm, debt incurred',
+            airlineId: flight.airline?.id,
+            airlineName: flight.airline?.name,
+            airlineFirmId,
+            kassaDeskId: kassaDesk?.id,
+            kassaDeskLabel: kassaDesk?.name,
+          },
         },
+      });
+      await createFirmNotification(tx, ownFirmId, {
+        title: 'Ticket allocation accepted',
+        body: `A ticket for ${flight.flightNumber || 'flight'} is now active in your firm inventory.`,
+        type: 'TICKET_ALLOCATION_ACCEPTED',
+        entityType: 'ticket',
+        entityId: ticketId,
+        metadata: { flightId: String(ticket.flightId), flightNumber: flight.flightNumber, ticketId, airlineId: flight.airline?.id, airlineName: flight.airline?.name, airlineFirmId },
+      });
+      await createFirmNotification(tx, airlineFirmId, {
+        title: 'Firm accepted ticket',
+        body: `A ticket for ${flight.flightNumber || 'flight'} was accepted by the firm.`,
+        type: 'TICKET_ALLOCATION_ACCEPTED',
+        entityType: 'ticket',
+        entityId: ticketId,
+        metadata: { flightId: String(ticket.flightId), flightNumber: flight.flightNumber, ticketId, firmId: ownFirmId },
       });
     });
 
@@ -595,6 +753,9 @@ export const sellTicket = async (req: Request, res: Response) => {
 
   if (!['SUPERADMIN', 'ADMIN', 'FIRM'].includes(role)) {
     return res.status(403).json({ error: 'Forbidden' });
+  }
+  if (role === 'FIRM' && !canManageFirmWork(user)) {
+    return res.status(403).json({ error: 'Only firm admins and managers can sell tickets' });
   }
 
   const saleAmount = parsePositiveDecimal(salePrice);
@@ -859,6 +1020,9 @@ export const createSaleCancellationRequest = async (req: Request, res: Response)
 
   if (role !== 'FIRM') {
     return res.status(403).json({ error: 'Forbidden' });
+  }
+  if (!canManageFirmWork(user)) {
+    return res.status(403).json({ error: 'Only firm admins and managers can request sale cancellation' });
   }
 
   const ownFirmId = user?.firmId ? String(user.firmId) : '';

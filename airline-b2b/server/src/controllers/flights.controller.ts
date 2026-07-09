@@ -11,18 +11,33 @@ function normalizeRole(role: unknown): string {
   return String(role || '').toUpperCase();
 }
 
+async function getFirmKind(firmId: string) {
+  if (!firmId) return null;
+  const firm = await prisma.firm.findUnique({
+    where: { id: firmId },
+    select: { id: true, kind: true },
+  });
+  return firm?.kind || null;
+}
+
 // GET /flights - Get all flights
 export const getAllFlights = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const role = normalizeRole(req.user?.role);
     const firmId = req.user?.firmId ? String(req.user.firmId) : '';
+    const firmKind = role === 'FIRM' ? await getFirmKind(firmId) : null;
     const txWhere = role === 'FIRM'
       ? (firmId ? { firmId } : undefined)
       : undefined;
     const where = {
       status: { not: 'DELETED' },
       deletedAt: null,
-      ...(role === 'FIRM'
+      ...(role === 'FIRM' && firmKind === 'AIRLINE'
+        ? {
+            airline: { firmId },
+          }
+        : {}),
+      ...(role === 'FIRM' && firmKind !== 'AIRLINE'
         ? {
             tickets: {
               some: {
@@ -52,7 +67,8 @@ export const getAllFlights = async (req: AuthenticatedRequest, res: Response) =>
             type: true,
             baseAmount: true
           }
-        }
+        },
+        airline: { select: { id: true, name: true, code: true, firmId: true } },
       }
     });
     const flightData = flights.map(flight => {
@@ -85,6 +101,7 @@ export const getFlightById = async (req: Request, res: Response) => {
   try {
     const role = normalizeRole((req as any).user?.role);
     const firmId = (req as any).user?.firmId ? String((req as any).user.firmId) : '';
+    const firmKind = role === 'FIRM' ? await getFirmKind(firmId) : null;
     if (role === 'FIRM' && !firmId) {
       return res.status(400).json({ error: 'Firm account is missing firmId' });
     }
@@ -96,20 +113,24 @@ export const getFlightById = async (req: Request, res: Response) => {
           where: {
             status: { not: 'DELETED' },
             deletedAt: null,
-            ...(role === 'FIRM' ? { assignedFirmId: firmId } : {}),
+            ...(role === 'FIRM' && firmKind !== 'AIRLINE' ? { assignedFirmId: firmId } : {}),
           },
           include: {
             assignedFirm: {
               select: { id: true, name: true }
             }
           }
-        }
+        },
+        airline: { select: { id: true, name: true, code: true, firmId: true } },
       }
     });
     if (!flight || flight.status === 'DELETED' || flight.deletedAt) {
       return res.status(404).json({ error: 'Flight not found' });
     }
-    if (role === 'FIRM' && flight.tickets.length === 0) {
+    if (role === 'FIRM' && firmKind === 'AIRLINE' && flight.airline?.firmId !== firmId) {
+      return res.status(404).json({ error: 'Flight not found' });
+    }
+    if (role === 'FIRM' && firmKind !== 'AIRLINE' && flight.tickets.length === 0) {
       return res.status(404).json({ error: 'Flight not found' });
     }
     res.json(flight);
@@ -124,14 +145,30 @@ export const createFlight = async (req: Request, res: Response) => {
   const { flightNumber, route, departure, arrival, ticketCount, ticketPrice, currency } = req.body;
   try {
     const role = normalizeRole((req as any).user?.role);
-    if (role !== 'SUPERADMIN' && role !== 'ADMIN') {
-      return res.status(403).json({ error: 'Only superadmin and assigned platform admins can create flights' });
+    const firmId = (req as any).user?.firmId ? String((req as any).user.firmId) : '';
+    if (role !== 'FIRM' || !firmId) {
+      return res.status(403).json({ error: 'Only airline accounts can create flights and ticket inventory' });
     }
+
+    const firm = await prisma.firm.findUnique({
+      where: { id: firmId },
+      select: { id: true, name: true, kind: true },
+    });
+    if (!firm || firm.kind !== 'AIRLINE') {
+      return res.status(403).json({ error: 'Only airline accounts can create flights and ticket inventory' });
+    }
+
+    const airline = await prisma.airline.findFirst({
+      where: { firmId, status: 'ACTIVE', deletedAt: null },
+      select: { id: true },
+    });
+    if (!airline) return res.status(400).json({ error: 'Airline not found' });
 
     const newFlight = await prisma.flight.create({
       data: {
         flightNumber,
         route: route || 'UNKNOWN',
+        airlineId: airline.id,
         departure: new Date(departure),
         arrival: new Date(arrival),
         currency: currency || 'USD',
@@ -145,6 +182,7 @@ export const createFlight = async (req: Request, res: Response) => {
       },
       include: {
         tickets: true,
+        airline: { select: { id: true, name: true, code: true } },
       }
     });
     res.status(201).json(newFlight);

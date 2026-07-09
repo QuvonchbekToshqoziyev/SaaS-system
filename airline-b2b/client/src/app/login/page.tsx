@@ -56,7 +56,7 @@ export default function LoginPage() {
       toast.success(tr('Logged in successfully', 'Muvaffaqiyatli kirdik'));
       const role = String(user?.role || '').toLowerCase();
       if (role === 'firm') {
-        router.push('/firm');
+        router.push(String(user?.firmKind || '').toUpperCase() === 'AIRLINE' ? '/flights' : '/firm');
       } else {
         router.push('/admin');
       }

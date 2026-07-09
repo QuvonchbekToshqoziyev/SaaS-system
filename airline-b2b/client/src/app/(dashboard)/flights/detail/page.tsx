@@ -82,7 +82,7 @@ function FlightDetailContent() {
     try {
       if (!id) return;
       const role = String(user?.role || '').toUpperCase();
-      const canAllocate = role === 'SUPERADMIN' || role === 'ADMIN';
+      const canAllocate = role === 'FIRM' && user?.firmKind === 'AIRLINE';
 
       const [reportRes, ticketsRes, firmsRes, cancelReqRes, desksRes] = await Promise.all([
         api.get(`/reports/flight?flight_id=${id}`),
@@ -101,7 +101,9 @@ function FlightDetailContent() {
       const pendingRequests = Array.isArray((cancelReqRes as any)?.data) ? (cancelReqRes as any).data : [];
       setPendingSaleCancelRequests(pendingRequests);
       
-      const firmsList = Array.isArray(firmsRes.data) ? firmsRes.data : [];
+      const firmsList = (Array.isArray(firmsRes.data) ? firmsRes.data : [])
+        .filter((firm: any) => String(firm?.id || '') !== String(user?.firmId || ''))
+        .filter((firm: any) => String(firm?.kind || '').toUpperCase() !== 'AIRLINE');
       setFirms(firmsList);
       setKassaDesks(Array.isArray((desksRes as any).data) ? (desksRes as any).data : []);
       if (firmsList.length > 0) setSelectedFirmId(String(firmsList[0].id));
@@ -588,9 +590,11 @@ function FlightDetailContent() {
   })();
 
   const role = String(user?.role || '').toUpperCase();
-  const canAllocate = ['SUPERADMIN', 'ADMIN'].includes(role);
-  const canBatchSell = ['SUPERADMIN', 'ADMIN', 'FIRM'].includes(role);
-  const canConfirmAllocations = role === 'FIRM';
+  const firmRole = user?.firmRole || 'FIRM_ADMIN';
+  const canManageFirmWork = role !== 'FIRM' || firmRole === 'FIRM_ADMIN' || firmRole === 'MANAGER';
+  const canAllocate = role === 'FIRM' && user?.firmKind === 'AIRLINE';
+  const canBatchSell = ['SUPERADMIN', 'ADMIN'].includes(role) || (role === 'FIRM' && canManageFirmWork);
+  const canConfirmAllocations = role === 'FIRM' && canManageFirmWork;
 
   const getTicketStatusLabel = (status?: string) => {
     const normalized = String(status || '').trim().toUpperCase();

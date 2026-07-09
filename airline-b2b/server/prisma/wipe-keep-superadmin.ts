@@ -49,6 +49,9 @@ async function tableCounts() {
   const [
     users,
     firms,
+    airlines,
+    airlineFirmConnections,
+    notifications,
     flights,
     tickets,
     transactions,
@@ -69,6 +72,9 @@ async function tableCounts() {
   ] = await Promise.all([
     prisma.user.count(),
     prisma.firm.count(),
+    prisma.airline.count(),
+    prisma.airlineFirmConnection.count(),
+    prisma.notification.count(),
     prisma.flight.count(),
     prisma.ticket.count(),
     prisma.transaction.count(),
@@ -91,6 +97,9 @@ async function tableCounts() {
   return {
     users,
     firms,
+    airlines,
+    airlineFirmConnections,
+    notifications,
     flights,
     tickets,
     transactions,
@@ -118,7 +127,9 @@ async function wipeKeepingSuperadmin(superadminId: string) {
     await tx.chatFirmPermission.deleteMany({});
     await tx.chatConversation.deleteMany({});
 
+    await tx.notification.deleteMany({});
     await tx.auditLog.deleteMany({});
+    await tx.airlineFirmConnection.deleteMany({});
     await tx.saleCancellationRequest.deleteMany({});
     await tx.ledgerEntry.deleteMany({});
     await tx.tourPackageSale.deleteMany({});
@@ -130,6 +141,7 @@ async function wipeKeepingSuperadmin(superadminId: string) {
     await tx.kassaDesk.deleteMany({});
     await tx.ticket.deleteMany({});
     await tx.flight.deleteMany({});
+    await tx.airline.deleteMany({});
     await tx.invitation.deleteMany({});
     await tx.currencyRate.deleteMany({});
     await tx.siteContent.deleteMany({});

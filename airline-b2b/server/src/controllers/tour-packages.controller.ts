@@ -3,11 +3,13 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { canAccessFirm } from '../utils/access';
 import { writeAuditLog } from '../utils/audit';
+import { canManageFirmWork } from '../utils/firm-user-roles';
 
 type AuthUser = {
   userId?: string;
   role?: string;
   firmId?: string | null;
+  firmRole?: string | null;
 };
 
 function getAuthUser(req: Request): AuthUser {
@@ -84,7 +86,8 @@ export const createTourPackage = async (req: Request, res: Response) => {
   const ownerFirmId = firmId;
 
   if (role === 'FIRM' && !firmId) return res.status(400).json({ error: 'Firm account is missing firmId' });
-  if (role !== 'FIRM') return res.status(403).json({ error: 'Only firm admins can create tour packages' });
+  if (role !== 'FIRM') return res.status(403).json({ error: 'Only firm accounts can create tour packages' });
+  if (!canManageFirmWork(getAuthUser(req))) return res.status(403).json({ error: 'Only firm admins and managers can create tour packages' });
   if (!ownerFirmId || !flightId || !name || !ticketPrice || !servicePrice || !currency) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
@@ -181,6 +184,9 @@ export const sellTourPackage = async (req: Request, res: Response) => {
   if (quantity <= 0) return res.status(400).json({ error: 'Quantity must be greater than 0' });
   if (!['SUPERADMIN', 'ADMIN', 'FIRM'].includes(role)) {
     return res.status(403).json({ error: 'Forbidden' });
+  }
+  if (role === 'FIRM' && !canManageFirmWork(authUser)) {
+    return res.status(403).json({ error: 'Only firm admins and managers can sell tour packages' });
   }
 
   try {

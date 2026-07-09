@@ -11,7 +11,7 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import CollapsibleCard from '@/components/ui/CollapsibleCard';
 import { api } from '@/lib/api';
 
-type FirmOption = { id: string; name: string; currency?: string | null };
+type FirmOption = { id: string; name: string; currency?: string | null; kind?: string | null };
 type FlightOption = { id?: string; flight_id?: string; flightNumber?: string };
 type PaymentCard = {
   id: string;
@@ -89,7 +89,6 @@ export default function KassaPage() {
   const [summaryKassaDeskId, setSummaryKassaDeskId] = useState('');
   const [summary, setSummary] = useState<KassaSummary | null>(null);
   const canManageKassa = Boolean(summary?.permissions?.canOperateKassa) || isSuperAdmin;
-  const canRecordPayment = isAdmin;
   const canFilterFirm = isAdmin;
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
@@ -122,6 +121,7 @@ export default function KassaPage() {
   const [cashMethod, setCashMethod] = useState<'cash' | 'card'>('cash');
   const [cashCardId, setCashCardId] = useState('');
   const [cashFirmId, setCashFirmId] = useState('');
+  const [cashCounterpartyFirmId, setCashCounterpartyFirmId] = useState('');
   const [cashAmount, setCashAmount] = useState('');
   const [cashNote, setCashNote] = useState('');
   const [cashKassaDeskId, setCashKassaDeskId] = useState('');
@@ -138,6 +138,7 @@ export default function KassaPage() {
   const isEditable = summary?.status === 'OPEN';
   const isClosed = summary?.status === 'CLOSED';
   const isNotOpen = summary?.status === 'NOT_OPEN';
+  const canRecordPayment = canManageKassa;
 
   const payCurrencyCode = useMemo(() => {
     const c = payCurrency === 'OTHER' ? payOtherCurrency : payCurrency;
@@ -146,7 +147,11 @@ export default function KassaPage() {
   const selectedPayCard = useMemo(() => paymentCards.find((card) => card.id === payCardId), [paymentCards, payCardId]);
   const selectedCashCard = useMemo(() => paymentCards.find((card) => card.id === cashCardId), [paymentCards, cashCardId]);
   const selectedPayFirm = useMemo(() => firmOptions.find((firm) => firm.id === payFirmId), [firmOptions, payFirmId]);
-  const selectedCashFirm = useMemo(() => firmOptions.find((firm) => firm.id === cashFirmId), [firmOptions, cashFirmId]);
+  const selectedCashFirm = useMemo(() => firmOptions.find((firm) => firm.id === (canFilterFirm ? cashFirmId : user?.firmId)), [firmOptions, cashFirmId, canFilterFirm, user?.firmId]);
+  const cashCounterpartyOptions = useMemo(
+    () => firmOptions.filter((firm) => firm.id !== (canFilterFirm ? cashFirmId : user?.firmId)),
+    [firmOptions, canFilterFirm, cashFirmId, user?.firmId],
+  );
   const payDeskFirmId = canFilterFirm ? payFirmId : String(user?.firmId || '');
   const cashDeskFirmId = canFilterFirm ? cashFirmId : String(user?.firmId || '');
   const payDeskOptions = useMemo(
@@ -311,7 +316,7 @@ export default function KassaPage() {
     e.preventDefault();
     if (recordingCash || !isEditable || !canRecordPayment) return;
     const amount = cashAmount.trim();
-    const firmId = cashFirmId.trim();
+    const firmId = canFilterFirm ? cashFirmId.trim() : String(user?.firmId || '');
     if (!firmId) {
       toast.error(tr('Select a firm', 'Firmani tanlang'));
       return;
@@ -336,6 +341,7 @@ export default function KassaPage() {
         paymentCardId: cashMethod === 'card' ? cashCardId : undefined,
         businessDate: selectedDate,
         firmId,
+        counterpartyFirmId: cashCounterpartyFirmId || undefined,
         kassaDeskId: cashKassaDeskId || undefined,
         amount,
         currency: cashMethod === 'card' ? selectedCashCard?.currency || 'UZS' : selectedCashFirm?.currency || 'UZS',
@@ -344,6 +350,7 @@ export default function KassaPage() {
       toast.success(cashFlow === 'IN' ? tr('Income recorded', 'Kirim qayd etildi') : tr('Expense recorded', 'Chiqim qayd etildi'));
       setCashAmount('');
       setCashNote('');
+      setCashCounterpartyFirmId('');
       setReloadKey((k) => k + 1);
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to record cash movement', 'Kassa harakatini qayd etib bo\'lmadi'));
@@ -885,12 +892,27 @@ export default function KassaPage() {
                 </select>
               </div>
             )}
+            {canFilterFirm && (
+              <div>
+                <label className="compact-label">{tr('Firm', 'Firma')}</label>
+                <select value={cashFirmId} onChange={(e) => setCashFirmId(e.target.value)} className="compact-control">
+                  <option value="">{tr('Select firm', 'Firmani tanlang')}</option>
+                  {firmOptions.map((f) => (
+                    <option key={f.id} value={f.id}>{f.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div>
-              <label className="compact-label">{tr('Firm', 'Firma')}</label>
-              <select value={cashFirmId} onChange={(e) => setCashFirmId(e.target.value)} className="compact-control">
-                <option value="">{tr('Select firm', 'Firmani tanlang')}</option>
-                {firmOptions.map((f) => (
-                  <option key={f.id} value={f.id}>{f.name}</option>
+              <label className="compact-label">
+                {cashFlow === 'IN' ? tr('From', 'Kimdan') : tr('To', 'Kimga')}
+              </label>
+              <select value={cashCounterpartyFirmId} onChange={(e) => setCashCounterpartyFirmId(e.target.value)} className="compact-control">
+                <option value="">{cashFlow === 'IN' ? tr('Customer / contractor optional', 'Mijoz / pudratchi ixtiyoriy') : tr('Airline / firm optional', 'Aviakompaniya / firma ixtiyoriy')}</option>
+                {cashCounterpartyOptions.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}{f.kind === 'AIRLINE' ? ` · ${tr('Airline', 'Aviakompaniya')}` : f.kind === 'CONTRACTOR' ? ` · ${tr('Contractor', 'Pudratchi')}` : ''}
+                  </option>
                 ))}
               </select>
             </div>

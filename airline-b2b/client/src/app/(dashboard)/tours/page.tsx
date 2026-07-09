@@ -58,8 +58,9 @@ export default function ToursPage() {
   const { user } = useAuth();
   const { tr } = useLanguage();
   const role = String(user?.role || '').toUpperCase();
+  const firmRole = user?.firmRole || 'FIRM_ADMIN';
   const isAdmin = role === 'ADMIN' || role === 'SUPERADMIN';
-  const canCreateTours = role === 'FIRM';
+  const canCreateTours = role === 'FIRM' && (firmRole === 'FIRM_ADMIN' || firmRole === 'MANAGER');
   const ownFirmId = user?.firmId || '';
 
   const [packages, setPackages] = useState<TourPackage[]>([]);

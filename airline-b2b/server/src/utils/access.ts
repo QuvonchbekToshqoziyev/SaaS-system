@@ -25,6 +25,18 @@ export async function getAccessibleFirmIds(authUser: ScopedAuthUser): Promise<st
   if (role === 'FIRM') {
     const ids = new Set<string>();
     if (authUser.firmId) ids.add(String(authUser.firmId));
+    const airlines = await prisma.firm.findMany({
+      where: { kind: 'AIRLINE', status: { not: 'DELETED' }, deletedAt: null },
+      select: { id: true },
+    });
+    for (const firm of airlines) ids.add(firm.id);
+    if (authUser.firmId) {
+      const connected = await prisma.airlineFirmConnection.findMany({
+        where: { airlineFirmId: String(authUser.firmId), status: 'ACTIVE' },
+        select: { firmId: true },
+      });
+      for (const row of connected) ids.add(row.firmId);
+    }
     if (authUser.userId || authUser.firmId) {
       const created = await prisma.firm.findMany({
         where: {
