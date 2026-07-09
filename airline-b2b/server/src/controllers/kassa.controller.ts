@@ -9,21 +9,18 @@ import {
   listPaymentCardsService,
   openKassaService,
   reopenKassaService,
-  ServiceError,
   type AuthUser,
 } from '../services/kassa.service';
 import { writeAuditLog } from '../utils/audit';
+import { mapKnownError } from '../errors/app-error';
+import { sendApiError } from '../errors/http';
 
 function getAuthUser(req: Request): AuthUser {
   return ((req as any).user || {}) as AuthUser;
 }
 
 function sendError(res: Response, err: unknown) {
-  if (err instanceof ServiceError) {
-    return res.status(err.statusCode).json({ error: err.message });
-  }
-  const message = err instanceof Error ? err.message : 'Unexpected error';
-  return res.status(400).json({ error: message });
+  return sendApiError(res, mapKnownError(err));
 }
 
 export const getKassaDay = async (req: Request, res: Response) => {

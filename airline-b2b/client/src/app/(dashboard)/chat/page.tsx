@@ -14,6 +14,8 @@ import {
   FileSpreadsheet,
   Forward,
   Image,
+  LifeBuoy,
+  Megaphone,
   MessageCircle,
   Mic,
   Paperclip,
@@ -21,6 +23,7 @@ import {
   Search,
   Send,
   Settings,
+  Sparkles,
   Smile,
   Trash2,
   Users,
@@ -94,10 +97,6 @@ function apiErrorMessage(err: unknown): string | undefined {
   return (err as AxiosError<ApiErrorResponse>)?.response?.data?.error;
 }
 
-function initials(value: string): string {
-  return value.split(/[ @.]/).filter(Boolean).slice(0, 2).map((part) => part.charAt(0).toUpperCase()).join('') || 'U';
-}
-
 function formatTime(value?: string | null): string {
   if (!value) return '';
   return new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
@@ -105,9 +104,27 @@ function formatTime(value?: string | null): string {
 
 function typeIcon(type: ChatType) {
   if (type === 'AI') return Bot;
-  if (type === 'COMPANY') return Building2;
+  if (type === 'COMPANY') return Megaphone;
+  if (type === 'SUPPORT') return LifeBuoy;
   if (type === 'DEPARTMENT' || type === 'BRANCH') return Users;
   return MessageCircle;
+}
+
+function typeLabel(type: ChatType): string {
+  if (type === 'BRANCH') return 'BRANCH GROUP';
+  if (type === 'SUPPORT') return 'SUPPORT TICKET';
+  if (type === 'COMPANY') return 'ADO-FINANCE CHANNEL';
+  if (type === 'AI') return 'AI ASSISTANT';
+  if (type === 'DEPARTMENT') return 'DEPARTMENT';
+  return 'DIRECT';
+}
+
+function conversationSubtitle(conversation: Conversation): string {
+  if (conversation.type === 'SUPPORT') return conversation.description || 'OPEN | NORMAL | OTHER';
+  if (conversation.type === 'COMPANY') return 'Official announcements · read only';
+  if (conversation.type === 'AI') return 'Private · role-aware assistant';
+  if (conversation.type === 'BRANCH') return `${conversation.branchName || conversation.firm?.name || 'Branch'} · internal group`;
+  return conversation.description || typeLabel(conversation.type);
 }
 
 const kindButtons: Array<{ kind: MessageKind; label: string; icon: typeof Paperclip }> = [
@@ -125,6 +142,8 @@ export default function ChatPage() {
   const queryClient = useQueryClient();
   const role = String(user?.role || '').toUpperCase();
   const isSuperAdmin = role === 'SUPERADMIN';
+  const firmRole = String(user?.firmRole || 'FIRM_ADMIN').toUpperCase();
+  const isFirmAdminLike = role === 'SUPERADMIN' || role === 'ADMIN' || firmRole === 'FIRM_ADMIN';
   const [section, setSection] = useState<'messages' | 'settings'>('messages');
   const [supportFilter, setSupportFilter] = useState<'all' | 'inbox' | 'outbox'>('all');
   const [selectedId, setSelectedId] = useState<string>('');
@@ -136,6 +155,10 @@ export default function ChatPage() {
   const [newType, setNewType] = useState<ChatType>('PERSONAL');
   const [newTitle, setNewTitle] = useState('');
   const [newUserId, setNewUserId] = useState('');
+  const [supportSubject, setSupportSubject] = useState('');
+  const [supportCategory, setSupportCategory] = useState('TECHNICAL');
+  const [supportPriority, setSupportPriority] = useState('NORMAL');
+  const [supportMessage, setSupportMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [firmAId, setFirmAId] = useState('');
   const [firmBId, setFirmBId] = useState('');
@@ -193,7 +216,25 @@ export default function ChatPage() {
     return messages.filter((item) => `${item.content || ''} ${item.sender?.email || ''} ${item.attachment?.name || ''}`.toLowerCase().includes(needle));
   }, [messages, search]);
 
+  const groupedConversations = useMemo(() => {
+    const groups: Array<{ key: string; title: string; types: ChatType[]; rows: Conversation[] }> = [
+      { key: 'branch', title: tr('Branch Groups', 'Filial guruhlari'), types: ['BRANCH'], rows: [] },
+      { key: 'support', title: tr('ADO Support', 'ADO Support'), types: ['SUPPORT'], rows: [] },
+      { key: 'announcements', title: tr('Announcements', 'E\'lonlar'), types: ['COMPANY'], rows: [] },
+      { key: 'ai', title: tr('AI Assistant', 'AI yordamchi'), types: ['AI'], rows: [] },
+      { key: 'direct', title: tr('Direct and Departments', 'Direct va bo\'limlar'), types: ['PERSONAL', 'DEPARTMENT'], rows: [] },
+    ];
+    for (const conversation of filteredConversations) {
+      const group = groups.find((item) => item.types.includes(conversation.type)) || groups[groups.length - 1];
+      group.rows.push(conversation);
+    }
+    return groups.filter((item) => item.rows.length > 0);
+  }, [filteredConversations, tr]);
+
   const activeParticipants = selectedConversation?.participants || [];
+  const selectedType = selectedConversation?.type;
+  const canWriteSelected = Boolean(selectedConversation) && !(selectedType === 'COMPANY' && role !== 'SUPERADMIN');
+  const SelectedHeaderIcon = selectedConversation ? typeIcon(selectedConversation.type) : MessageCircle;
   const readCount = (messageRow: ChatMessage) => activeParticipants.filter((participant) => {
     if (participant.userId === messageRow.senderUserId) return true;
     return participant.lastReadAt && new Date(participant.lastReadAt) >= new Date(messageRow.createdAt);
@@ -217,6 +258,10 @@ export default function ChatPage() {
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeId) return;
+    if (!canWriteSelected) {
+      toast.error(tr('This chat is read only', 'Bu chat faqat o\'qish uchun'));
+      return;
+    }
     const text = message.trim();
     if (!text) {
       toast.error(tr('Write a message first', 'Avval xabar yozing'));
@@ -258,6 +303,10 @@ export default function ChatPage() {
 
   const forwardMessage = async (row: ChatMessage) => {
     if (!activeId) return;
+    if (!canWriteSelected) {
+      toast.error(tr('This chat is read only', 'Bu chat faqat o\'qish uchun'));
+      return;
+    }
     try {
       await api.post(`/chat/conversations/${activeId}/messages`, {
         content: row.content || row.attachment?.name || tr('Forwarded attachment', 'Forward qilingan fayl'),
@@ -281,16 +330,26 @@ export default function ChatPage() {
       toast.error(tr('Select a person', 'Odamni tanlang'));
       return;
     }
+    if (newType === 'SUPPORT' && (!supportSubject.trim() || !supportMessage.trim())) {
+      toast.error(tr('Add support subject and message', 'Support mavzusi va xabarini kiriting'));
+      return;
+    }
     try {
       const response = await api.post('/chat/conversations', {
         type: newType,
         title: title || undefined,
+        subject: supportSubject.trim() || undefined,
+        category: newType === 'SUPPORT' ? supportCategory : undefined,
+        priority: newType === 'SUPPORT' ? supportPriority : undefined,
+        message: supportMessage.trim() || undefined,
         department: newType === 'DEPARTMENT' ? title || 'Accounting' : undefined,
         participantUserIds,
       });
       setSelectedId(response.data.id);
       setNewTitle('');
       setNewUserId('');
+      setSupportSubject('');
+      setSupportMessage('');
       queryClient.invalidateQueries({ queryKey: ['chat-conversations'] });
       toast.success(tr('Chat created', 'Chat yaratildi'));
     } catch (err: unknown) {
@@ -321,7 +380,7 @@ export default function ChatPage() {
     }
   };
 
-  const canCreateSelectedType = newType !== 'AI' && newType !== 'SUPPORT' && newType !== 'BRANCH' && newType !== 'COMPANY';
+  const canCreateSelectedType = newType === 'PERSONAL' || (newType === 'DEPARTMENT' && role !== 'FIRM') || (newType === 'SUPPORT' && isFirmAdminLike);
   const firms = firmSettings?.firms || [];
   const permissions = firmSettings?.permissions || [];
   const firmName = (id: string) => firms.find((firm) => firm.id === id)?.name || id;
@@ -389,12 +448,12 @@ export default function ChatPage() {
         <div className="p-3 border-b border-border">
           <form onSubmit={createConversation} className="grid grid-cols-1 gap-2">
             <select value={newType} onChange={(e) => setNewType(e.target.value as ChatType)} className="compact-control">
-              <option value="PERSONAL">{tr('Personal chat', 'Personal chat')}</option>
-              <option value="DEPARTMENT">{tr('Department chat', 'Department chat')}</option>
-              <option value="BRANCH" disabled>{tr('Branch auto-created', 'Branch avtomatik')}</option>
-              <option value="COMPANY" disabled>{tr('Company auto-created', 'Company avtomatik')}</option>
-              <option value="SUPPORT" disabled>{tr('Support auto-created', 'Support avtomatik')}</option>
-              <option value="AI" disabled>{tr('AI auto-created', 'AI avtomatik')}</option>
+              <option value="PERSONAL">{tr('Direct chat', 'Direct chat')}</option>
+              {role !== 'FIRM' && <option value="DEPARTMENT">{tr('Department chat', 'Department chat')}</option>}
+              {isFirmAdminLike && <option value="SUPPORT">{tr('Support request', 'Support so\'rovi')}</option>}
+              <option value="BRANCH" disabled>{tr('Branch group is automatic', 'Filial guruhi avtomatik')}</option>
+              <option value="COMPANY" disabled>{tr('Announcements are managed by superadmin', 'E\'lonlarni superadmin boshqaradi')}</option>
+              <option value="AI" disabled>{tr('AI assistant is automatic', 'AI yordamchi avtomatik')}</option>
             </select>
             {newType === 'PERSONAL' && (
               <select value={newUserId} onChange={(e) => setNewUserId(e.target.value)} className="compact-control">
@@ -404,13 +463,40 @@ export default function ChatPage() {
                 ))}
               </select>
             )}
+            {newType === 'SUPPORT' && (
+              <div className="grid grid-cols-1 gap-2">
+                <input
+                  value={supportSubject}
+                  onChange={(e) => setSupportSubject(e.target.value)}
+                  placeholder={tr('Support subject', 'Support mavzusi')}
+                  className="compact-control"
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <select value={supportCategory} onChange={(e) => setSupportCategory(e.target.value)} className="compact-control">
+                    {['TECHNICAL', 'ACCOUNTING', 'PAYMENT', 'ACCESS', 'BUG', 'FEATURE_REQUEST', 'OTHER'].map((item) => (
+                      <option key={item} value={item}>{item.replace('_', ' ')}</option>
+                    ))}
+                  </select>
+                  <select value={supportPriority} onChange={(e) => setSupportPriority(e.target.value)} className="compact-control">
+                    {['LOW', 'NORMAL', 'HIGH', 'URGENT'].map((item) => <option key={item} value={item}>{item}</option>)}
+                  </select>
+                </div>
+                <textarea
+                  value={supportMessage}
+                  onChange={(e) => setSupportMessage(e.target.value)}
+                  rows={3}
+                  placeholder={tr('What should ADO support check?', 'ADO support nimani tekshirsin?')}
+                  className="compact-control min-h-[74px] resize-none"
+                />
+              </div>
+            )}
             <div className="flex gap-2">
               <input
                 value={newTitle}
                 onChange={(e) => setNewTitle(e.target.value)}
                 placeholder={newType === 'DEPARTMENT' ? tr('Department name', 'Department nomi') : tr('Chat title', 'Chat nomi')}
                 className="compact-control min-w-0"
-                disabled={!canCreateSelectedType}
+                disabled={!canCreateSelectedType || newType === 'SUPPORT'}
               />
               <button type="submit" disabled={!canCreateSelectedType} className="px-3 rounded-md bg-primary text-primary-foreground disabled:opacity-40">
                 <Send size={16} />
@@ -423,36 +509,46 @@ export default function ChatPage() {
         {section === 'messages' ? (
         <div className="flex-1 overflow-y-auto scroller-minimal">
           {conversationsLoading && <p className="p-4 text-sm text-muted">{tr('Loading chats...', 'Chatlar yuklanmoqda...')}</p>}
-          {filteredConversations.map((conversation) => {
-            const Icon = typeIcon(conversation.type);
-            const isActive = conversation.id === activeId;
-            return (
-              <button
-                key={conversation.id}
-                type="button"
-                onClick={() => setConversation(conversation.id)}
-                className={`w-full text-left p-4 border-b border-border flex gap-3 ${isActive ? 'bg-surface-2' : 'hover:bg-surface-2/70'}`}
-              >
-                <div className="w-11 h-11 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
-                  <Icon size={20} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <p className="font-semibold text-foreground truncate">{conversation.title}</p>
-                    {conversation.unreadCount > 0 && (
-                      <span className="ml-auto rounded-full bg-primary px-2 py-0.5 text-[11px] font-bold text-primary-foreground">{conversation.unreadCount}</span>
-                    )}
-                  </div>
-                  <p className="mt-0.5 text-[11px] uppercase tracking-wide text-muted">{conversation.type.replace('_', ' ')}</p>
-                  <p className="mt-1 text-sm text-muted truncate">
-                    {conversation.lastMessage?.deletedAt
-                      ? tr('Deleted message', 'O\'chirilgan xabar')
-                      : conversation.lastMessage?.content || conversation.lastMessage?.attachment?.name || conversation.description || tr('No messages yet', 'Hali xabar yo\'q')}
-                  </p>
-                </div>
-              </button>
-            );
-          })}
+          {groupedConversations.map((group) => (
+            <div key={group.key} className="border-b border-border/70">
+              <div className="sticky top-0 z-10 bg-surface/95 px-4 py-2 text-[11px] font-bold uppercase tracking-wide text-muted">
+                {group.title}
+              </div>
+              {group.rows.map((conversation) => {
+                const Icon = typeIcon(conversation.type);
+                const isActive = conversation.id === activeId;
+                return (
+                  <button
+                    key={conversation.id}
+                    type="button"
+                    onClick={() => setConversation(conversation.id)}
+                    className={`w-full text-left p-4 border-t border-border flex gap-3 ${isActive ? 'bg-surface-2' : 'hover:bg-surface-2/70'}`}
+                  >
+                    <div className="w-11 h-11 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
+                      <Icon size={20} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="font-semibold text-foreground truncate">{conversation.title}</p>
+                        {conversation.unreadCount > 0 && (
+                          <span className="ml-auto rounded-full bg-primary px-2 py-0.5 text-[11px] font-bold text-primary-foreground">{conversation.unreadCount}</span>
+                        )}
+                      </div>
+                      <p className="mt-0.5 text-[11px] uppercase tracking-wide text-muted">{typeLabel(conversation.type)}</p>
+                      <p className="mt-1 text-sm text-muted truncate">
+                        {conversation.lastMessage?.deletedAt
+                          ? tr('Deleted message', 'O\'chirilgan xabar')
+                          : conversation.lastMessage?.content || conversation.lastMessage?.attachment?.name || conversationSubtitle(conversation) || tr('No messages yet', 'Hali xabar yo\'q')}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+          {!conversationsLoading && groupedConversations.length === 0 && (
+            <p className="p-4 text-sm text-muted">{tr('No chats match your search.', 'Qidiruvga mos chat yo\'q.')}</p>
+          )}
         </div>
         ) : (
           <div className="flex-1 overflow-y-auto scroller-minimal p-3 space-y-3">
@@ -511,29 +607,52 @@ export default function ChatPage() {
           <>
             <header className="p-4 border-b border-border flex items-center justify-between gap-3">
               <div className="flex items-center gap-3 min-w-0">
-                <div className="w-12 h-12 rounded-md bg-surface-2 border border-border flex items-center justify-center text-foreground font-bold">
-                  {initials(selectedConversation.title)}
+                <div className="w-12 h-12 rounded-md bg-surface-2 border border-border flex items-center justify-center text-primary font-bold">
+                  <SelectedHeaderIcon size={22} />
                 </div>
                 <div className="min-w-0">
                   <h3 className="text-xl font-bold text-foreground truncate">{selectedConversation.title}</h3>
                   <p className="text-sm text-muted truncate">
-                    {selectedConversation.participants.length} {tr('members', 'a\'zo')} · {tr('Online', 'Online')} · {isTyping ? tr('Typing...', 'Yozmoqda...') : tr('Ready', 'Tayyor')}
+                    {selectedConversation.type === 'SUPPORT'
+                      ? conversationSubtitle(selectedConversation)
+                      : selectedConversation.type === 'AI'
+                        ? tr('Private · role-aware assistant', 'Private · rolingizga mos yordamchi')
+                        : selectedConversation.type === 'COMPANY'
+                          ? tr('Official announcements · read only', 'Rasmiy e\'lonlar · faqat o\'qish')
+                          : `${selectedConversation.participants.length} ${tr('members', 'a\'zo')} · ${isTyping ? tr('Typing...', 'Yozmoqda...') : typeLabel(selectedConversation.type)}`}
                   </p>
                 </div>
               </div>
               <div className="hidden md:flex items-center gap-2 text-xs text-muted">
-                <AtSign size={15} />
-                <span>{tr('Mentions, reply, forward, edit, delete, read status', 'Mention, reply, forward, edit, delete, read status')}</span>
+                {selectedConversation.type === 'AI' ? <Sparkles size={15} /> : selectedConversation.type === 'COMPANY' ? <Building2 size={15} /> : <AtSign size={15} />}
+                <span>{canWriteSelected ? tr('Reply, mention, forward, edit, delete, read status', 'Reply, mention, forward, edit, delete, read status') : tr('Read only', 'Faqat o\'qish')}</span>
               </div>
             </header>
 
             <div className="flex-1 overflow-y-auto scroller-minimal p-4 space-y-3 bg-background/40">
               {messagesLoading && <p className="text-sm text-muted">{tr('Loading messages...', 'Xabarlar yuklanmoqda...')}</p>}
+              {!messagesLoading && visibleMessages.length === 0 && (
+                <div className="h-full min-h-[280px] flex items-center justify-center text-center">
+                  <div>
+                    <SelectedHeaderIcon size={38} className="mx-auto text-muted" />
+                    <h3 className="mt-3 text-lg font-bold text-foreground">
+                      {selectedConversation.type === 'SUPPORT'
+                        ? tr('No support messages yet', 'Support xabarlari hali yo\'q')
+                        : selectedConversation.type === 'COMPANY'
+                          ? tr('No announcements yet', 'Hozircha e\'lon yo\'q')
+                          : selectedConversation.type === 'AI'
+                            ? tr('How can I help within your permissions?', 'Ruxsatlaringiz doirasida qanday yordam beray?')
+                            : tr('No messages yet', 'Hali xabar yo\'q')}
+                    </h3>
+                    <p className="mt-1 text-sm text-muted">{conversationSubtitle(selectedConversation)}</p>
+                  </div>
+                </div>
+              )}
               {visibleMessages.map((row) => {
                 const mine = row.senderUserId === user?.id;
                 return (
                   <div key={row.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[820px] rounded-md border p-3 ${mine ? 'bg-primary text-primary-foreground border-primary' : 'bg-surface border-border text-foreground'}`}>
+                    <div className={`group max-w-[820px] rounded-md border p-3 ${mine ? 'bg-primary text-primary-foreground border-primary' : 'bg-surface border-border text-foreground'}`}>
                       <div className="flex items-center gap-2 text-[11px] opacity-80">
                         <span className="font-semibold">{row.sender?.fullName || row.sender?.email || 'AI Assistant'}</span>
                         <span>{formatTime(row.createdAt)}</span>
@@ -555,10 +674,10 @@ export default function ChatPage() {
                         </div>
                       )}
                       {!row.deletedAt && (
-                        <div className="mt-3 flex flex-wrap items-center gap-1">
-                          <button type="button" onClick={() => setReplyTo(row)} className="p-1 rounded hover:bg-black/10" title="Reply"><Reply size={14} /></button>
-                          <button type="button" onClick={() => forwardMessage(row)} className="p-1 rounded hover:bg-black/10" title="Forward"><Forward size={14} /></button>
-                          {mine && <button type="button" onClick={() => { setEditing(row); setMessage(row.content || ''); }} className="p-1 rounded hover:bg-black/10" title="Edit"><Edit3 size={14} /></button>}
+                        <div className="mt-3 flex flex-wrap items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                          {canWriteSelected && <button type="button" onClick={() => setReplyTo(row)} className="p-1 rounded hover:bg-black/10" title="Reply"><Reply size={14} /></button>}
+                          {canWriteSelected && <button type="button" onClick={() => forwardMessage(row)} className="p-1 rounded hover:bg-black/10" title="Forward"><Forward size={14} /></button>}
+                          {mine && canWriteSelected && <button type="button" onClick={() => { setEditing(row); setMessage(row.content || ''); }} className="p-1 rounded hover:bg-black/10" title="Edit"><Edit3 size={14} /></button>}
                           {(mine || String(user?.role).toUpperCase() !== 'FIRM') && <button type="button" onClick={() => deleteMessage(row.id)} className="p-1 rounded hover:bg-black/10" title="Delete"><Trash2 size={14} /></button>}
                           <span className="ml-auto inline-flex items-center gap-1 text-[11px] opacity-80">
                             <CheckCheck size={14} />
@@ -572,6 +691,7 @@ export default function ChatPage() {
               })}
             </div>
 
+            {canWriteSelected ? (
             <form onSubmit={sendMessage} className="border-t border-border p-3 bg-surface">
               {(replyTo || editing) && (
                 <div className="mb-2 flex items-center justify-between gap-3 rounded-md border border-border bg-surface-2 px-3 py-2 text-sm">
@@ -613,6 +733,11 @@ export default function ChatPage() {
                 </button>
               </div>
             </form>
+            ) : (
+              <div className="border-t border-border p-4 bg-surface text-sm text-muted">
+                {tr('This channel is read only for your role.', 'Bu kanal sizning rolingiz uchun faqat o\'qish rejimida.')}
+              </div>
+            )}
           </>
         ) : (
           <div className="h-full flex items-center justify-center p-8 text-center">

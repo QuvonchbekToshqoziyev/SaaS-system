@@ -159,6 +159,9 @@ model Firm {
   receivedTransactions     Transaction[]             @relation("TransactionReceiverFirm")
   payments                 Payment[]
   paymentCards             PaymentCard[]
+  paymentAllocations       PaymentAllocation[]
+  financialThresholds      FinancialThreshold[]
+  overheadAllocationRules  OverheadAllocationRule[]
   invitations              Invitation[]
   saleCancellationRequests SaleCancellationRequest[]
   ownedTourPackages        TourPackage[]             @relation("TourPackageOwner")
@@ -491,6 +494,7 @@ model Transaction {
   idempotencyKey  String?         @unique
   metadata        Json?
   ledgerEntries   LedgerEntry[]
+  paymentAllocations PaymentAllocation[]
   tourPackageSale TourPackageSale?
   createdAt       DateTime        @default(now())
 
@@ -505,6 +509,55 @@ model Transaction {
   @@index([paymentMethod, createdAt])
   @@index([paymentCardId, createdAt])
   @@index([createdByUserId, createdAt])
+}
+
+model PaymentAllocation {
+  id              String      @id @default(uuid())
+  companyId       String      @map("company_id")
+  company         Firm        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  paymentId       String      @map("payment_id")
+  payment         Transaction @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  documentType    String      @map("document_type")
+  documentId      String      @map("document_id")
+  allocatedAmount Decimal     @map("allocated_amount") @db.Decimal(12, 4)
+  createdAt       DateTime    @default(now()) @map("created_at")
+
+  @@index([companyId])
+  @@index([paymentId])
+  @@index([documentType, documentId])
+  @@map("payment_allocations")
+}
+
+model FinancialThreshold {
+  id         String   @id @default(uuid())
+  companyId  String   @map("company_id")
+  company    Firm     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  metricCode String   @map("metric_code")
+  greenMin   Decimal? @map("green_min") @db.Decimal(12, 4)
+  yellowMin  Decimal? @map("yellow_min") @db.Decimal(12, 4)
+  redMax     Decimal? @map("red_max") @db.Decimal(12, 4)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@unique([companyId, metricCode])
+  @@index([companyId])
+  @@map("financial_thresholds")
+}
+
+model OverheadAllocationRule {
+  id            String   @id @default(uuid())
+  companyId     String   @map("company_id")
+  company       Firm     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  method        String   @default("BY_REVENUE")
+  effectiveFrom DateTime @map("effective_from") @db.Date
+  effectiveTo   DateTime? @map("effective_to") @db.Date
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([companyId, active])
+  @@index([effectiveFrom, effectiveTo])
+  @@map("overhead_allocation_rules")
 }
 
 model PaymentCard {

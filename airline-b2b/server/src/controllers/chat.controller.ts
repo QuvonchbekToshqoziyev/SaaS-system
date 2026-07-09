@@ -4,10 +4,12 @@ import { prisma } from '../db';
 import { canAccessFirm, getAccessibleFirmIds, isAdmin, isSuperAdmin, normalizeRole } from '../utils/access';
 import { writeAuditLog } from '../utils/audit';
 import { decryptChatMessageRow, encryptChatJson, encryptChatString } from '../utils/chat-crypto';
+import { isFirmAdminLike } from '../utils/firm-user-roles';
 
 type AuthUser = {
   userId?: string;
   role?: string | null;
+  firmRole?: string | null;
   firmId?: string | null;
 };
 
@@ -38,6 +40,25 @@ function normalizeMessageKind(value: unknown): ChatMessageKind {
 
 function cleanString(value: unknown, fallback = ''): string {
   return String(value ?? fallback).trim();
+}
+
+function canReadCompanyChannel(authUser: AuthUser): boolean {
+  const role = normalizeRole(authUser.role);
+  return role === 'SUPERADMIN' || role === 'ADMIN' || isFirmAdminLike(authUser);
+}
+
+function canReadSupportTicket(authUser: AuthUser): boolean {
+  const role = normalizeRole(authUser.role);
+  return role === 'SUPERADMIN' || role === 'ADMIN' || isFirmAdminLike(authUser);
+}
+
+function canWriteConversation(authUser: AuthUser, conversation: { type: ChatType; participants?: Array<{ userId: string }> }): boolean {
+  const role = normalizeRole(authUser.role);
+  const userId = authUser.userId ? String(authUser.userId) : '';
+  if (conversation.type === ChatType.COMPANY) return role === 'SUPERADMIN';
+  if (conversation.type === ChatType.SUPPORT) return canReadSupportTicket(authUser);
+  if (conversation.type === ChatType.AI) return Boolean(userId && conversation.participants?.some((participant) => participant.userId === userId));
+  return true;
 }
 
 function firmPair(firmAId: string, firmBId: string) {
@@ -83,15 +104,17 @@ async function ensureDefaultConversations(authUser: AuthUser) {
       id: 'company-ado-finance',
       type: ChatType.COMPANY,
       title: 'ADO-FINANCE',
-      description: 'Company-wide chat for all employees',
+      description: 'Official ADO-FINANCE announcements channel',
     },
   });
 
-  await prisma.chatParticipant.upsert({
-    where: { conversationId_userId: { conversationId: company.id, userId } },
-    update: {},
-    create: { conversationId: company.id, userId },
-  });
+  if (canReadCompanyChannel(authUser)) {
+    await prisma.chatParticipant.upsert({
+      where: { conversationId_userId: { conversationId: company.id, userId } },
+      update: {},
+      create: { conversationId: company.id, userId },
+    });
+  }
 
   const aiId = `ai-${userId}`;
   const ai = await prisma.chatConversation.upsert({
@@ -126,11 +149,13 @@ async function ensureDefaultConversations(authUser: AuthUser) {
           firmId: firm.id,
         },
       });
-      await prisma.chatParticipant.upsert({
-        where: { conversationId_userId: { conversationId: support.id, userId } },
-        update: {},
-        create: { conversationId: support.id, userId },
-      });
+      if (canReadSupportTicket(authUser)) {
+        await prisma.chatParticipant.upsert({
+          where: { conversationId_userId: { conversationId: support.id, userId } },
+          update: {},
+          create: { conversationId: support.id, userId },
+        });
+      }
 
       const branchId = `branch-${firm.id}`;
       const branch = await prisma.chatConversation.upsert({
@@ -198,9 +223,10 @@ async function conversationAccessWhere(authUser: AuthUser): Promise<Prisma.ChatC
 
   return {
     OR: [
-      { participants: { some: { userId } } },
-      { type: ChatType.COMPANY },
-      { firmId: authUser.firmId ? String(authUser.firmId) : '__none__' },
+      { type: { in: [ChatType.PERSONAL, ChatType.BRANCH, ChatType.AI] }, participants: { some: { userId } } },
+      ...(canReadCompanyChannel(authUser) ? [{ type: ChatType.COMPANY }] : []),
+      ...(canReadSupportTicket(authUser) && authUser.firmId ? [{ type: ChatType.SUPPORT, firmId: String(authUser.firmId) }] : []),
+      ...(authUser.firmId ? [{ type: ChatType.BRANCH, firmId: String(authUser.firmId) }] : []),
     ],
   };
 }
@@ -304,17 +330,74 @@ export const createConversation = async (req: Request, res: Response) => {
   if (type === ChatType.PERSONAL && uniqueParticipants.length !== 2) {
     return res.status(400).json({ error: 'Personal chat requires exactly two people' });
   }
-  if ((type === ChatType.BRANCH || type === ChatType.SUPPORT) && !firmId) {
+  if (type === ChatType.BRANCH && !firmId) {
     return res.status(400).json({ error: 'Firm is required for this chat type' });
   }
+  if (type === ChatType.SUPPORT && !firmId) return res.status(400).json({ error: 'Firm is required for support requests' });
   if (firmId && !(await canAccessFirm(authUser, firmId)) && !isSuperAdmin(authUser)) {
     return res.status(403).json({ error: 'Forbidden' });
+  }
+  if (type === ChatType.SUPPORT && !canReadSupportTicket(authUser)) {
+    return res.status(403).json({ error: 'Only firm admins and ADO support can open support tickets' });
+  }
+  if (type === ChatType.BRANCH && !isAdmin(authUser)) {
+    return res.status(403).json({ error: 'Branch group chats are managed automatically' });
+  }
+  if (type === ChatType.COMPANY && !isSuperAdmin(authUser)) {
+    return res.status(403).json({ error: 'Only superadmin can create announcement channels' });
   }
   if ((type === ChatType.COMPANY || type === ChatType.DEPARTMENT) && !isAdmin(authUser)) {
     return res.status(403).json({ error: 'Only admins can create this chat type' });
   }
   if (type === ChatType.AI) {
     return res.status(400).json({ error: 'AI chat is created automatically' });
+  }
+
+  const supportFirstMessage = cleanString(req.body?.message);
+  const supportCategory = cleanString(req.body?.category) || 'OTHER';
+  const supportPriority = cleanString(req.body?.priority) || 'NORMAL';
+
+  if (type === ChatType.SUPPORT) {
+    if (!supportFirstMessage) return res.status(400).json({ error: 'Support request message is required' });
+    const firm = await prisma.firm.findUnique({ where: { id: firmId || '' }, select: { id: true, name: true } });
+    if (!firm) return res.status(400).json({ error: 'Firm was not found' });
+    const conversationId = `support-${firm.id}`;
+    const conversation = await prisma.chatConversation.upsert({
+      where: { id: conversationId },
+      update: {
+        title: `${firm.name} - ${cleanString(req.body?.subject) || 'ADO Support'}`,
+        description: `OPEN | ${supportPriority} | ${supportCategory}`,
+        updatedAt: new Date(),
+      },
+      create: {
+        id: conversationId,
+        type,
+        title: `${firm.name} - ${cleanString(req.body?.subject) || 'ADO Support'}`,
+        description: `OPEN | ${supportPriority} | ${supportCategory}`,
+        firmId: firm.id,
+      },
+      include: {
+        firm: { select: { id: true, name: true } },
+        participants: { include: { user: { select: userSelect() } } },
+        messages: { orderBy: { createdAt: 'desc' }, take: 1, include: { sender: { select: userSelect() } } },
+      },
+    });
+    await prisma.chatParticipant.upsert({
+      where: { conversationId_userId: { conversationId: conversation.id, userId } },
+      update: {},
+      create: { conversationId: conversation.id, userId },
+    });
+    const message = await prisma.chatMessage.create({
+      data: {
+        conversationId: conversation.id,
+        senderUserId: userId,
+        kind: ChatMessageKind.TEXT,
+        content: encryptChatString(supportFirstMessage),
+        attachment: encryptChatJson({ category: supportCategory, priority: supportPriority }) as Prisma.InputJsonValue,
+      },
+    });
+    await prisma.chatConversation.update({ where: { id: conversation.id }, data: { updatedAt: message.createdAt } });
+    return res.status(201).json(serializeConversation({ ...conversation, viewerUserId: userId }));
   }
 
   const users = await prisma.user.findMany({ where: { id: { in: uniqueParticipants } }, select: { id: true, role: true, firmId: true } });
@@ -334,7 +417,6 @@ export const createConversation = async (req: Request, res: Response) => {
   const title = cleanString(req.body?.title) || (
     type === ChatType.PERSONAL ? 'Personal chat' :
     type === ChatType.BRANCH ? 'Branch chat' :
-    type === ChatType.SUPPORT ? 'Support chat' :
     type === ChatType.DEPARTMENT ? cleanString(req.body?.department, 'Department') :
     'Company chat'
   );
@@ -467,6 +549,9 @@ export const sendMessage = async (req: Request, res: Response) => {
   const conversationId = String(req.params.conversationId || '');
   const conversation = await assertConversationAccess(authUser, conversationId);
   if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+  if (!canWriteConversation(authUser, conversation)) {
+    return res.status(403).json({ error: 'You do not have permission to write in this chat' });
+  }
 
   const content = cleanString(req.body?.content);
   const kind = normalizeMessageKind(req.body?.kind);

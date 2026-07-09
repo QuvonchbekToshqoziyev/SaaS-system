@@ -16,15 +16,24 @@ export interface User {
   firmId: string | null;
 }
 
+export type SavedAccount = User & {
+  token: string;
+  lastUsedAt: string;
+};
+
 interface AuthContextType {
   user: User | null;
   token: string | null;
   login: (token: string, user: unknown) => void;
   logout: () => void;
+  savedAccounts: SavedAccount[];
+  switchAccount: (accountId: string) => void;
+  forgetAccount: (accountId: string) => void;
   isLoading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const SAVED_ACCOUNTS_KEY = 'ado-b2b-saved-accounts';
 
 function normalizeRole(role: unknown): NormalizedRole {
   const r = String(role || '').toLowerCase();
@@ -63,14 +72,50 @@ function normalizeUser(raw: unknown): User | null {
   };
 }
 
+function readSavedAccounts(): SavedAccount[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(SAVED_ACCOUNTS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => {
+        const normalized = normalizeUser(item);
+        const token = typeof item?.token === 'string' ? item.token : '';
+        const lastUsedAt = typeof item?.lastUsedAt === 'string' ? item.lastUsedAt : new Date(0).toISOString();
+        return normalized && token ? { ...normalized, token, lastUsedAt } : null;
+      })
+      .filter((item): item is SavedAccount => Boolean(item))
+      .sort((a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime());
+  } catch {
+    return [];
+  }
+}
+
+function writeSavedAccounts(accounts: SavedAccount[]) {
+  localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(accounts));
+}
+
+function persistActiveSession(nextToken: string, nextUser: User) {
+  localStorage.setItem('token', nextToken);
+  localStorage.setItem('user', JSON.stringify(nextUser));
+}
+
+function clearActiveSession() {
+  localStorage.removeItem('token');
+  localStorage.removeItem('user');
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [savedAccounts, setSavedAccounts] = useState<SavedAccount[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
   const pathname = usePathname();
 
   useEffect(() => {
+    setSavedAccounts(readSavedAccounts());
     const storedToken = localStorage.getItem('token');
     const storedUser = localStorage.getItem('user');
     if (storedToken && storedUser) {
@@ -80,14 +125,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (normalized) {
           setToken(storedToken);
           setUser(normalized);
-          localStorage.setItem('user', JSON.stringify(normalized));
+          persistActiveSession(storedToken, normalized);
         } else {
-          localStorage.removeItem('token');
-          localStorage.removeItem('user');
+          clearActiveSession();
         }
       } catch {
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
+        clearActiveSession();
       }
     }
     setIsLoading(false);
@@ -96,22 +139,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = (newToken: string, newUser: unknown) => {
     const normalized = normalizeUser(newUser);
     if (!normalized) return;
-    localStorage.setItem('token', newToken);
-    localStorage.setItem('user', JSON.stringify(normalized));
+    const nextAccounts = [
+      { ...normalized, token: newToken, lastUsedAt: new Date().toISOString() },
+      ...savedAccounts.filter((account) => account.id !== normalized.id && account.email !== normalized.email),
+    ];
+    writeSavedAccounts(nextAccounts);
+    setSavedAccounts(nextAccounts);
+    persistActiveSession(newToken, normalized);
     setToken(newToken);
     setUser(normalized);
   };
 
   const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    clearActiveSession();
     setToken(null);
     setUser(null);
     router.push('/login');
   };
 
+  const switchAccount = (accountId: string) => {
+    const account = savedAccounts.find((item) => item.id === accountId || item.email === accountId);
+    if (!account) return;
+    const { token: accountToken, lastUsedAt: _lastUsedAt, ...nextUser } = account;
+    const nextAccounts = [
+      { ...account, lastUsedAt: new Date().toISOString() },
+      ...savedAccounts.filter((item) => item.id !== account.id),
+    ];
+    writeSavedAccounts(nextAccounts);
+    setSavedAccounts(nextAccounts);
+    persistActiveSession(accountToken, nextUser);
+    setToken(accountToken);
+    setUser(nextUser);
+  };
+
+  const forgetAccount = (accountId: string) => {
+    const nextAccounts = savedAccounts.filter((item) => item.id !== accountId && item.email !== accountId);
+    writeSavedAccounts(nextAccounts);
+    setSavedAccounts(nextAccounts);
+    if (user && (user.id === accountId || user.email === accountId)) {
+      clearActiveSession();
+      setToken(null);
+      setUser(null);
+      router.push('/login');
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, token, login, logout, isLoading }}>
+    <AuthContext.Provider value={{ user, token, login, logout, savedAccounts, switchAccount, forgetAccount, isLoading }}>
       {children}
     </AuthContext.Provider>
   );

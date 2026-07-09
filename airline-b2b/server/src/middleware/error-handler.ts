@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from 'express';
 import { logger, getLogSafePath } from '../logger';
 import { errorRegistry } from '../observability/error-registry';
+import { toApiErrorBody } from '../errors/app-error';
 
 function normalizeRole(role: unknown): string {
   return String(role || '').toUpperCase();
@@ -12,12 +13,8 @@ export const errorHandler = (
   res: Response,
   next: NextFunction,
 ) => {
-  const statusCode =
-    typeof (err as any)?.statusCode === 'number'
-      ? (err as any).statusCode
-      : typeof (err as any)?.status === 'number'
-        ? (err as any).status
-        : 500;
+  const body = toApiErrorBody(err);
+  const statusCode = body.statusCode;
 
   const user = (req as any).user as
     | { userId?: string; role?: string; firmId?: string | null }
@@ -51,5 +48,5 @@ export const errorHandler = (
   );
 
   if (res.headersSent) return next(err);
-  return res.status(statusCode).json({ error: 'Internal server error', errorId: entry.id });
+  return res.status(statusCode).json({ ...body, errorId: entry.id });
 };

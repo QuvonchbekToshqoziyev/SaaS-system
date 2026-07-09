@@ -1,6 +1,4 @@
 import { Request, Response } from 'express';
-import bcrypt from 'bcrypt';
-import { Role } from '@prisma/client';
 import { prisma } from '../db';
 import { writeAuditLog } from '../utils/audit';
 import { createFirmNotification } from '../utils/notifications';
@@ -10,9 +8,23 @@ function normalizeCode(value: unknown): string | undefined {
   return code || undefined;
 }
 
-export const listAirlines = async (_req: Request, res: Response) => {
+export const listAirlines = async (req: Request, res: Response) => {
+  const authUser = ((req as any).user || {}) as { role?: string; firmId?: string | null };
+  const role = String(authUser.role || '').toUpperCase();
+  const firmId = authUser.firmId ? String(authUser.firmId) : '';
+  const connectedAirlineFirmIds = role === 'FIRM' && firmId
+    ? (await prisma.airlineFirmConnection.findMany({
+        where: { firmId, status: 'ACTIVE' },
+        select: { airlineFirmId: true },
+      })).map((row) => row.airlineFirmId)
+    : undefined;
+
   const rows = await prisma.airline.findMany({
-    where: { status: 'ACTIVE', deletedAt: null },
+    where: {
+      status: 'ACTIVE',
+      deletedAt: null,
+      ...(role === 'FIRM' ? { OR: [{ firmId: null }, { firmId: { in: connectedAirlineFirmIds || [] } }] } : {}),
+    },
     orderBy: { name: 'asc' },
     select: {
       id: true,
@@ -43,17 +55,11 @@ export const listAirlines = async (_req: Request, res: Response) => {
 export const createAirline = async (req: Request, res: Response) => {
   const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
   const code = normalizeCode(req.body?.code);
-  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
-  const password = typeof req.body?.password === 'string' ? req.body.password : '';
-  const fullName = typeof req.body?.fullName === 'string' ? req.body.fullName.trim() : '';
-  const phone = typeof req.body?.phone === 'string' ? req.body.phone.trim() : '';
   const currency = typeof req.body?.currency === 'string' ? req.body.currency.trim().toUpperCase() : 'USD';
 
   if (!name) return res.status(400).json({ error: 'Airline name is required' });
-  if (email && password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
 
   try {
-    const hashedPassword = email ? await bcrypt.hash(password, 10) : null;
     const row = await prisma.$transaction(async (tx) => {
       const existingFirm = await tx.firm.findFirst({
         where: { name: { equals: name, mode: 'insensitive' }, kind: 'AIRLINE' },
@@ -74,25 +80,6 @@ export const createAirline = async (req: Request, res: Response) => {
         });
       }
 
-      if (email && hashedPassword) {
-        const existingUser = await tx.user.findFirst({
-          where: { email: { equals: email, mode: 'insensitive' } },
-          select: { id: true },
-        });
-        if (existingUser) throw new Error('Account already exists for this email');
-        await tx.user.create({
-          data: {
-            email,
-            password: hashedPassword,
-            fullName: fullName || undefined,
-            phone: phone || undefined,
-            role: Role.FIRM,
-            firmRole: 'FIRM_ADMIN',
-            firmId: firm.id,
-          },
-        });
-      }
-
       return tx.airline.upsert({
         where: { name },
         update: { code, firmId: firm.id, status: 'ACTIVE', deletedAt: null },
@@ -105,7 +92,7 @@ export const createAirline = async (req: Request, res: Response) => {
       entityType: 'airline',
       entityId: row.id,
       entityLabel: row.name,
-      summary: `Created airline ${row.name}`,
+      summary: `Created listed airline profile ${row.name}`,
       after: row,
     });
     return res.status(201).json(row);

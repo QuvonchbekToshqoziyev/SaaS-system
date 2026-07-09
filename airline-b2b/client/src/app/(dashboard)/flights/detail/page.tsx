@@ -81,13 +81,11 @@ function FlightDetailContent() {
   const fetchData = async () => {
     try {
       if (!id) return;
-      const role = String(user?.role || '').toUpperCase();
-      const canAllocate = role === 'FIRM' && user?.firmKind === 'AIRLINE';
 
       const [reportRes, ticketsRes, firmsRes, cancelReqRes, desksRes] = await Promise.all([
         api.get(`/reports/flight?flight_id=${id}`),
         api.get(`/tickets?flight_id=${id}`),
-        canAllocate ? api.get('/firms') : Promise.resolve({ data: [] }),
+        Promise.resolve({ data: [] as any[] }),
         api.get(`/tickets/cancel-sale-requests?flight_id=${id}&status=PENDING`).catch(() => ({ data: [] })),
         api.get('/kassa/desks').catch(() => ({ data: [] })),
       ]);
@@ -592,7 +590,7 @@ function FlightDetailContent() {
   const role = String(user?.role || '').toUpperCase();
   const firmRole = user?.firmRole || 'FIRM_ADMIN';
   const canManageFirmWork = role !== 'FIRM' || firmRole === 'FIRM_ADMIN' || firmRole === 'MANAGER';
-  const canAllocate = role === 'FIRM' && user?.firmKind === 'AIRLINE';
+  const canAllocate = false;
   const canBatchSell = ['SUPERADMIN', 'ADMIN'].includes(role) || (role === 'FIRM' && canManageFirmWork);
   const canConfirmAllocations = role === 'FIRM' && canManageFirmWork;
 

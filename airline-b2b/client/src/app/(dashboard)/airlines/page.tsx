@@ -39,10 +39,6 @@ export default function AirlinesPage() {
   const [form, setForm] = useState({
     name: '',
     code: '',
-    email: '',
-    password: '',
-    fullName: '',
-    phone: '',
     currency: 'USD',
   });
   const [submitting, setSubmitting] = useState(false);
@@ -56,17 +52,8 @@ export default function AirlinesPage() {
   const handleCreate = async (event: React.FormEvent) => {
     event.preventDefault();
     const name = form.name.trim();
-    const email = form.email.trim();
     if (!name) {
       toast.error(tr('Airline name is required', 'Aviakompaniya nomi kerak'));
-      return;
-    }
-    if (!email) {
-      toast.error(tr('Login email is required', 'Login email kerak'));
-      return;
-    }
-    if (form.password.length < 6) {
-      toast.error(tr('Password must be at least 6 characters', 'Parol kamida 6 ta belgidan iborat bo\'lishi kerak'));
       return;
     }
 
@@ -75,14 +62,10 @@ export default function AirlinesPage() {
       await api.post('/airlines', {
         name,
         code: form.code.trim() || undefined,
-        email,
-        password: form.password,
-        fullName: form.fullName.trim() || undefined,
-        phone: form.phone.trim() || undefined,
         currency: form.currency,
       });
-      toast.success(tr('Airline and login account created.', 'Aviakompaniya va login akkaunt yaratildi.'));
-      setForm({ name: '', code: '', email: '', password: '', fullName: '', phone: '', currency: 'USD' });
+      toast.success(tr('Listed airline created.', 'Ro\'yxatdagi aviakompaniya yaratildi.'));
+      setForm({ name: '', code: '', currency: 'USD' });
       queryClient.invalidateQueries({ queryKey: ['airlines'] });
       queryClient.invalidateQueries({ queryKey: ['firms'] });
     } catch (error: unknown) {
@@ -106,7 +89,7 @@ export default function AirlinesPage() {
         <div>
           <h2 className="text-3xl font-bold text-foreground">{tr('Airlines', 'Aviakompaniyalar')}</h2>
           <p className="mt-1 text-sm text-muted">
-            {tr('Create airline accounts before flights and ticket inventory are added.', 'Reys va bilet zaxirasi kiritilishidan oldin aviakompaniya akkauntini yarating.')}
+            {tr('Maintain listed airline brands. Firms can use listed airlines only after superadmin connects them.', 'Ro\'yxatdagi aviakompaniya brendlarini boshqaring. Firmalar ularni faqat superadmin ulaganidan keyin ishlatadi.')}
           </p>
         </div>
         <Plane className="h-9 w-9 text-primary" />
@@ -125,10 +108,6 @@ export default function AirlinesPage() {
             <option value="UZS">UZS</option>
             <option value="EUR">EUR</option>
           </select>
-          <input className="compact-control" placeholder={tr('Responsible person', 'Mas\'ul shaxs')} value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} />
-          <input className="compact-control" placeholder={tr('Phone', 'Telefon')} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-          <input className="compact-control" type="email" placeholder={tr('Login email', 'Login email')} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-          <input className="compact-control" type="password" placeholder={tr('Initial password', 'Boshlang\'ich parol')} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
           <button type="submit" disabled={submitting} className="inline-flex items-center justify-center gap-2 bg-primary px-4 py-2 text-sm font-bold uppercase tracking-wide text-ink disabled:opacity-60">
             <Save size={16} />
             {submitting ? tr('Saving...', 'Saqlanmoqda...') : tr('Create', 'Yaratish')}
@@ -142,7 +121,7 @@ export default function AirlinesPage() {
             <tr>
               <th className="px-4 py-3 text-left text-xs font-medium uppercase text-muted">{tr('Airline', 'Aviakompaniya')}</th>
               <th className="px-4 py-3 text-left text-xs font-medium uppercase text-muted">{tr('Code', 'Kod')}</th>
-              <th className="px-4 py-3 text-left text-xs font-medium uppercase text-muted">{tr('Login accounts', 'Login akkauntlar')}</th>
+              <th className="px-4 py-3 text-left text-xs font-medium uppercase text-muted">{tr('Managed profile', 'Boshqariladigan profil')}</th>
               <th className="px-4 py-3 text-left text-xs font-medium uppercase text-muted">{tr('Currency', 'Valyuta')}</th>
               <th className="px-4 py-3 text-left text-xs font-medium uppercase text-muted">{tr('Status', 'Holat')}</th>
             </tr>
@@ -157,9 +136,9 @@ export default function AirlinesPage() {
                 <td className="px-4 py-3 text-sm font-semibold text-foreground">{airline.name}</td>
                 <td className="px-4 py-3 text-sm text-muted">{airline.code || '-'}</td>
                 <td className="px-4 py-3 text-sm text-muted">
-                  {airline.firm?.users?.length
-                    ? airline.firm.users.map((item) => item.email).join(', ')
-                    : tr('No login account', 'Login akkaunt yo\'q')}
+                  {airline.firmId
+                    ? tr('Listed airline, no separate login', 'Ro\'yxatdagi aviakompaniya, alohida login yo\'q')
+                    : tr('External firm-entered airline', 'Firma kiritgan tashqi aviakompaniya')}
                 </td>
                 <td className="px-4 py-3 text-sm text-muted">{airline.firm?.currency || '-'}</td>
                 <td className="px-4 py-3 text-sm text-muted">{airline.status || 'ACTIVE'}</td>

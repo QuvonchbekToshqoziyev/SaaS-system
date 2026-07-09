@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { format } from 'date-fns';
 import { useRouter } from 'next/navigation';
-import { Lock, Unlock, Wallet, CreditCard, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Lock, Unlock, Wallet, CreditCard, AlertCircle, CheckCircle2, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -70,6 +70,12 @@ type KassaSummary = {
   }>;
 };
 
+type KassaConfirmAction =
+  | { kind: 'open' }
+  | { kind: 'close' }
+  | { kind: 'payment'; body: any; label: string }
+  | { kind: 'cash'; body: any; label: string };
+
 function formatMoney(value: number) {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value);
 }
@@ -134,11 +140,24 @@ export default function KassaPage() {
   const [deskCode, setDeskCode] = useState('');
   const [deskFirmId, setDeskFirmId] = useState('');
   const [creatingDesk, setCreatingDesk] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<KassaConfirmAction | null>(null);
 
   const isEditable = summary?.status === 'OPEN';
   const isClosed = summary?.status === 'CLOSED';
   const isNotOpen = summary?.status === 'NOT_OPEN';
   const canRecordPayment = canManageKassa;
+  const cashBalanceByCurrency = useMemo(() => {
+    const balances: Record<string, number> = { UZS: Number(summary?.kassa?.openingBalance || 0) || 0, USD: 0 };
+    for (const tx of summary?.transactions || []) {
+      if (String(tx.paymentMethod || '').toLowerCase() !== 'cash') continue;
+      const currency = String(tx.currency || 'UZS').toUpperCase();
+      const amount = Number(tx.originalAmount || 0) || 0;
+      if (!balances[currency]) balances[currency] = 0;
+      if (tx.direction === 'KASSA_OUT') balances[currency] -= amount;
+      else if (tx.direction === 'KASSA_IN' || tx.type === 'PAYMENT' || tx.type === 'SALE') balances[currency] += amount;
+    }
+    return balances;
+  }, [summary]);
 
   const payCurrencyCode = useMemo(() => {
     const c = payCurrency === 'OTHER' ? payOtherCurrency : payCurrency;
@@ -148,6 +167,9 @@ export default function KassaPage() {
   const selectedCashCard = useMemo(() => paymentCards.find((card) => card.id === cashCardId), [paymentCards, cashCardId]);
   const selectedPayFirm = useMemo(() => firmOptions.find((firm) => firm.id === payFirmId), [firmOptions, payFirmId]);
   const selectedCashFirm = useMemo(() => firmOptions.find((firm) => firm.id === (canFilterFirm ? cashFirmId : user?.firmId)), [firmOptions, cashFirmId, canFilterFirm, user?.firmId]);
+  const selectedPayFlight = useMemo(() => flightOptions.find((flight) => String(flight.id || flight.flight_id || '') === payFlightId), [flightOptions, payFlightId]);
+  const selectedPayDesk = useMemo(() => deskOptions.find((desk) => desk.id === payKassaDeskId), [deskOptions, payKassaDeskId]);
+  const selectedCashDesk = useMemo(() => deskOptions.find((desk) => desk.id === cashKassaDeskId), [deskOptions, cashKassaDeskId]);
   const cashCounterpartyOptions = useMemo(
     () => firmOptions.filter((firm) => firm.id !== (canFilterFirm ? cashFirmId : user?.firmId)),
     [firmOptions, canFilterFirm, cashFirmId, user?.firmId],
@@ -257,6 +279,10 @@ export default function KassaPage() {
   const handleOpenKassa = async (e: FormEvent) => {
     e.preventDefault();
     if (openingKassa) return;
+    setConfirmAction({ kind: 'open' });
+  };
+
+  const openKassaConfirmed = async () => {
     try {
       setOpeningKassa(true);
       await api.post('/kassa/open', {
@@ -275,6 +301,10 @@ export default function KassaPage() {
   const handleCloseKassa = async (e: FormEvent) => {
     e.preventDefault();
     if (closingKassa) return;
+    setConfirmAction({ kind: 'close' });
+  };
+
+  const closeKassaConfirmed = async () => {
     try {
       setClosingKassa(true);
       await api.post('/kassa/close', {
@@ -333,9 +363,7 @@ export default function KassaPage() {
       toast.error(tr('Select a card', 'Kartani tanlang'));
       return;
     }
-    try {
-      setRecordingCash(true);
-      await api.post('/transactions/cash', {
+    const body = {
         flow: cashFlow,
         method: cashMethod,
         paymentCardId: cashMethod === 'card' ? cashCardId : undefined,
@@ -346,7 +374,18 @@ export default function KassaPage() {
         amount,
         currency: cashMethod === 'card' ? selectedCashCard?.currency || 'UZS' : selectedCashFirm?.currency || 'UZS',
         note: cashNote.trim() || undefined,
-      });
+      };
+    setConfirmAction({
+      kind: 'cash',
+      body,
+      label: `${cashFlow === 'IN' ? tr('Income', 'Kirim') : tr('Expense', 'Chiqim')} · ${amount} ${body.currency}`,
+    });
+  };
+
+  const cashMovementConfirmed = async (body: any) => {
+    try {
+      setRecordingCash(true);
+      await api.post('/transactions/cash', body);
       toast.success(cashFlow === 'IN' ? tr('Income recorded', 'Kirim qayd etildi') : tr('Expense recorded', 'Chiqim qayd etildi'));
       setCashAmount('');
       setCashNote('');
@@ -402,13 +441,21 @@ export default function KassaPage() {
       if (payCardReference.trim()) metadata.transaction_reference = payCardReference.trim();
     }
 
+    const body: any = { amount, currency, method, metadata };
+    if (method === 'card') body.paymentCardId = payCardId;
+    if (canFilterFirm) body.firmId = payFirmId;
+    if (flightId) body.flightId = flightId;
+    if (payKassaDeskId) body.kassaDeskId = payKassaDeskId;
+    setConfirmAction({
+      kind: 'payment',
+      body,
+      label: `${amount} ${currency} · ${method === 'card' ? tr('Card', 'Karta') : tr('Cash', 'Naqd')}`,
+    });
+  };
+
+  const paymentConfirmed = async (body: any) => {
     try {
       setRecordingPayment(true);
-      const body: any = { amount, currency, method, metadata };
-      if (method === 'card') body.paymentCardId = payCardId;
-      if (canFilterFirm) body.firmId = payFirmId;
-      if (flightId) body.flightId = flightId;
-      if (payKassaDeskId) body.kassaDeskId = payKassaDeskId;
       await api.post('/payments', body);
       toast.success(tr('Payment recorded', 'To\'lov qayd etildi'));
       setPayAmount('');
@@ -421,6 +468,16 @@ export default function KassaPage() {
     } finally {
       setRecordingPayment(false);
     }
+  };
+
+  const confirmKassaAction = async () => {
+    if (!confirmAction) return;
+    const action = confirmAction;
+    setConfirmAction(null);
+    if (action.kind === 'open') return openKassaConfirmed();
+    if (action.kind === 'close') return closeKassaConfirmed();
+    if (action.kind === 'payment') return paymentConfirmed(action.body);
+    return cashMovementConfirmed(action.body);
   };
 
   const createCard = async (e: FormEvent) => {
@@ -1025,6 +1082,131 @@ export default function KassaPage() {
             </div>
           </form>
         </CollapsibleCard>
+      )}
+
+      {confirmAction && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-2xl rounded-xl border border-border bg-surface p-6 shadow-2xl">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-xl font-bold text-foreground">
+                  {confirmAction.kind === 'close'
+                    ? tr('Confirm kassa close', 'Kassani yopishni tasdiqlang')
+                    : confirmAction.kind === 'open'
+                      ? tr('Confirm kassa open', 'Kassani ochishni tasdiqlang')
+                      : tr('Confirm action', 'Amalni tasdiqlang')}
+                </h3>
+                <p className="mt-1 text-sm text-muted">
+                  {confirmAction.kind === 'close'
+                    ? tr('Check today\'s income, expense, cash and card balances before closing.', 'Yopishdan oldin bugungi kirim, chiqim, naqd va karta qoldiqlarini tekshiring.')
+                    : tr('Please review the details before saving this kassa action.', 'Kassa amalini saqlashdan oldin ma\'lumotlarni tekshiring.')}
+                </p>
+              </div>
+              <button type="button" onClick={() => setConfirmAction(null)} className="text-muted hover:text-foreground" aria-label={tr('Close', 'Yopish')}>
+                <X size={20} />
+              </button>
+            </div>
+
+            {confirmAction.kind === 'close' ? (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="rounded-lg border border-border bg-surface-2 p-3">
+                    <div className="text-xs uppercase text-muted">{tr('Daily income', 'Bugungi jami kirim')}</div>
+                    <div className="mt-1 text-lg font-bold">{formatMoney(summary?.totals.dailyIncomeTotal || 0)} UZS</div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-surface-2 p-3">
+                    <div className="text-xs uppercase text-muted">{tr('Daily expense', 'Bugungi jami chiqim')}</div>
+                    <div className="mt-1 text-lg font-bold">{formatMoney(summary?.totals.dailyExpenseTotal || 0)} UZS</div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-surface-2 p-3">
+                    <div className="text-xs uppercase text-muted">{tr('Physical count', 'Sanab kiritilgan')}</div>
+                    <div className="mt-1 text-lg font-bold">{formatMoney(Number(closingBalance || summary?.totals.expectedCash || 0))} UZS</div>
+                  </div>
+                </div>
+                <div className="overflow-x-auto scroller-minimal">
+                  <table className="excel-table">
+                    <tbody>
+                      <tr>
+                        <td>{tr('Cash balance UZS', 'Naqd qoldiq UZS')}</td>
+                        <td className="text-right font-mono">{formatMoney(cashBalanceByCurrency.UZS || 0)} UZS</td>
+                      </tr>
+                      <tr>
+                        <td>{tr('Cash balance USD', 'Naqd qoldiq USD')}</td>
+                        <td className="text-right font-mono">{formatMoney(cashBalanceByCurrency.USD || 0)} USD</td>
+                      </tr>
+                      <tr>
+                        <td>{tr('Cards total', 'Kartalardagi jami qoldiq')}</td>
+                        <td className="text-right font-mono">{formatMoney(summary?.totals.cardBalanceTotal || 0)} UZS</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div className="max-h-56 overflow-auto rounded-lg border border-border">
+                  <table className="excel-table">
+                    <thead>
+                      <tr>
+                        <th>{tr('Card', 'Karta')}</th>
+                        <th>{tr('Currency', 'Valyuta')}</th>
+                        <th className="text-right">{tr('Balance', 'Qoldiq')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paymentCards.length === 0 ? (
+                        <tr><td colSpan={3} className="text-center text-muted">{tr('No cards added.', 'Kartalar qo\'shilmagan.')}</td></tr>
+                      ) : paymentCards.map((card) => (
+                        <tr key={card.id}>
+                          <td>{card.ownerName} · {card.cardNumber}</td>
+                          <td>{card.currency}</td>
+                          <td className="text-right font-mono">{formatMoney(card.balance || 0)} {card.currency}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-border bg-surface-2 p-4 text-sm text-foreground">
+                {confirmAction.kind === 'open' && (
+                  <p>{tr('Open kassa with opening balance', 'Kassani boshlang\'ich balans bilan ochish')}: <b>{formatMoney(Number(openingBalance || 0))} UZS</b></p>
+                )}
+                {confirmAction.kind === 'payment' && (
+                  <div className="space-y-1">
+                    <p><b>{confirmAction.label}</b></p>
+                    <p>{tr('Firm', 'Firma')}: {selectedPayFirm?.name || user?.email}</p>
+                    <p>{tr('Flight', 'Reys')}: {selectedPayFlight?.flightNumber || tr('Firm deposit', 'Firma depoziti')}</p>
+                    <p>{tr('Kassa', 'Kassa')}: {selectedPayDesk?.name || '-'}</p>
+                  </div>
+                )}
+                {confirmAction.kind === 'cash' && (
+                  <div className="space-y-1">
+                    <p><b>{confirmAction.label}</b></p>
+                    <p>{tr('Firm', 'Firma')}: {selectedCashFirm?.name || user?.email}</p>
+                    <p>{tr('Kassa', 'Kassa')}: {selectedCashDesk?.name || '-'}</p>
+                    <p>{tr('Method', 'Usul')}: {cashMethod === 'card' ? tr('Card', 'Karta') : tr('Cash', 'Naqd')}</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={() => setConfirmAction(null)} className="rounded-lg border border-border bg-surface-2 px-4 py-2 text-sm font-semibold text-foreground hover:bg-surface">
+                {tr('Back', 'Orqaga')}
+              </button>
+              <button
+                type="button"
+                onClick={confirmKassaAction}
+                disabled={openingKassa || closingKassa || recordingPayment || recordingCash}
+                className={`rounded-lg px-4 py-2 text-sm font-bold uppercase tracking-wide disabled:opacity-50 ${
+                  confirmAction.kind === 'close'
+                    ? 'bg-red-600 text-white hover:bg-red-700'
+                    : 'bg-primary text-ink hover:bg-primary/90'
+                }`}
+              >
+                {confirmAction.kind === 'close' ? tr('Confirm close', 'Yopishni tasdiqlash') : tr('Confirm action', 'Amalni tasdiqlash')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

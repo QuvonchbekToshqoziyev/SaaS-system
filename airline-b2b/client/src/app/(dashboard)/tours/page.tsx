@@ -72,9 +72,46 @@ export default function ToursPage() {
   const [createRow, setCreateRow] = useState(emptyCreateRow);
   const [sellRows, setSellRows] = useState<Record<string, { buyerFirmId: string; quantity: number; unitPrice: string }>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [filters, setFilters] = useState({ q: '', firmId: 'ALL', status: 'ACTIVE' });
 
   const firmNameById = useMemo(() => new Map(firms.map((f) => [f.id, f.name])), [firms]);
   const flightNameById = useMemo(() => new Map(flights.map((flight) => [flight.id, `${flight.flightNumber} - ${flight.route}`])), [flights]);
+  const visiblePackages = useMemo(() => {
+    const q = filters.q.trim().toLowerCase();
+    return packages.filter((pkg) => {
+      const status = String(pkg.status || '').toUpperCase();
+      const haystack = [
+        pkg.name,
+        pkg.destination,
+        pkg.ownerFirm?.name,
+        pkg.flight?.flightNumber,
+        pkg.flight?.route,
+        pkg.currency,
+        status,
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (filters.firmId !== 'ALL' && pkg.ownerFirmId !== filters.firmId) return false;
+      if (filters.status !== 'ALL' && status !== filters.status) return false;
+      if (q && !haystack.includes(q)) return false;
+      return true;
+    });
+  }, [filters, packages]);
+  const visibleSales = useMemo(() => {
+    const q = filters.q.trim().toLowerCase();
+    return sales.filter((sale) => {
+      const sellerId = String(sale.sellerFirmId || '');
+      const buyerId = String(sale.buyerFirmId || '');
+      const haystack = [
+        sale.package?.name,
+        sale.package?.destination,
+        sale.sellerFirm?.name,
+        sale.buyerFirm?.name,
+        sale.currency,
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (filters.firmId !== 'ALL' && sellerId !== filters.firmId && buyerId !== filters.firmId) return false;
+      if (q && !haystack.includes(q)) return false;
+      return true;
+    });
+  }, [filters, sales]);
 
   const loadData = async () => {
     try {
@@ -186,9 +223,13 @@ export default function ToursPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-3xl font-bold text-foreground">{tr('Tour Packages', 'Tur paketlar')}</h2>
+          <h2 className="text-3xl font-bold text-foreground">
+            {isAdmin ? tr('All Tour Packages', 'Barcha tur paketlar') : tr('Tour Packages', 'Tur paketlar')}
+          </h2>
           <p className="mt-1 text-sm text-muted">
-            {tr('Firm-owned B2B tour inventory and firm-to-firm sales.', 'Firmalarga tegishli B2B tur inventari va firma-firma sotuvlari.')}
+            {isAdmin
+              ? tr('Platform-wide tour inventory, sales ledger, and firm filters.', 'Barcha tur inventari, sotuvlar jurnali va firma filtrlari.')
+              : tr('Firm-owned B2B tour inventory and firm-to-firm sales.', 'Firmalarga tegishli B2B tur inventari va firma-firma sotuvlari.')}
           </p>
         </div>
         {canCreateTours && (
@@ -201,6 +242,37 @@ export default function ToursPage() {
             {tr('Add tour', 'Tur qo\'shish')}
           </button>
         )}
+      </div>
+
+      <div className="grid gap-3 rounded-lg border border-border bg-surface-2 p-3 md:grid-cols-[minmax(220px,1fr)_minmax(180px,260px)_minmax(150px,200px)_auto] md:items-end">
+        <label className="block">
+          <span className="compact-label">{tr('Search', 'Qidirish')}</span>
+          <input
+            className="compact-control"
+            value={filters.q}
+            onChange={(e) => setFilters((current) => ({ ...current, q: e.target.value }))}
+            placeholder={tr('Package, firm, flight...', 'Paket, firma, reys...')}
+          />
+        </label>
+        <label className="block">
+          <span className="compact-label">{tr('Firm', 'Firma')}</span>
+          <select className="compact-control" value={filters.firmId} onChange={(e) => setFilters((current) => ({ ...current, firmId: e.target.value }))}>
+            <option value="ALL">{tr('All firms', 'Barcha firmalar')}</option>
+            {firms.map((firm) => <option key={firm.id} value={firm.id}>{firm.name}</option>)}
+          </select>
+        </label>
+        <label className="block">
+          <span className="compact-label">{tr('Package status', 'Paket holati')}</span>
+          <select className="compact-control" value={filters.status} onChange={(e) => setFilters((current) => ({ ...current, status: e.target.value }))}>
+            <option value="ACTIVE">{tr('Active', 'Aktiv')}</option>
+            <option value="ALL">{tr('All statuses', 'Barcha holatlar')}</option>
+            <option value="INACTIVE">{tr('Inactive', 'Nofaol')}</option>
+            <option value="CANCELLED">{tr('Cancelled', 'Bekor qilingan')}</option>
+          </select>
+        </label>
+        <div className="text-sm text-muted md:text-right">
+          <span className="font-semibold text-foreground">{visiblePackages.length}</span> / {packages.length}
+        </div>
       </div>
 
       {canCreateTours && isCreating && (
@@ -283,14 +355,14 @@ export default function ToursPage() {
           <tbody>
             {loading ? (
               <tr><td colSpan={8} className="text-center text-muted">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
-            ) : packages.length === 0 ? (
+            ) : visiblePackages.length === 0 ? (
               <tr>
                 <td colSpan={8} className="text-center text-muted">
                   <PackageOpen className="mx-auto mb-2 text-muted" size={28} />
                   {tr('No tour packages yet.', 'Hali tur paketlar yo\'q.')}
                 </td>
               </tr>
-            ) : packages.map((pkg) => {
+            ) : visiblePackages.map((pkg) => {
               const sellRow = sellRows[pkg.id] || { buyerFirmId: '', quantity: 1, unitPrice: '' };
               const canSell = isAdmin || pkg.ownerFirmId === ownFirmId;
               return (
@@ -354,9 +426,9 @@ export default function ToursPage() {
               </tr>
             </thead>
             <tbody>
-              {sales.length === 0 ? (
+              {visibleSales.length === 0 ? (
                 <tr><td colSpan={6} className="text-center text-muted">{tr('No tour sales yet.', 'Hali tur sotuvlari yo\'q.')}</td></tr>
-              ) : sales.map((sale) => (
+              ) : visibleSales.map((sale) => (
                 <tr key={sale.id}>
                   <td>{new Date(sale.createdAt).toLocaleString()}</td>
                   <td>{sale.package?.name || sale.packageId}</td>

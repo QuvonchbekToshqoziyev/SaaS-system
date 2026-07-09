@@ -19,8 +19,35 @@ type NotificationRow = {
   firm?: { id: string; name: string | null; kind?: string | null } | null;
 };
 
+type NavKey =
+  | 'navAdminDashboard'
+  | 'navDashboard'
+  | 'navAdmins'
+  | 'navAuditLog'
+  | 'navAirlines'
+  | 'navFirms'
+  | 'navFlights'
+  | 'navTours'
+  | 'navTransactions'
+  | 'navKassa'
+  | 'navEmployees'
+  | 'navChat'
+  | 'navReports'
+  | 'navSettings';
+
+type NavLinkItem = {
+  key: NavKey;
+  href: string;
+  icon: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }>;
+};
+
+type NavGroup = {
+  label: string;
+  links: NavLinkItem[];
+};
+
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const { user, logout, isLoading } = useAuth();
+  const { user, logout, isLoading, savedAccounts, switchAccount, forgetAccount } = useAuth();
   const { t } = useLanguage();
   const pathname = usePathname();
   const router = useRouter();
@@ -28,10 +55,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const normalizedRole = String(user?.role || '').toLowerCase();
   const firmRole = user?.firmRole || 'FIRM_ADMIN';
-  const isAirlineFirm = user?.role === 'firm' && user?.firmKind === 'AIRLINE';
-  const isFirmKassir = user?.role === 'firm' && firmRole === 'KASSIR';
-  const isFirmManager = user?.role === 'firm' && firmRole === 'MANAGER';
+  const isAirlineFirm = false;
+  const isFirmKassir = normalizedRole === 'firm' && firmRole === 'KASSIR';
+  const isFirmManager = normalizedRole === 'firm' && firmRole === 'MANAGER';
   const isKassirAllowedPath = pathname.startsWith('/kassa') || pathname.startsWith('/settings');
 
   useEffect(() => {
@@ -82,6 +110,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
   };
 
+  const goToAccountHome = (account: { role?: unknown; firmKind?: unknown }) => {
+    const role = String(account?.role || '').toLowerCase();
+    if (role === 'firm') {
+      router.push('/firm');
+      return;
+    }
+    router.push('/admin');
+  };
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background text-foreground">
@@ -97,13 +134,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return null;
   }
 
-  const airlineNavLinks = [
-    { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
-    { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
-    { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
-    { key: 'navChat' as const, href: '/chat', icon: MessageCircle },
-    { key: 'navReports' as const, href: '/reports', icon: BarChart3 },
-    { key: 'navSettings' as const, href: '/settings', icon: Settings },
+  const airlineNavLinks: NavLinkItem[] = [
+    { key: 'navFlights', href: '/flights', icon: PlaneTakeoff },
+    { key: 'navTransactions', href: '/transactions', icon: ArrowRightLeft },
+    { key: 'navKassa', href: '/kassa', icon: Wallet },
+    { key: 'navChat', href: '/chat', icon: MessageCircle },
+    { key: 'navReports', href: '/reports', icon: BarChart3 },
+    { key: 'navSettings', href: '/settings', icon: Settings },
   ];
 
   const firmNavLinks = isAirlineFirm ? airlineNavLinks : isFirmKassir ? [
@@ -122,21 +159,45 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { key: 'navSettings' as const, href: '/settings', icon: Settings },
   ];
 
-  const navLinks = user.role === 'firm' ? firmNavLinks : [
-    { key: 'navAdminDashboard' as const, href: '/admin', icon: LayoutDashboard },
-    ...(user.role === 'superadmin' ? [{ key: 'navAdmins' as const, href: '/admins', icon: ShieldCheck }] : []),
-    ...(user.role === 'superadmin' ? [{ key: 'navAuditLog' as const, href: '/audit-log', icon: History }] : []),
-    ...(user.role === 'superadmin' ? [{ key: 'navAirlines' as const, href: '/airlines', icon: Plane }] : []),
-    { key: 'navFirms' as const, href: '/firms', icon: UserCircle },
-    { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
-    { key: 'navTours' as const, href: '/tours', icon: PackageOpen },
-    { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
-    { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
-    { key: 'navEmployees' as const, href: '/employees', icon: Users },
-    { key: 'navChat' as const, href: '/chat', icon: MessageCircle },
-    { key: 'navReports' as const, href: '/reports', icon: BarChart3 },
-    { key: 'navSettings' as const, href: '/settings', icon: Settings },
+  const adminNavLinks: NavLinkItem[] = [
+    { key: 'navAdminDashboard', href: '/admin', icon: LayoutDashboard },
+    ...(normalizedRole === 'superadmin' ? [{ key: 'navAdmins' as const, href: '/admins', icon: ShieldCheck }] : []),
+    ...(normalizedRole === 'superadmin' ? [{ key: 'navAuditLog' as const, href: '/audit-log', icon: History }] : []),
+    ...(normalizedRole === 'superadmin' ? [{ key: 'navAirlines' as const, href: '/airlines', icon: Plane }] : []),
+    { key: 'navFirms', href: '/firms', icon: UserCircle },
+    { key: 'navFlights', href: '/flights', icon: PlaneTakeoff },
+    { key: 'navTours', href: '/tours', icon: PackageOpen },
+    { key: 'navTransactions', href: '/transactions', icon: ArrowRightLeft },
+    { key: 'navKassa', href: '/kassa', icon: Wallet },
+    { key: 'navEmployees', href: '/employees', icon: Users },
+    { key: 'navChat', href: '/chat', icon: MessageCircle },
+    { key: 'navReports', href: '/reports', icon: BarChart3 },
+    { key: 'navSettings', href: '/settings', icon: Settings },
   ];
+
+  const navLinks = normalizedRole === 'firm' ? firmNavLinks : adminNavLinks;
+  const navGroups: NavGroup[] = normalizedRole === 'firm'
+    ? isAirlineFirm
+      ? [
+          { label: 'Inventory', links: airlineNavLinks.filter((link) => ['/flights'].includes(link.href)) },
+          { label: 'Money', links: airlineNavLinks.filter((link) => ['/transactions', '/kassa', '/reports'].includes(link.href)) },
+          { label: 'Workspace', links: airlineNavLinks.filter((link) => ['/chat', '/settings'].includes(link.href)) },
+        ]
+      : isFirmKassir
+        ? [{ label: 'Kassa Access', links: firmNavLinks }]
+        : [
+            { label: 'Overview', links: firmNavLinks.filter((link) => ['/firm', '/reports'].includes(link.href)) },
+            { label: 'Operations', links: firmNavLinks.filter((link) => ['/firms', '/flights', '/tours', '/employees'].includes(link.href)) },
+            { label: 'Money', links: firmNavLinks.filter((link) => ['/transactions', '/kassa'].includes(link.href)) },
+            { label: 'Workspace', links: firmNavLinks.filter((link) => ['/chat', '/settings'].includes(link.href)) },
+          ]
+    : [
+        { label: normalizedRole === 'superadmin' ? 'Command Center' : 'Overview', links: adminNavLinks.filter((link) => ['/admin', '/reports'].includes(link.href)) },
+        { label: 'Organizations', links: adminNavLinks.filter((link) => ['/admins', '/airlines', '/firms', '/employees'].includes(link.href)) },
+        { label: 'Operations', links: adminNavLinks.filter((link) => ['/flights', '/tours'].includes(link.href)) },
+        { label: 'Finance', links: adminNavLinks.filter((link) => ['/transactions', '/kassa'].includes(link.href)) },
+        { label: 'Oversight', links: adminNavLinks.filter((link) => ['/audit-log', '/chat', '/settings'].includes(link.href)) },
+      ];
 
   const activeNavLink = navLinks.find((link) => {
     const isTopLevel = link.href === '/firm' || link.href === '/admin';
@@ -164,27 +225,33 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         {/* Sidebar Nav */}
         <div className="flex-1 min-h-0 overflow-y-auto scroller-minimal py-4 flex flex-col gap-1 px-3">
-          <div className="px-2 mb-2 text-[10px] text-muted uppercase tracking-widest font-semibold select-none">
-            {user.role === 'firm' ? (isAirlineFirm ? 'Airline Actions' : isFirmKassir ? 'Kassa Access' : 'Agency Actions') : 'Platform Setup'}
-          </div>
-          {navLinks.map((link) => {
-            const isActive = pathname === link.href || (link.href !== '/firm' && link.href !== '/admin' && pathname.startsWith(link.href));
-            return (
-              <Link
-                key={link.href}
-                href={link.href}
-                aria-label={t(link.key)}
-                className={`flex items-center gap-3 px-3 py-2 rounded-md text-[14px] font-medium tracking-wide ${
-                  isActive
-                    ? 'bg-surface-2 text-foreground border border-border shadow-sm'
-                    : 'text-muted hover:bg-surface-2 hover:text-foreground'
-                }`}
-              >
-                <link.icon size={20} strokeWidth={isActive ? 2.5 : 2} className="shrink-0" />
-                <span>{t(link.key)}</span>
-              </Link>
-            );
-          })}
+          {navGroups.map((group) => group.links.length > 0 && (
+            <div key={group.label} className="mb-2">
+              <div className="px-2 pb-1 text-[10px] text-muted uppercase tracking-widest font-semibold select-none">
+                {group.label}
+              </div>
+              <div className="flex flex-col gap-1">
+                {group.links.map((link) => {
+                  const isActive = pathname === link.href || (link.href !== '/firm' && link.href !== '/admin' && pathname.startsWith(link.href));
+                  return (
+                    <Link
+                      key={link.href}
+                      href={link.href}
+                      aria-label={t(link.key)}
+                      className={`flex items-center gap-3 px-3 py-2 rounded-md text-[14px] font-medium tracking-wide ${
+                        isActive
+                          ? 'bg-surface-2 text-foreground border border-border shadow-sm'
+                          : 'text-muted hover:bg-surface-2 hover:text-foreground'
+                      }`}
+                    >
+                      <link.icon size={20} strokeWidth={isActive ? 2.5 : 2} className="shrink-0" />
+                      <span>{t(link.key)}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
 
         {/* User Info / Logout */}
@@ -195,9 +262,47 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </div>
             <div className="overflow-hidden w-full px-2">
               <p className="text-[14px] font-bold text-foreground truncate">{user.email}</p>
-              <p className="text-[12px] text-muted truncate uppercase tracking-widest">{user.role === 'firm' ? firmRole.replace('_', ' ') : user.role}</p>
+              <p className="text-[12px] text-muted truncate uppercase tracking-widest">{normalizedRole === 'firm' ? firmRole.replace('_', ' ') : user.role}</p>
             </div>
           </div>
+
+          {savedAccounts.length > 1 && (
+            <div className="rounded-md border border-border bg-surface-2 p-2">
+              <div className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-widest text-muted">Switch Account</div>
+              <div className="max-h-40 space-y-1 overflow-y-auto scroller-minimal">
+                {savedAccounts.map((account) => {
+                  const isCurrent = account.id === user.id || account.email === user.email;
+                  return (
+                    <div key={account.id || account.email} className={`flex items-center gap-1 rounded-md ${isCurrent ? 'bg-surface' : ''}`}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          switchAccount(account.id || account.email);
+                          goToAccountHome(account);
+                        }}
+                        className="min-w-0 flex-1 px-2 py-1.5 text-left"
+                      >
+                        <div className="truncate text-xs font-semibold text-foreground">{account.fullName || account.email}</div>
+                        <div className="truncate text-[10px] uppercase tracking-wide text-muted">
+                          {account.role === 'firm' ? account.firmRole.replace('_', ' ') : account.role}
+                        </div>
+                      </button>
+                      {!isCurrent && (
+                        <button
+                          type="button"
+                          onClick={() => forgetAccount(account.id || account.email)}
+                          className="h-7 w-7 shrink-0 rounded-md text-muted hover:bg-surface hover:text-foreground"
+                          aria-label="Remove saved account"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <button
             onClick={logout}
@@ -330,7 +435,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </div>
               <div>
                 <p className="font-bold text-lg text-foreground leading-tight truncate max-w-[200px]">{user.email}</p>
-                <p className="text-sm text-primary font-medium mt-1 uppercase tracking-wide">{user.role === 'firm' ? firmRole.replace('_', ' ') : user.role}</p>
+                <p className="text-sm text-primary font-medium mt-1 uppercase tracking-wide">{normalizedRole === 'firm' ? firmRole.replace('_', ' ') : user.role}</p>
               </div>
             </div>
             

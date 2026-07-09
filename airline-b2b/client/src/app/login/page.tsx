@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { CircleCheck, Eye, Lock, Mail, ShieldCheck } from 'lucide-react';
+import { CircleCheck, Eye, Lock, Mail, ShieldCheck, UserCircle, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
 import type { AxiosError } from 'axios';
@@ -24,8 +24,17 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [content, setContent] = useState<LoginPageContent>(defaultLoginPageContent);
   const router = useRouter();
-  const { login } = useAuth();
+  const { login, savedAccounts, switchAccount, forgetAccount } = useAuth();
   const { tr, language } = useLanguage();
+
+  const goToUserHome = (nextUser: { role?: unknown; firmKind?: unknown }) => {
+    const role = String(nextUser?.role || '').toLowerCase();
+    if (role === 'firm') {
+      router.push('/firm');
+    } else {
+      router.push('/admin');
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -54,12 +63,7 @@ export default function LoginPage() {
       const { token, user } = res.data;
       login(token, user);
       toast.success(tr('Logged in successfully', 'Muvaffaqiyatli kirdik'));
-      const role = String(user?.role || '').toLowerCase();
-      if (role === 'firm') {
-        router.push(String(user?.firmKind || '').toUpperCase() === 'AIRLINE' ? '/flights' : '/firm');
-      } else {
-        router.push('/admin');
-      }
+      goToUserHome(user);
     } catch (err: unknown) {
       toast.error(apiErrorMessage(err) || tr('Login failed', 'Kirishda xatolik yuz berdi'));
     } finally {
@@ -192,6 +196,52 @@ export default function LoginPage() {
                   {loading ? resolveLocalizedText(content.submittingLabel, language) : resolveLocalizedText(content.submitLabel, language)}
                 </button>
               </form>
+
+              {savedAccounts.length > 0 && (
+                <div className="mt-7 rounded-lg border border-[#273142] bg-[#0d1320]/76 p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-sm font-extrabold uppercase tracking-[0.08em] text-white">
+                      {tr('Saved accounts', 'Saqlangan akkauntlar')}
+                    </div>
+                    <div className="text-xs text-[#9ea6b5]">
+                      {tr('Office testing', 'Ofis testi')}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    {savedAccounts.map((account) => (
+                      <div key={account.id || account.email} className="flex items-center gap-2 rounded-md border border-[#273142] bg-[#111622] p-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            switchAccount(account.id || account.email);
+                            toast.success(tr('Account switched', 'Akkaunt almashtirildi'));
+                            goToUserHome(account);
+                          }}
+                          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                        >
+                          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-[#ff2337]/15 text-[#ff5969]">
+                            <UserCircle size={22} />
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-bold text-white">{account.fullName || account.email}</span>
+                            <span className="block truncate text-xs uppercase tracking-wide text-[#9ea6b5]">
+                              {account.email} · {account.role === 'firm' ? account.firmRole.replace('_', ' ') : account.role}
+                            </span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => forgetAccount(account.id || account.email)}
+                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[#9ea6b5] transition hover:bg-[#1b2332] hover:text-white"
+                          aria-label={tr('Remove saved account', 'Saqlangan akkauntni olib tashlash')}
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="my-9 flex items-center gap-5 text-base text-[#b2b8c5]">
                 <div className="h-px flex-1 bg-[#273142]" />

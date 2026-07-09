@@ -531,7 +531,10 @@ export default function FirmsPage() {
 
       {isSuperAdmin && (
         <div className="glass-panel p-6">
-          <h3 className="text-lg font-semibold text-foreground mb-4">{tr('Airline firm connections', 'Aviakompaniya-firma ulanishlari')}</h3>
+          <h3 className="text-lg font-semibold text-foreground mb-1">{tr('Listed airline access', 'Ro\'yxatdagi aviakompaniya ruxsati')}</h3>
+          <p className="mb-4 text-sm text-muted">
+            {tr('Connect a firm to a listed airline brand so it can create flights with that airline.', 'Firma ro\'yxatdagi aviakompaniya brendi bilan reys yaratishi uchun ruxsat bering.')}
+          </p>
           <form onSubmit={saveAirlineConnection} className="compact-toolbar">
             <div>
               <label className="compact-label">{tr('Airline', 'Aviakompaniya')}</label>

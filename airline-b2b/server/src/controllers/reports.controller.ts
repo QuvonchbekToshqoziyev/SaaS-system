@@ -2,6 +2,10 @@ import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma, Role, TicketStatus, TransactionType } from '@prisma/client';
 import { isPayableDebtType, payableAndPaymentTypeFilter, payableDebtTypeFilter } from '../utils/transaction-types';
+import { buildFinancialAnalyticsReport } from '../services/reporting/financial-reporting.service';
+import { ERROR_CODES } from '../errors/catalog';
+import { mapKnownError } from '../errors/app-error';
+import { sendApiError } from '../errors/http';
 
 type AuthUser = {
   userId?: string;
@@ -574,7 +578,7 @@ export const getTransactionsReport = async (req: Request, res: Response) => {
   if (currency) where.currency = String(currency);
   if (normalizedType) where.type = normalizedType as any;
 
-  const [totals, byType, byCurrency] = await Promise.all([
+  const [totals, byType, byCurrency, byKassaDesk] = await Promise.all([
     prisma.transaction.aggregate({
       where,
       _sum: { baseAmount: true, originalAmount: true },
@@ -592,7 +596,24 @@ export const getTransactionsReport = async (req: Request, res: Response) => {
       _sum: { baseAmount: true, originalAmount: true },
       _count: { _all: true },
     }),
+    prisma.transaction.groupBy({
+      by: ['kassaDeskId', 'paymentMethod'],
+      where: {
+        ...where,
+        kassaDeskId: { not: null },
+      },
+      _sum: { baseAmount: true, originalAmount: true },
+      _count: { _all: true },
+    }),
   ]);
+  const kassaDeskIds = Array.from(new Set(byKassaDesk.map((row) => row.kassaDeskId).filter((id): id is string => Boolean(id))));
+  const kassaDesks = kassaDeskIds.length
+    ? await prisma.kassaDesk.findMany({
+        where: { id: { in: kassaDeskIds } },
+        select: { id: true, name: true, code: true, firm: { select: { id: true, name: true } } },
+      })
+    : [];
+  const kassaDeskById = new Map(kassaDesks.map((desk) => [desk.id, desk] as const));
 
   return res.json({
     filters: {
@@ -624,6 +645,22 @@ export const getTransactionsReport = async (req: Request, res: Response) => {
         totalOriginalAmount: sumToNumber(row._sum?.originalAmount),
       }))
       .sort((a, b) => (a.currency || '').localeCompare(b.currency || '')),
+    byKassaDesk: byKassaDesk
+      .map((row) => {
+        const desk = row.kassaDeskId ? kassaDeskById.get(row.kassaDeskId) : null;
+        return {
+          kassaDeskId: row.kassaDeskId,
+          kassaDeskName: desk?.name || null,
+          kassaDeskCode: desk?.code || null,
+          firmId: desk?.firm?.id || null,
+          firmName: desk?.firm?.name || null,
+          paymentMethod: row.paymentMethod || null,
+          count: row._count?._all || 0,
+          totalBaseAmount: sumToNumber(row._sum?.baseAmount),
+          totalOriginalAmount: sumToNumber(row._sum?.originalAmount),
+        };
+      })
+      .sort((a, b) => `${a.firmName || ''}${a.kassaDeskName || ''}`.localeCompare(`${b.firmName || ''}${b.kassaDeskName || ''}`)),
   });
 };
 
@@ -1125,3 +1162,30 @@ export const getDashboardReport = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Internal server error' });
   }
 };
+
+async function sendFinancialAnalytics(req: Request, res: Response, pick?: keyof Awaited<ReturnType<typeof buildFinancialAnalyticsReport>>) {
+  try {
+    const report = await buildFinancialAnalyticsReport(getAuthUser(req), req.query);
+    if (!pick) return res.json(report);
+    return res.json({
+      period: report.period,
+      filters: report.filters,
+      notes: report.notes,
+      [pick]: report[pick],
+      ...(pick === 'profitability' ? { monthly: report.monthly } : {}),
+      ...(pick === 'cashFlow' ? { monthly: report.monthly } : {}),
+      ...(pick === 'receivables' ? { rows: report.receivables.rows } : {}),
+      ...(pick === 'payables' ? { rows: report.payables.rows } : {}),
+    });
+  } catch (error: any) {
+    return sendApiError(res, mapKnownError(error, ERROR_CODES.REPORT_BUILD_FAILED));
+  }
+}
+
+export const getFinancialAnalytics = async (req: Request, res: Response) => sendFinancialAnalytics(req, res);
+export const getFinancialHealthReport = async (req: Request, res: Response) => sendFinancialAnalytics(req, res);
+export const getProfitabilityAnalyticsReport = async (req: Request, res: Response) => sendFinancialAnalytics(req, res, 'profitability');
+export const getCashFlowAnalyticsReport = async (req: Request, res: Response) => sendFinancialAnalytics(req, res, 'cashFlow');
+export const getReceivablesAnalyticsReport = async (req: Request, res: Response) => sendFinancialAnalytics(req, res, 'receivables');
+export const getPayablesAnalyticsReport = async (req: Request, res: Response) => sendFinancialAnalytics(req, res, 'payables');
+export const getFlightProfitabilityReport = async (req: Request, res: Response) => sendFinancialAnalytics(req, res, 'flightProfitability');

@@ -2,1110 +2,542 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import toast from 'react-hot-toast';
+import { Activity, ArrowRightLeft, BarChart3, Building2, PlaneTakeoff, RefreshCw, Wallet } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
-import CollapsibleCard from '@/components/ui/CollapsibleCard';
-import { useSearchParams } from 'next/navigation';
-import { FileSpreadsheet, FileText } from 'lucide-react';
 
-type FlightOption = {
-  id: string;
-  flightNumber: string;
-  departure: string;
-  arrival: string;
-};
+type FlightOption = { id: string; flightNumber: string };
+type FirmOption = { id: string; name: string };
+type BranchOption = { id: string; name: string; code?: string | null; firmId?: string | null; firm?: { name?: string | null } | null };
 
-type FirmOption = {
-  id: string;
-  name: string;
-};
+type TabKey = 'health' | 'profitability' | 'cash-flow' | 'debt' | 'flight-profitability';
 
-function toISODateOrNull(dateValue: string): string | null {
-  if (!dateValue) return null;
-  const d = new Date(dateValue);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
-}
-
-type ReportsScopePrefs = {
-  selectedFlightId?: string;
-  selectedFirmId?: string;
-  dateFrom?: string;
-  dateTo?: string;
-};
-
-const REPORTS_SCOPE_PREFS_KEY = 'jetstream-reports-scope';
-
-type ExportRow = Record<string, string | number | null | undefined>;
+const tabs: Array<{ key: TabKey; icon: any; labelEn: string; labelUz: string }> = [
+  { key: 'health', icon: Activity, labelEn: 'Financial health', labelUz: 'Moliyaviy holat' },
+  { key: 'profitability', icon: BarChart3, labelEn: 'Profitability', labelUz: 'Foyda va rentabellik' },
+  { key: 'cash-flow', icon: Wallet, labelEn: 'Cash flow', labelUz: 'Pul oqimi' },
+  { key: 'debt', icon: ArrowRightLeft, labelEn: 'Receivables / Payables', labelUz: 'Debitor / Kreditor' },
+  { key: 'flight-profitability', icon: PlaneTakeoff, labelEn: 'Flight profitability', labelUz: 'Reys rentabelligi' },
+];
 
 function normalizeDateParam(value: string): string {
   const raw = String(value || '').trim();
   if (!raw) return '';
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
-  return match?.[1] || '';
+  return raw.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] || '';
+}
+
+function fmt(value: unknown, suffix = ' UZS') {
+  const num = Number(value || 0);
+  return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Number.isFinite(num) ? num : 0)}${suffix}`;
+}
+
+function pct(value: unknown) {
+  if (value == null || !Number.isFinite(Number(value))) return 'N/A';
+  return `${Number(value).toFixed(1)}%`;
+}
+
+function ratioValue(value: unknown) {
+  if (value == null || !Number.isFinite(Number(value))) return 'N/A';
+  return Number(value).toFixed(2);
+}
+
+function delta(current: unknown, previous: unknown) {
+  const c = Number(current || 0);
+  const p = Number(previous || 0);
+  return c - p;
+}
+
+function KpiCard({ label, value, detail, trend, status = 'neutral' }: { label: string; value: string; detail?: string; trend?: string; status?: 'neutral' | 'good' | 'warn' | 'bad' }) {
+  const tone = status === 'good' ? 'text-emerald-500' : status === 'warn' ? 'text-amber-500' : status === 'bad' ? 'text-red-500' : 'text-muted';
+  return (
+    <div className="rounded-lg border border-border bg-surface p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted">{label}</p>
+        <span className={`rounded border border-border px-2 py-0.5 text-[10px] uppercase ${tone}`}>neutral</span>
+      </div>
+      <div className="mt-3 text-2xl font-bold tracking-tight text-foreground">{value}</div>
+      {detail && <p className="mt-1 text-xs text-muted">{detail}</p>}
+      {trend && <p className={`mt-2 text-xs font-semibold ${tone}`}>{trend}</p>}
+    </div>
+  );
+}
+
+function SkeletonGrid() {
+  return (
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+      {Array.from({ length: 8 }).map((_, index) => (
+        <div key={index} className="h-32 animate-pulse rounded-lg border border-border bg-surface" />
+      ))}
+    </div>
+  );
+}
+
+function MultiLineChart({ title, data, series }: { title: string; data: any[]; series: Array<{ key: string; label: string; color: string }> }) {
+  const w = 720;
+  const h = 220;
+  const pad = { t: 18, r: 18, b: 32, l: 52 };
+  const points = data.length ? data : [{ label: '-', month: '-', empty: 0 }];
+  const values = points.flatMap((point) => series.map((s) => Number(point[s.key] || 0)));
+  const max = Math.max(1, ...values.map(Math.abs));
+  const innerW = w - pad.l - pad.r;
+  const innerH = h - pad.t - pad.b;
+  const xAt = (i: number) => pad.l + (i / Math.max(1, points.length - 1)) * innerW;
+  const yAt = (v: number) => pad.t + innerH / 2 - (v / max) * (innerH / 2);
+  const path = (key: string) => points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xAt(i)} ${yAt(Number(p[key] || 0))}`).join(' ');
+  return (
+    <div className="rounded-lg border border-border bg-surface p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-bold text-foreground">{title}</h3>
+        <div className="flex flex-wrap gap-3 text-[11px] text-muted">
+          {series.map((s) => <span key={s.key} className="flex items-center gap-1"><span className="h-2 w-2 rounded-full" style={{ background: s.color }} />{s.label}</span>)}
+        </div>
+      </div>
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full" aria-hidden>
+        {[0, 0.25, 0.5, 0.75, 1].map((t) => {
+          const y = pad.t + innerH * t;
+          return <line key={t} x1={pad.l} x2={w - pad.r} y1={y} y2={y} stroke="currentColor" className="text-border" strokeWidth="1" />;
+        })}
+        <line x1={pad.l} x2={w - pad.r} y1={yAt(0)} y2={yAt(0)} stroke="currentColor" className="text-muted" strokeWidth="1" />
+        {series.map((s) => <path key={s.key} d={path(s.key)} fill="none" stroke={s.color} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />)}
+        {points.map((p, i) => (
+          <text key={`${p.month || p.label}-${i}`} x={xAt(i)} y={h - 8} textAnchor="middle" className="fill-muted text-[10px]">
+            {p.label || String(p.month || '').slice(5)}
+          </text>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function Bars({ title, data, keys }: { title: string; data: any[]; keys: Array<{ key: string; label: string; color: string }> }) {
+  const rows = data.length ? data : [{ label: '-', month: '-' }];
+  const max = Math.max(1, ...rows.flatMap((row) => keys.map((k) => Math.abs(Number(row[k.key] || 0)))));
+  return (
+    <div className="rounded-lg border border-border bg-surface p-4">
+      <h3 className="mb-4 text-sm font-bold text-foreground">{title}</h3>
+      <div className="flex h-56 items-end gap-2 overflow-x-auto pb-2">
+        {rows.map((row, index) => (
+          <div key={`${row.month || row.label}-${index}`} className="flex min-w-[44px] flex-1 flex-col items-center gap-2">
+            <div className="flex h-44 w-full items-end justify-center gap-1">
+              {keys.map((k) => {
+                const height = Math.max(2, (Math.abs(Number(row[k.key] || 0)) / max) * 170);
+                return <span key={k.key} className="w-2 rounded-t" style={{ height, background: k.color }} title={`${k.label}: ${row[k.key] || 0}`} />;
+              })}
+            </div>
+            <span className="text-[10px] text-muted">{row.label || String(row.month || '').slice(5)}</span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-muted">
+        {keys.map((k) => <span key={k.key} className="flex items-center gap-1"><span className="h-2 w-2 rounded-full" style={{ background: k.color }} />{k.label}</span>)}
+      </div>
+    </div>
+  );
+}
+
+function DebtStructure({ rows }: { rows: any[] }) {
+  const total = rows.reduce((sum, row) => sum + Math.max(0, Number(row.value || 0)), 0) || 1;
+  return (
+    <div className="rounded-lg border border-border bg-surface p-4">
+      <h3 className="text-sm font-bold text-foreground">Debt Structure</h3>
+      <div className="mt-4 space-y-3">
+        {rows.map((row) => {
+          const width = `${Math.max(1, (Math.max(0, Number(row.value || 0)) / total) * 100)}%`;
+          return (
+            <div key={row.label}>
+              <div className="mb-1 flex justify-between text-xs">
+                <span className="text-muted">{row.label}</span>
+                <span className="font-mono text-foreground">{fmt(row.value)}</span>
+              </div>
+              <div className="h-2 rounded bg-surface-2"><div className="h-2 rounded bg-primary" style={{ width }} /></div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export default function ReportsPage() {
-  const searchParams = useSearchParams();
   const { user } = useAuth();
   const { tr } = useLanguage();
-
+  const searchParams = useSearchParams();
   const role = String(user?.role || '').toLowerCase();
-  const isFirm = role === 'firm';
   const isAdmin = role === 'admin' || role === 'superadmin';
-  const canAccess = isAdmin || isFirm;
-  const isSuperadmin = role === 'superadmin';
+  const canAccess = role === 'firm' || isAdmin;
 
-  const [flights, setFlights] = useState<FlightOption[]>([]);
+  const now = new Date();
+  const [activeTab, setActiveTab] = useState<TabKey>('health');
   const [firms, setFirms] = useState<FirmOption[]>([]);
+  const [branches, setBranches] = useState<BranchOption[]>([]);
+  const [flights, setFlights] = useState<FlightOption[]>([]);
+  const [companyId, setCompanyId] = useState(searchParams.get('companyId') || searchParams.get('firmId') || '');
+  const [branchId, setBranchId] = useState(searchParams.get('branchId') || searchParams.get('kassaDeskId') || '');
+  const [flightId, setFlightId] = useState(searchParams.get('flightId') || '');
+  const [year, setYear] = useState(searchParams.get('year') || String(now.getFullYear()));
+  const [month, setMonth] = useState(searchParams.get('month') || '');
+  const [dateFrom, setDateFrom] = useState(normalizeDateParam(searchParams.get('dateFrom') || ''));
+  const [dateTo, setDateTo] = useState(normalizeDateParam(searchParams.get('dateTo') || ''));
+  const [currency, setCurrency] = useState(searchParams.get('currency') || '');
+  const [report, setReport] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
   const [loadingMeta, setLoadingMeta] = useState(true);
 
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
-
-  const [selectedFlightId, setSelectedFlightId] = useState<string>('');
-  const [selectedFirmId, setSelectedFirmId] = useState<string>('');
-
-  const [flightReport, setFlightReport] = useState<any>(null);
-  const [firmReport, setFirmReport] = useState<any>(null);
-  const [paymentsReport, setPaymentsReport] = useState<any>(null);
-  const [transactionsReport, setTransactionsReport] = useState<any>(null);
-  const [interactionsReport, setInteractionsReport] = useState<any>(null);
-
-  const [loadingFlightReport, setLoadingFlightReport] = useState(false);
-  const [loadingFirmReport, setLoadingFirmReport] = useState(false);
-  const [loadingPaymentsReport, setLoadingPaymentsReport] = useState(false);
-  const [loadingTransactionsReport, setLoadingTransactionsReport] = useState(false);
-  const [loadingInteractionsReport, setLoadingInteractionsReport] = useState(false);
-
-  const [prefsReady, setPrefsReady] = useState(false);
-  const [lastAppliedQuery, setLastAppliedQuery] = useState('');
-
-  const dateParams = useMemo(() => {
-    const fromISO = toISODateOrNull(dateFrom);
-    const toISO = toISODateOrNull(dateTo);
-    return {
-      dateFrom: fromISO || undefined,
-      dateTo: toISO || undefined,
-    };
-  }, [dateFrom, dateTo]);
-
-  const getTransactionTypeLabel = (type?: string) => {
-    const normalized = String(type || '').trim().toUpperCase();
-    if (normalized === 'SALE') return tr('SALE', 'SOTUV');
-    if (normalized === 'PAYABLE') return tr('PAYABLE', 'QARZDORLIK');
-    if (normalized === 'PAYMENT') return tr('PAYMENT', "TO'LOV");
-    if (normalized === 'ADJUSTMENT') return tr('ADJUSTMENT', 'KORREKSIYA');
-    return normalized || String(type || '');
-  };
-
-  const getPaymentMethodLabel = (method?: string) => {
-    const normalized = String(method || '').trim().toLowerCase();
-    if (normalized === 'cash') return tr('Cash', 'Naqd');
-    if (normalized === 'card') return tr('Card', 'Karta');
-    return method ? String(method) : '-';
-  };
-
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(REPORTS_SCOPE_PREFS_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as ReportsScopePrefs;
-
-      if (typeof parsed.selectedFlightId === 'string') setSelectedFlightId(parsed.selectedFlightId);
-      if (isAdmin && typeof parsed.selectedFirmId === 'string') setSelectedFirmId(parsed.selectedFirmId);
-      if (typeof parsed.dateFrom === 'string') setDateFrom(parsed.dateFrom);
-      if (typeof parsed.dateTo === 'string') setDateTo(parsed.dateTo);
-    } catch {
-      // ignore
-    } finally {
-      setPrefsReady(true);
-    }
-  }, [isAdmin]);
-
-  useEffect(() => {
-    if (!prefsReady) return;
-    const signature = searchParams.toString();
-    if (signature === lastAppliedQuery) return;
-    setLastAppliedQuery(signature);
-
-    const flightId = (searchParams.get('flightId') || searchParams.get('flight_id') || '').trim();
-    const firmId = (searchParams.get('firmId') || searchParams.get('firm_id') || '').trim();
-    const qDateFrom = normalizeDateParam(searchParams.get('dateFrom') || '');
-    const qDateTo = normalizeDateParam(searchParams.get('dateTo') || '');
-
-    if (flightId) setSelectedFlightId(flightId);
-    if (isAdmin && firmId) setSelectedFirmId(firmId);
-    if (qDateFrom) setDateFrom(qDateFrom);
-    if (qDateTo) setDateTo(qDateTo);
-  }, [isAdmin, lastAppliedQuery, prefsReady, searchParams]);
-
-  useEffect(() => {
-    if (!prefsReady) return;
-    try {
-      const prefs: ReportsScopePrefs = {
-        selectedFlightId,
-        selectedFirmId: isAdmin ? selectedFirmId : '',
-        dateFrom,
-        dateTo,
-      };
-      localStorage.setItem(REPORTS_SCOPE_PREFS_KEY, JSON.stringify(prefs));
-    } catch {
-      // ignore
-    }
-  }, [dateFrom, dateTo, isAdmin, prefsReady, selectedFirmId, selectedFlightId]);
-
-  useEffect(() => {
-    if (!prefsReady) return;
-    if (flights.length === 0) return;
-    if (selectedFlightId && flights.some((f) => f.id === selectedFlightId)) return;
-    setSelectedFlightId(flights[0].id);
-  }, [flights, prefsReady, selectedFlightId]);
-
-  useEffect(() => {
-    if (!prefsReady) return;
-    if (!isAdmin) return;
-    if (firms.length === 0) return;
-    if (selectedFirmId && firms.some((f) => f.id === selectedFirmId)) return;
-    setSelectedFirmId(firms[0].id);
-  }, [firms, isAdmin, prefsReady, selectedFirmId]);
-
-  useEffect(() => {
-    const fetchMeta = async () => {
-      if (!canAccess) {
-        setLoadingMeta(false);
-        return;
-      }
-
-      if (!prefsReady) {
-        return;
-      }
-
+    if (!canAccess) return;
+    const loadMeta = async () => {
       try {
         setLoadingMeta(true);
-        const [flightsRes, firmsRes] = await Promise.all([
+        const [flightsRes, firmsRes, desksRes] = await Promise.all([
           api.get('/flights'),
           isAdmin ? api.get('/firms') : Promise.resolve({ data: [] }),
+          api.get('/kassa/desks').catch(() => ({ data: [] })),
         ]);
-
-        const flightOptions: FlightOption[] = (flightsRes.data || [])
-          .filter((f: any) => f && (f.id || f.flight_id))
-          .map((f: any) => ({
-            id: String(f.id || f.flight_id),
-            flightNumber: String(f.flightNumber || f.flight_number || f.id || f.flight_id),
-            departure: String(f.departure),
-            arrival: String(f.arrival),
-          }));
-
-        const firmOptions: FirmOption[] = isAdmin
-          ? (firmsRes.data || [])
-              .filter((x: any) => x && x.id)
-              .map((x: any) => ({ id: String(x.id), name: String(x.name || x.id) }))
-          : [];
-
-        setFlights(flightOptions);
-        setFirms(firmOptions);
-
-        if (!selectedFlightId && flightOptions.length > 0) setSelectedFlightId(flightOptions[0].id);
-        if (isAdmin && !selectedFirmId && firmOptions.length > 0) setSelectedFirmId(firmOptions[0].id);
+        setFlights((flightsRes.data || []).filter((f: any) => f?.id || f?.flight_id).map((f: any) => ({ id: String(f.id || f.flight_id), flightNumber: String(f.flightNumber || f.id || f.flight_id) })));
+        setFirms(isAdmin ? (firmsRes.data || []).filter((f: any) => f?.id).map((f: any) => ({ id: String(f.id), name: String(f.name || f.id) })) : []);
+        setBranches((desksRes.data || []).filter((d: any) => d?.id).map((d: any) => ({ id: String(d.id), name: String(d.name || d.id), code: d.code, firmId: d.firmId, firm: d.firm })));
       } catch (error: any) {
         toast.error(error?.response?.data?.error || tr('Failed to load report options', 'Hisobot parametrlarini yuklab bo\'lmadi'));
       } finally {
         setLoadingMeta(false);
       }
     };
+    loadMeta();
+  }, [canAccess, isAdmin, tr]);
 
-    fetchMeta();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canAccess, isAdmin, prefsReady]);
+  const queryString = useMemo(() => {
+    const q = new URLSearchParams();
+    if (isAdmin && companyId) q.set('companyId', companyId);
+    if (branchId) q.set('branchId', branchId);
+    if (flightId) q.set('flightId', flightId);
+    if (year) q.set('year', year);
+    if (month) q.set('month', month);
+    if (dateFrom) q.set('dateFrom', dateFrom);
+    if (dateTo) q.set('dateTo', dateTo);
+    if (currency) q.set('currency', currency.toUpperCase());
+    return q.toString();
+  }, [branchId, companyId, currency, dateFrom, dateTo, flightId, isAdmin, month, year]);
 
-  const loadFlightReport = useCallback(async () => {
-    if (!selectedFlightId) return;
+  const loadReport = useCallback(async () => {
+    if (!canAccess) return;
     try {
-      setLoadingFlightReport(true);
-      const res = await api.get(`/reports/flight?flightId=${encodeURIComponent(selectedFlightId)}`);
-      setFlightReport(res.data);
+      setLoading(true);
+      const res = await api.get(`/reports/analytics?${queryString}`);
+      setReport(res.data);
     } catch (error: any) {
-      toast.error(error?.response?.data?.error || tr('Failed to load flight report', 'Reys hisoboti yuklab bo\'lmadi'));
+      toast.error(error?.response?.data?.error || tr('Failed to load reports', 'Hisobotlarni yuklab bo\'lmadi'));
     } finally {
-      setLoadingFlightReport(false);
+      setLoading(false);
     }
-  }, [selectedFlightId, tr]);
-
-  const loadFirmReport = useCallback(async () => {
-    try {
-      setLoadingFirmReport(true);
-      const query = new URLSearchParams();
-      if (isAdmin) {
-        if (!selectedFirmId) return;
-        query.set('firmId', selectedFirmId);
-      }
-      if (dateParams.dateFrom) query.set('dateFrom', dateParams.dateFrom);
-      if (dateParams.dateTo) query.set('dateTo', dateParams.dateTo);
-
-      const res = await api.get(`/reports/firm?${query.toString()}`);
-      setFirmReport(res.data);
-    } catch (error: any) {
-      toast.error(error?.response?.data?.error || tr('Failed to load firm report', 'Firma hisoboti yuklab bo\'lmadi'));
-    } finally {
-      setLoadingFirmReport(false);
-    }
-  }, [dateParams.dateFrom, dateParams.dateTo, isAdmin, selectedFirmId, tr]);
-
-  const loadPaymentsReport = useCallback(async () => {
-    try {
-      setLoadingPaymentsReport(true);
-      const query = new URLSearchParams();
-      if (isAdmin && selectedFirmId) query.set('firmId', selectedFirmId);
-      if (selectedFlightId) query.set('flightId', selectedFlightId);
-      if (dateParams.dateFrom) query.set('dateFrom', dateParams.dateFrom);
-      if (dateParams.dateTo) query.set('dateTo', dateParams.dateTo);
-
-      const res = await api.get(`/reports/payments?${query.toString()}`);
-      setPaymentsReport(res.data);
-    } catch (error: any) {
-      toast.error(error?.response?.data?.error || tr('Failed to load payments report', 'To\'lovlar hisoboti yuklab bo\'lmadi'));
-    } finally {
-      setLoadingPaymentsReport(false);
-    }
-  }, [dateParams.dateFrom, dateParams.dateTo, isAdmin, selectedFirmId, selectedFlightId, tr]);
-
-  const loadTransactionsReport = useCallback(async () => {
-    try {
-      setLoadingTransactionsReport(true);
-      const query = new URLSearchParams();
-      if (isAdmin && selectedFirmId) query.set('firmId', selectedFirmId);
-      if (selectedFlightId) query.set('flightId', selectedFlightId);
-      if (dateParams.dateFrom) query.set('dateFrom', dateParams.dateFrom);
-      if (dateParams.dateTo) query.set('dateTo', dateParams.dateTo);
-
-      const res = await api.get(`/reports/transactions?${query.toString()}`);
-      setTransactionsReport(res.data);
-    } catch (error: any) {
-      toast.error(error?.response?.data?.error || tr('Failed to load transactions report', 'Tranzaksiyalar hisoboti yuklab bo\'lmadi'));
-    } finally {
-      setLoadingTransactionsReport(false);
-    }
-  }, [dateParams.dateFrom, dateParams.dateTo, isAdmin, selectedFirmId, selectedFlightId, tr]);
-
-  const loadInteractionsReport = useCallback(async () => {
-    if (!isSuperadmin) return;
-    try {
-      setLoadingInteractionsReport(true);
-      const query = new URLSearchParams();
-      if (dateParams.dateFrom) query.set('dateFrom', dateParams.dateFrom);
-      if (dateParams.dateTo) query.set('dateTo', dateParams.dateTo);
-
-      const res = await api.get(`/reports/interactions?${query.toString()}`);
-      setInteractionsReport(res.data);
-    } catch (error: any) {
-      toast.error(error?.response?.data?.error || tr('Failed to load interactions report', 'O\'zaro aloqalar hisoboti yuklab bo\'lmadi'));
-    } finally {
-      setLoadingInteractionsReport(false);
-    }
-  }, [dateParams.dateFrom, dateParams.dateTo, isSuperadmin, tr]);
+  }, [canAccess, queryString, tr]);
 
   useEffect(() => {
-    if (!canAccess || loadingMeta || !prefsReady) return;
-    if (selectedFlightId) loadFlightReport();
-    if (!isAdmin || selectedFirmId) loadFirmReport();
-    loadPaymentsReport();
-    loadTransactionsReport();
-    if (isSuperadmin) loadInteractionsReport();
-  }, [
-    canAccess,
-    isAdmin,
-    isSuperadmin,
-    loadingMeta,
-    loadFirmReport,
-    loadFlightReport,
-    loadInteractionsReport,
-    loadPaymentsReport,
-    loadTransactionsReport,
-    prefsReady,
-    selectedFirmId,
-    selectedFlightId,
-  ]);
+    if (!loadingMeta) loadReport();
+  }, [loadReport, loadingMeta]);
+
+  const p = report?.profitability || {};
+  const l = report?.liquidity || {};
+  const d = report?.debt || {};
+  const cf = report?.cashFlow || {};
+  const rcv = report?.receivables || {};
+  const pay = report?.payables || {};
+  const eff = report?.efficiency || {};
+  const monthly = report?.monthly || [];
+  const flightsRows = report?.flightProfitability || [];
 
   if (!canAccess) {
     return (
       <div className="text-foreground">
-        <h2 className="text-3xl font-bold text-foreground">{tr('Reports', 'Hisobotlar')}</h2>
+        <h2 className="text-3xl font-bold">{tr('Reports', 'Hisobotlar')}</h2>
         <p className="mt-2 text-muted">{tr('You do not have access to reports.', 'Hisobotlarga kirish huquqingiz yo\'q.')}</p>
       </div>
     );
   }
 
-  const flightOptionsDisabled = loadingMeta || flights.length === 0;
-  const firmOptionsDisabled = loadingMeta || firms.length === 0;
-  const selectedFlight = flights.find((flight) => flight.id === selectedFlightId);
-  const selectedFirm = firms.find((firm) => firm.id === selectedFirmId);
+  const renderHealth = () => (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="ROA" value={pct(p.roa)} detail={`Net Profit: ${fmt(p.netProfit)} · Avg Assets: ${fmt(p.supportingValues?.averageAssets)}`} trend={`${delta(p.netProfit, p.previous?.netProfit).toLocaleString()} vs previous period`} />
+        <KpiCard label="ROE" value={pct(p.roe)} detail={`Net Profit: ${fmt(p.netProfit)} · Avg Equity: ${fmt(p.supportingValues?.averageEquity)}`} />
+        <KpiCard label="Current Ratio" value={ratioValue(l.currentRatio)} detail={`Current assets: ${fmt(l.currentAssets)}`} />
+        <KpiCard label="Quick Ratio" value={ratioValue(l.quickRatio)} detail={`Cash + receivables / liabilities`} />
+        <KpiCard label="Debt to Assets" value={pct(d.debtToAssets)} detail={`Liabilities: ${fmt(d.totalLiabilities)}`} />
+        <KpiCard label="Debt to Equity" value={ratioValue(d.debtToEquity)} detail="ROE leverage check" />
+        <KpiCard label="Net Working Capital" value={fmt(l.workingCapital)} detail="Current assets - current liabilities" />
+        <KpiCard label="Net Debt" value={fmt(d.netDebt)} detail="Interest-bearing debt - cash" />
+      </div>
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        {[
+          ['PROFITABILITY', [['Gross Margin', pct(p.grossMargin)], ['Operating Margin', pct(p.operatingMargin)], ['Net Margin', pct(p.netMargin)], ['ROA', pct(p.roa)], ['ROE', pct(p.roe)]]],
+          ['LIQUIDITY', [['Current Ratio', ratioValue(l.currentRatio)], ['Quick Ratio', ratioValue(l.quickRatio)], ['Working Capital', fmt(l.workingCapital)], ['Cash Balance', fmt(l.cash)]]],
+          ['DEBT', [['Debt to Assets', pct(d.debtToAssets)], ['Debt to Equity', ratioValue(d.debtToEquity)], ['Net Debt', fmt(d.netDebt)], ['Trade Payables', fmt(d.tradePayables)], ['Founder Debt', fmt(d.founderDebt)], ['Bank Debt', fmt(d.bankDebt)]]],
+          ['CASH FLOW', [['Operating CF', fmt(cf.operating)], ['Investing CF', fmt(cf.investing)], ['Financing CF', fmt(cf.financing)], ['Net CF', fmt(cf.netCashFlow)], ['Free Cash Flow', fmt(cf.freeCashFlow)]]],
+          ['RECEIVABLES / PAYABLES', [['Total Receivables', fmt(rcv.total)], ['Overdue Receivables', fmt(rcv.overdue)], ['Total Payables', fmt(pay.total)], ['Overdue Payables', fmt(pay.overdue)]]],
+          ['EFFICIENCY', [['Ticket Sell-through', pct(eff.ticketSellThrough)], ['Package Sell-through', pct(eff.packageSellThrough)], ['Revenue per Passenger', fmt(eff.revenuePerPassenger)], ['Profit per Passenger', fmt(eff.profitPerPassenger)]]],
+        ].map(([title, rows]: any) => (
+          <div key={title} className="rounded-lg border border-border bg-surface p-4">
+            <h3 className="text-sm font-bold text-foreground">{title}</h3>
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {rows.map(([label, value]: [string, string]) => <div key={label} className="flex justify-between gap-3 border-b border-border/60 py-2 text-sm"><span className="text-muted">{label}</span><span className="font-semibold text-foreground">{value}</span></div>)}
+            </div>
+          </div>
+        ))}
+      </div>
+      <DebtStructure rows={d.debtStructure || []} />
+    </div>
+  );
 
-  const buildExportSections = () => {
-    const sections: Array<{ title: string; rows: ExportRow[] }> = [];
+  const renderProfitability = () => (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Revenue" value={fmt(p.revenue)} trend={`${delta(p.revenue, p.previous?.revenue).toLocaleString()} vs previous`} />
+        <KpiCard label="COGS" value={fmt(p.cogs)} />
+        <KpiCard label="Gross Profit" value={fmt(p.grossProfit)} />
+        <KpiCard label="Gross Margin" value={pct(p.grossMargin)} />
+        <KpiCard label="Operating Profit" value={fmt(p.operatingProfit)} />
+        <KpiCard label="Operating Margin" value={pct(p.operatingMargin)} />
+        <KpiCard label="Net Profit" value={fmt(p.netProfit)} />
+        <KpiCard label="Net Margin" value={pct(p.netMargin)} />
+      </div>
+      <Bars title="Revenue vs COGS vs Gross Profit" data={monthly} keys={[{ key: 'revenue', label: 'Revenue', color: '#34d399' }, { key: 'cogs', label: 'COGS', color: '#f87171' }, { key: 'grossProfit', label: 'Gross Profit', color: '#facc15' }]} />
+      <MultiLineChart title="Margins trend" data={monthly} series={[{ key: 'grossMargin', label: 'Gross', color: '#34d399' }, { key: 'operatingMargin', label: 'Operating', color: '#60a5fa' }, { key: 'netMargin', label: 'Net', color: '#facc15' }]} />
+      <MultiLineChart title="Monthly Net Profit Trend" data={monthly} series={[{ key: 'netProfit', label: 'Net Profit', color: '#34d399' }]} />
+    </div>
+  );
 
-    sections.push({
-      title: tr('Scope', 'Qamrov'),
-      rows: [
-        {
-          [tr('Flight', 'Reys')]: selectedFlight?.flightNumber || selectedFlightId || tr('All', 'Barchasi'),
-          [tr('Firm', 'Firma')]: isAdmin ? (selectedFirm?.name || selectedFirmId || tr('All', 'Barchasi')) : tr('My firm', 'Firmam'),
-          [tr('Date from', 'Sana (dan)')]: dateFrom || '-',
-          [tr('Date to', 'Sana (gacha)')]: dateTo || '-',
-        },
-      ],
-    });
+  const renderCashFlow = () => (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Opening Cash" value={fmt(cf.openingCash)} />
+        <KpiCard label="Operating Cash Flow" value={fmt(cf.operating)} />
+        <KpiCard label="Investing Cash Flow" value={fmt(cf.investing)} />
+        <KpiCard label="Financing Cash Flow" value={fmt(cf.financing)} />
+        <KpiCard label="Net Cash Flow" value={fmt(cf.netCashFlow)} />
+        <KpiCard label="Closing Cash" value={fmt(cf.closingCash)} />
+        <KpiCard label="Free Cash Flow" value={fmt(cf.freeCashFlow)} />
+      </div>
+      <MultiLineChart title="12-month cash flow" data={monthly} series={[{ key: 'operatingCashFlow', label: 'Operating CF', color: '#34d399' }, { key: 'investingCashFlow', label: 'Investing CF', color: '#60a5fa' }, { key: 'financingCashFlow', label: 'Financing CF', color: '#facc15' }, { key: 'netCashFlow', label: 'Net CF', color: '#f87171' }]} />
+      <MultiLineChart title="Cash Balance Trend" data={monthly} series={[{ key: 'closingCash', label: 'Closing Cash', color: '#34d399' }]} />
+    </div>
+  );
 
-    if (flightReport) {
-      sections.push({
-        title: tr('Flight report', 'Reys hisoboti'),
-        rows: [
-          {
-            [tr('Debt', 'Qarz')]: Number(flightReport.debt || 0).toFixed(2),
-            [tr('Revenue', 'Tushum')]: Number(flightReport.revenue || 0).toFixed(2),
-            [tr('Paid', "To'langan")]: Number(flightReport.paid || 0).toFixed(2),
-            [tr('Outstanding', 'Qoldiq')]: Number(flightReport.outstanding || 0).toFixed(2),
-            [tr('Profit', 'Foyda')]: Number(flightReport.profit || 0).toFixed(2),
-          },
-        ],
-      });
-      sections.push({
-        title: tr('Flight firms', 'Reys firmalari'),
-        rows: (flightReport.firms || []).map((row: any) => ({
-          [tr('Firm', 'Firma')]: row.firmName || row.firmId,
-          [tr('Tickets', 'Biletlar')]: row.ticketsAssigned || 0,
-          [tr('Sold', 'Sotilgan')]: row.ticketsSold || 0,
-          [tr('Debt', 'Qarz')]: Number(row.debt || 0).toFixed(2),
-          [tr('Revenue', 'Tushum')]: Number(row.revenue || 0).toFixed(2),
-          [tr('Paid', "To'langan")]: Number(row.paid || 0).toFixed(2),
-          [tr('Outstanding', 'Qoldiq')]: Number(row.outstanding || 0).toFixed(2),
-        })),
-      });
-    }
+  const renderDebt = () => (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Total Receivables" value={fmt(rcv.total)} />
+        <KpiCard label="Overdue Receivables" value={fmt(rcv.overdue)} />
+        <KpiCard label="Due Soon" value={fmt(rcv.dueSoon)} />
+        <KpiCard label="Collection Rate" value={pct(rcv.collectionRate)} />
+        <KpiCard label="Total Payables" value={fmt(pay.total)} />
+        <KpiCard label="Overdue Payables" value={fmt(pay.overdue)} />
+        <KpiCard label="Due This Week" value={fmt(pay.dueSoon)} />
+        <KpiCard label="Supplier Concentration" value={pay.rows?.[0]?.supplier ? pay.rows[0].supplier : 'N/A'} />
+      </div>
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <DebtTable title="Receivables Aging" rows={rcv.rows || []} kind="receivable" />
+        <DebtTable title="Payables Aging" rows={pay.rows || []} kind="payable" />
+      </div>
+    </div>
+  );
 
-    if (firmReport) {
-      sections.push({
-        title: tr('Firm report', 'Firma hisoboti'),
-        rows: [
-          {
-            [tr('Debt', 'Qarz')]: Number(firmReport.totals?.debt || 0).toFixed(2),
-            [tr('Revenue', 'Tushum')]: Number(firmReport.totals?.revenue || 0).toFixed(2),
-            [tr('Paid', "To'langan")]: Number(firmReport.totals?.paid || 0).toFixed(2),
-            [tr('Outstanding', 'Qoldiq')]: Number(firmReport.totals?.outstanding || 0).toFixed(2),
-            [tr('Profit', 'Foyda')]: Number(firmReport.totals?.profit || 0).toFixed(2),
-            [tr('Assigned tickets', 'Biriktirilgan biletlar')]: firmReport.tickets?.assigned || 0,
-            [tr('Sold tickets', 'Sotilgan biletlar')]: firmReport.tickets?.sold || 0,
-          },
-        ],
-      });
-      sections.push({
-        title: tr('Firm by flight', 'Firma reys bo\'yicha'),
-        rows: (firmReport.byFlight || []).map((row: any) => ({
-          [tr('Flight', 'Reys')]: row.flightNumber || row.flightId,
-          [tr('Debt', 'Qarz')]: Number(row.debt || 0).toFixed(2),
-          [tr('Revenue', 'Tushum')]: Number(row.revenue || 0).toFixed(2),
-          [tr('Paid', "To'langan")]: Number(row.paid || 0).toFixed(2),
-          [tr('Outstanding', 'Qoldiq')]: Number(row.outstanding || 0).toFixed(2),
-          [tr('Tickets', 'Biletlar')]: row.ticketsAssigned || 0,
-          [tr('Sold', 'Sotilgan')]: row.ticketsSold || 0,
-        })),
-      });
-    }
-
-    if (paymentsReport) {
-      sections.push({
-        title: tr('Payments by method', "To'lovlar usul bo'yicha"),
-        rows: (paymentsReport.byMethod || []).map((row: any) => ({
-          [tr('Method', 'Usul')]: getPaymentMethodLabel(row.method),
-          [tr('Count', 'Soni')]: row.count || 0,
-          [tr('Total', 'Jami')]: Number(row.totalBaseAmount || 0).toFixed(2),
-        })),
-      });
-      sections.push({
-        title: tr('Payments by currency', "To'lovlar valyuta bo'yicha"),
-        rows: (paymentsReport.byCurrency || []).map((row: any) => ({
-          [tr('Currency', 'Valyuta')]: row.currency,
-          [tr('Count', 'Soni')]: row.count || 0,
-          [tr('Total', 'Jami')]: `${Number(row.totalOriginalAmount ?? row.totalBaseAmount ?? 0).toFixed(2)} ${row.currency}`,
-        })),
-      });
-    }
-
-    if (transactionsReport) {
-      sections.push({
-        title: tr('Transactions by type', 'Tranzaksiyalar turi bo\'yicha'),
-        rows: (transactionsReport.byType || []).map((row: any) => ({
-          [tr('Type', 'Turi')]: getTransactionTypeLabel(row.type),
-          [tr('Count', 'Soni')]: row.count || 0,
-          [tr('Total', 'Jami')]: Number(row.totalBaseAmount || 0).toFixed(2),
-        })),
-      });
-      sections.push({
-        title: tr('Transactions by currency', 'Tranzaksiyalar valyuta bo\'yicha'),
-        rows: (transactionsReport.byCurrency || []).map((row: any) => ({
-          [tr('Currency', 'Valyuta')]: row.currency,
-          [tr('Count', 'Soni')]: row.count || 0,
-          [tr('Total', 'Jami')]: `${Number(row.totalOriginalAmount ?? row.totalBaseAmount ?? 0).toFixed(2)} ${row.currency}`,
-        })),
-      });
-    }
-
-    if (interactionsReport) {
-      sections.push({
-        title: tr('Admin firm interactions', 'Admin firma aloqalari'),
-        rows: (interactionsReport.pairs || []).map((row: any) => ({
-          [tr('Admin', 'Admin')]: row.adminEmail,
-          [tr('Firm', 'Firma')]: row.firmName || row.firmId,
-          [tr('Invites', 'Takliflar')]: row.invitesSent || 0,
-          [tr('Allocations (UZS)', 'Ajratmalar (UZS)')]: Number(row.allocationsBaseAmount || 0).toFixed(2),
-          [tr('Payments (UZS)', "To'lovlar (UZS)")]: Number(row.paymentsBaseAmount || 0).toFixed(2),
-          [tr('Sales (UZS)', 'Sotuv (UZS)')]: Number(row.salesBaseAmount || 0).toFixed(2),
-        })),
-      });
-    }
-
-    return sections.map((section) => ({
-      ...section,
-      rows: section.rows.length ? section.rows : [{ [tr('No data', "Ma'lumot yo'q")]: '-' }],
-    }));
-  };
-
-  const exportFileName = () => {
-    const scope = [
-      selectedFirm?.name || selectedFirmId || (isFirm ? 'my-firm' : 'all-firms'),
-      selectedFlight?.flightNumber || selectedFlightId || 'all-flights',
-      dateFrom || 'from-start',
-      dateTo || 'to-now',
-    ]
-      .join('-')
-      .replace(/[^a-z0-9-]+/gi, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '')
-      .toLowerCase();
-    return `reports-${scope || 'export'}`;
-  };
-
-  const downloadSpreadsheet = () => {
-    const csvEscape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-    const lines: string[] = [];
-    for (const section of buildExportSections()) {
-      const headers = Array.from(new Set(section.rows.flatMap((row) => Object.keys(row))));
-      lines.push(csvEscape(section.title));
-      lines.push(headers.map(csvEscape).join(','));
-      for (const row of section.rows) {
-        lines.push(headers.map((header) => csvEscape(row[header])).join(','));
-      }
-      lines.push('');
-    }
-    const blob = new Blob([`\uFEFF${lines.join('\n')}`], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${exportFileName()}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const downloadPdf = () => {
-    const escapeHtml = (value: unknown) => String(value ?? '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-    const sections = buildExportSections();
-    const html = `
-      <!doctype html>
-      <html>
-        <head>
-          <title>${escapeHtml(tr('Reports', 'Hisobotlar'))}</title>
-          <style>
-            body { font-family: Arial, sans-serif; color: #111827; margin: 32px; }
-            h1 { margin: 0 0 6px; font-size: 24px; }
-            .meta { color: #6b7280; font-size: 12px; margin-bottom: 24px; }
-            h2 { margin: 24px 0 8px; font-size: 16px; }
-            table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
-            th, td { border: 1px solid #d1d5db; padding: 7px 8px; font-size: 12px; text-align: left; }
-            th { background: #f3f4f6; }
-            @media print { button { display: none; } body { margin: 18mm; } }
-          </style>
-        </head>
-        <body>
-          <button onclick="window.print()" style="margin-bottom:16px;padding:8px 12px;">${escapeHtml(tr('Save as PDF', 'PDF saqlash'))}</button>
-          <h1>${escapeHtml(tr('Reports', 'Hisobotlar'))}</h1>
-          <div class="meta">${escapeHtml(new Date().toLocaleString())}</div>
-          ${sections.map((section) => {
-            const headers = Array.from(new Set(section.rows.flatMap((row) => Object.keys(row))));
-            return `
-              <h2>${escapeHtml(section.title)}</h2>
-              <table>
-                <thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead>
-                <tbody>
-                  ${section.rows.map((row) => `<tr>${headers.map((header) => `<td>${escapeHtml(row[header])}</td>`).join('')}</tr>`).join('')}
-                </tbody>
-              </table>
-            `;
-          }).join('')}
-        </body>
-      </html>
-    `;
-    const popup = window.open('', '_blank', 'noopener,noreferrer');
-    if (!popup) {
-      toast.error(tr('Allow popups to export PDF', 'PDF eksport uchun popupga ruxsat bering'));
-      return;
-    }
-    popup.document.open();
-    popup.document.write(html);
-    popup.document.close();
-    popup.focus();
-  };
+  const renderFlightProfitability = () => (
+    <div className="space-y-6">
+      <div className="overflow-x-auto rounded-lg border border-border bg-surface">
+        <table className="excel-table">
+          <thead>
+            <tr>
+              {['Flight', 'Airline', 'Route', 'Departure', 'Tickets', 'Ticket %', 'Packages', 'Package %', 'Revenue', 'COGS', 'Gross Profit', 'Direct Exp.', 'Overhead', 'Result', 'Margin', 'Receivables', 'Payables', 'Rev/Pax', 'Profit/Pax'].map((h) => <th key={h}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {flightsRows.length === 0 ? (
+              <tr><td colSpan={19} className="text-center text-muted">{tr('Tanlangan davr uchun ma\'lumot mavjud emas', 'Tanlangan davr uchun ma\'lumot mavjud emas')}</td></tr>
+            ) : flightsRows.map((row: any) => (
+              <tr key={row.flightId}>
+                <td className="font-semibold">{row.flightCode}</td>
+                <td>{row.airline || '-'}</td>
+                <td>{row.route || '-'}</td>
+                <td>{row.departureDate ? new Date(row.departureDate).toLocaleDateString() : '-'}</td>
+                <td>{row.soldTickets}/{row.purchasedTickets}</td>
+                <td>{pct(row.ticketSellThrough)}</td>
+                <td>{row.soldPackages}/{row.purchasedPackages}</td>
+                <td>{pct(row.packageSellThrough)}</td>
+                <td>{fmt(row.revenue)}</td>
+                <td>{fmt(row.cogs)}</td>
+                <td>{fmt(row.grossProfit)}</td>
+                <td>{fmt(row.directExpenses)}</td>
+                <td>{fmt(row.allocatedOverhead)}</td>
+                <td className={Number(row.operatingResult || 0) >= 0 ? 'text-emerald-500' : 'text-red-500'}>{fmt(row.operatingResult)}</td>
+                <td>{pct(row.margin)}</td>
+                <td>{fmt(row.receivables)}</td>
+                <td>{fmt(row.payables)}</td>
+                <td>{row.revenuePerPassenger == null ? 'N/A' : fmt(row.revenuePerPassenger)}</td>
+                <td>{row.profitPerPassenger == null ? 'N/A' : fmt(row.profitPerPassenger)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 
   return (
-    <div className="space-y-8 text-foreground">
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h2 className="text-3xl font-bold">{tr('Reports', 'Hisobotlar')}</h2>
-          <p className="mt-1 text-sm text-muted">
-            {isFirm
-              ? tr('Your firm-scoped performance and finance reports.', 'Firmangiz bo\'yicha natija va moliyaviy hisobotlar.')
-              : tr('Flight, firm, payments, transactions — plus superadmin interaction overview.', 'Reys, firma, to\'lovlar, tranzaksiyalar — va superadmin uchun o\'zaro aloqalar ko\'rinishi.')}
-          </p>
+          <h2 className="text-3xl font-bold text-foreground">{tr('Reports', 'Hisobotlar')}</h2>
+          <p className="mt-1 text-sm text-muted">{tr('Professional financial analytics center based on live ledger data.', 'Real ledger ma\'lumotlari asosidagi professional moliyaviy analytics markazi.')}</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={downloadPdf}
-            className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-sm font-semibold text-foreground hover:bg-surface-2"
-          >
-            <FileText size={16} />
-            {tr('Download PDF', 'PDF yuklab olish')}
-          </button>
-          <button
-            type="button"
-            onClick={downloadSpreadsheet}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-ink hover:bg-primary/90"
-          >
-            <FileSpreadsheet size={16} />
-            {tr('Download spreadsheet', 'Spreadsheet yuklab olish')}
-          </button>
-        </div>
+        <button type="button" onClick={loadReport} className="inline-flex items-center justify-center gap-2 rounded-md border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-surface-2">
+          <RefreshCw size={16} />
+          {tr('Refresh', 'Yangilash')}
+        </button>
       </div>
 
-      <CollapsibleCard
-        title={tr('Scope', 'Qamrov')}
-        defaultOpen
-        storageKey="jetstream-reports-scope-open"
-        className="rounded-xl"
-        contentClassName="p-4 space-y-3"
-      >
+      <div className="rounded-lg border border-border bg-surface p-4">
         <div className="compact-toolbar">
-          <div>
-            <label className="compact-label">{tr('Flight', 'Reys')}</label>
-            <select
-              value={selectedFlightId}
-              onChange={(e) => setSelectedFlightId(e.target.value)}
-              disabled={flightOptionsDisabled}
-              className="compact-control disabled:opacity-50"
-            >
-              {flights.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.flightNumber}
-                </option>
-              ))}
-            </select>
-          </div>
-
           {isAdmin && (
             <div>
-              <label className="compact-label">{tr('Firm', 'Firma')}</label>
-              <select
-                value={selectedFirmId}
-                onChange={(e) => setSelectedFirmId(e.target.value)}
-                disabled={firmOptionsDisabled}
-                className="compact-control disabled:opacity-50"
-              >
-                {firms.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
-                  </option>
-                ))}
+              <label className="compact-label">{tr('Company', 'Kompaniya')}</label>
+              <select value={companyId} onChange={(e) => setCompanyId(e.target.value)} className="compact-control min-w-[180px]">
+                <option value="">{tr('All permitted companies', 'Ruxsat etilgan barcha kompaniyalar')}</option>
+                {firms.map((firm) => <option key={firm.id} value={firm.id}>{firm.name}</option>)}
               </select>
             </div>
           )}
-
           <div>
-            <label className="compact-label">{tr('Date from', 'Sana (dan)')}</label>
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-              className="compact-control"
-            />
+            <label className="compact-label">{tr('Branch', 'Filial')}</label>
+            <select value={branchId} onChange={(e) => setBranchId(e.target.value)} className="compact-control min-w-[180px]">
+              <option value="">{tr('All branches', 'Barcha filiallar')}</option>
+              {branches.map((b) => <option key={b.id} value={b.id}>{b.firm?.name ? `${b.firm.name} · ` : ''}{b.name}{b.code ? ` (${b.code})` : ''}</option>)}
+            </select>
           </div>
-
           <div>
-            <label className="compact-label">{tr('Date to', 'Sana (gacha)')}</label>
-            <input
-              type="date"
-              value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-              className="compact-control"
-            />
+            <label className="compact-label">{tr('Year', 'Yil')}</label>
+            <input value={year} onChange={(e) => setYear(e.target.value.replace(/\D/g, '').slice(0, 4))} className="compact-control w-24" />
+          </div>
+          <div>
+            <label className="compact-label">{tr('Month', 'Oy')}</label>
+            <select value={month} onChange={(e) => setMonth(e.target.value)} className="compact-control w-28">
+              <option value="">{tr('Full year', 'Butun yil')}</option>
+              {Array.from({ length: 12 }).map((_, i) => <option key={i + 1} value={String(i + 1)}>{String(i + 1).padStart(2, '0')}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="compact-label">{tr('Date from', 'Sana dan')}</label>
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="compact-control" />
+          </div>
+          <div>
+            <label className="compact-label">{tr('Date to', 'Sana gacha')}</label>
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="compact-control" />
+          </div>
+          <div>
+            <label className="compact-label">{tr('Flight / Reys', 'Flight / Reys')}</label>
+            <select value={flightId} onChange={(e) => setFlightId(e.target.value)} className="compact-control min-w-[170px]">
+              <option value="">{tr('All flights', 'Barcha reyslar')}</option>
+              {flights.map((flight) => <option key={flight.id} value={flight.id}>{flight.flightNumber}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
+            <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="compact-control w-28">
+              <option value="">{tr('Base', 'Bazaviy')}</option>
+              <option value="UZS">UZS</option>
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+            </select>
           </div>
         </div>
+      </div>
 
-        {loadingMeta && (
-          <p className="text-sm text-muted">{tr('Loading report options...', 'Hisobot parametrlari yuklanmoqda...')}</p>
-        )}
-        {!loadingMeta && (
-          <p className="text-xs text-muted">
-            {tr('Reports refresh automatically when scope changes.', 'Qamrov o\'zgarganda hisobotlar avtomatik yangilanadi.')}
-          </p>
-        )}
-      </CollapsibleCard>
+      <div className="flex gap-2 overflow-x-auto rounded-lg border border-border bg-surface p-2">
+        {tabs.map((tab) => {
+          const Icon = tab.icon;
+          const active = activeTab === tab.key;
+          return (
+            <button key={tab.key} type="button" onClick={() => setActiveTab(tab.key)} className={`inline-flex items-center gap-2 whitespace-nowrap rounded-md px-3 py-2 text-sm font-semibold ${active ? 'bg-primary text-ink' : 'text-muted hover:bg-surface-2 hover:text-foreground'}`}>
+              <Icon size={16} />
+              {tr(tab.labelEn, tab.labelUz)}
+            </button>
+          );
+        })}
+      </div>
 
-      {/* Flight report */}
-      <CollapsibleCard
-        title={isFirm ? tr('Flight report (your firm)', 'Reys hisoboti (firmangiz)') : tr('Flight report', 'Reys hisoboti')}
-        defaultOpen={false}
-        storageKey="jetstream-reports-flight-report-open"
-        className="rounded-xl"
-        contentClassName="p-6 space-y-4"
-      >
-        {loadingFlightReport && <p className="text-sm text-muted">{tr('Loading...', 'Yuklanmoqda...')}</p>}
-        {flightReport && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">{tr('Debt (Payable, UZS)', 'Qarz (PAYABLE, UZS)')}</p>
-                <p className="text-2xl font-bold text-yellow-600">{Number(flightReport.debt || 0).toFixed(2)}</p>
-              </div>
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">{tr('Revenue (Sales, UZS)', 'Tushum (SOTUV, UZS)')}</p>
-                <p className="text-2xl font-bold text-green-600">{Number(flightReport.revenue || 0).toFixed(2)}</p>
-              </div>
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">{tr('Payments (UZS)', "To'lovlar (UZS)")}</p>
-                <p className="text-2xl font-bold text-primary">{Number(flightReport.paid || 0).toFixed(2)}</p>
-              </div>
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">{tr('Outstanding (UZS)', 'Qoldiq (UZS)')}</p>
-                <p className="text-2xl font-bold">{Number(flightReport.outstanding || 0).toFixed(2)}</p>
-              </div>
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">{tr('Profit (UZS)', 'Foyda (UZS)')}</p>
-                <p className="text-2xl font-bold text-indigo-600">{Number(flightReport.profit || 0).toFixed(2)}</p>
-              </div>
-            </div>
-
-            {flightReport.tickets && (
-              <div className="text-sm text-muted">
-                {tr('Tickets', 'Biletlar')}: {tr('total', 'jami')} {flightReport.tickets.total}, {tr('available', 'mavjud')} {flightReport.tickets.available}, {tr('assigned', 'biriktirilgan')} {flightReport.tickets.assigned}, {tr('sold', 'sotilgan')} {flightReport.tickets.sold}
-              </div>
-            )}
-
-            {isAdmin ? (
-              <div className="overflow-x-auto">
-                <table className="excel-table">
-                  <thead className="bg-surface">
-                    <tr>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Firm', 'Firma')}</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Tickets', 'Biletlar')}</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Sold', 'Sotilgan')}</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Debt', 'Qarz')}</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Revenue', 'Tushum')}</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Paid', "To'langan")}</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Outstanding', 'Qoldiq')}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {(flightReport.firms || []).map((row: any) => (
-                      <tr key={row.firmId}>
-                        <td className="px-4 py-2 text-sm text-foreground">{row.firmName || row.firmId}</td>
-                        <td className="px-4 py-2 text-sm text-foreground">{row.ticketsAssigned || 0}</td>
-                        <td className="px-4 py-2 text-sm text-foreground">{row.ticketsSold || 0}</td>
-                        <td className="px-4 py-2 text-sm text-foreground">{Number(row.debt || 0).toFixed(2)}</td>
-                        <td className="px-4 py-2 text-sm text-foreground">{Number(row.revenue || 0).toFixed(2)}</td>
-                        <td className="px-4 py-2 text-sm text-foreground">{Number(row.paid || 0).toFixed(2)}</td>
-                        <td className="px-4 py-2 text-sm text-foreground">{Number(row.outstanding || 0).toFixed(2)}</td>
-                      </tr>
-                    ))}
-                    {(flightReport.firms || []).length === 0 && (
-                      <tr>
-                        <td colSpan={7} className="px-4 py-4 text-center text-sm text-muted">
-                          {tr('No firm activity for this flight yet.', "Bu reys bo'yicha hali firma faoliyati yo'q.")}
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="text-sm text-muted">
-                {tr('Your firm breakdown', 'Firmangiz bo\'yicha')}: {(flightReport.firms || []).length > 0 ? (
-                  <span>
-                    {tr('tickets', 'biletlar')} {(flightReport.firms?.[0]?.ticketsAssigned ?? 0)} / {tr('sold', 'sotilgan')} {(flightReport.firms?.[0]?.ticketsSold ?? 0)}
-                  </span>
-                ) : (
-                  <span className="text-muted">{tr('No activity for this flight yet.', "Bu reys bo'yicha hali faoliyat yo'q.")}</span>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </CollapsibleCard>
-
-      {/* Firm report */}
-      <CollapsibleCard
-        title={isFirm ? tr('My firm report', 'Firmam hisoboti') : tr('Firm report', 'Firma hisoboti')}
-        defaultOpen={false}
-        storageKey="jetstream-reports-firm-report-open"
-        className="rounded-xl"
-        contentClassName="p-6 space-y-4"
-      >
-        {loadingFirmReport && <p className="text-sm text-muted">{tr('Loading...', 'Yuklanmoqda...')}</p>}
-        {firmReport && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">{tr('Debt (UZS)', 'Qarz (UZS)')}</p>
-                <p className="text-2xl font-bold text-yellow-600">{Number(firmReport.totals?.debt || 0).toFixed(2)}</p>
-              </div>
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">{tr('Revenue (UZS)', 'Tushum (UZS)')}</p>
-                <p className="text-2xl font-bold text-green-600">{Number(firmReport.totals?.revenue || 0).toFixed(2)}</p>
-              </div>
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">{tr('Paid (UZS)', "To'langan (UZS)")}</p>
-                <p className="text-2xl font-bold text-primary">{Number(firmReport.totals?.paid || 0).toFixed(2)}</p>
-              </div>
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">{tr('Outstanding (UZS)', 'Qoldiq (UZS)')}</p>
-                <p className="text-2xl font-bold">{Number(firmReport.totals?.outstanding || 0).toFixed(2)}</p>
-              </div>
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <p className="text-xs text-muted">{tr('Profit (UZS)', 'Foyda (UZS)')}</p>
-                <p className="text-2xl font-bold text-indigo-600">{Number(firmReport.totals?.profit || 0).toFixed(2)}</p>
-              </div>
-            </div>
-
-            <div className="text-sm text-muted">
-              {tr('Tickets', 'Biletlar')}: {tr('assigned', 'biriktirilgan')} {firmReport.tickets?.assigned || 0}, {tr('sold', 'sotilgan')} {firmReport.tickets?.sold || 0}, {tr('unsold', 'sotilmagan')} {firmReport.tickets?.unsold || 0}
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-foreground mb-2">{tr('Transactions by type', 'Tranzaksiyalar (turi bo\'yicha)')}</h4>
-                <div className="overflow-x-auto">
-                  <table className="excel-table">
-                    <thead className="bg-surface-2">
-                      <tr>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Type', 'Turi')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total (UZS)', 'Jami (UZS)')}</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {(firmReport.transactionsByType || []).map((r: any) => (
-                        <tr key={r.type}>
-                          <td className="px-3 py-2 text-sm text-foreground">{getTransactionTypeLabel(r.type)}</td>
-                          <td className="px-3 py-2 text-sm text-foreground">{r.count}</td>
-                          <td className="px-3 py-2 text-sm text-foreground">{Number(r.totalBaseAmount || 0).toFixed(2)}</td>
-                        </tr>
-                      ))}
-                      {(firmReport.transactionsByType || []).length === 0 && (
-                        <tr>
-                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">{tr('No data', "Ma'lumot yo'q")}</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-foreground mb-2">{tr('Payments by method', "To'lovlar (usul bo\'yicha)")}</h4>
-                <div className="overflow-x-auto">
-                  <table className="excel-table">
-                    <thead className="bg-surface-2">
-                      <tr>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Method', 'Usul')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total (UZS)', 'Jami (UZS)')}</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {(firmReport.paymentsByMethod || []).map((r: any) => (
-                        <tr key={r.method}>
-                          <td className="px-3 py-2 text-sm text-foreground">{getPaymentMethodLabel(r.method)}</td>
-                          <td className="px-3 py-2 text-sm text-foreground">{r.count}</td>
-                          <td className="px-3 py-2 text-sm text-foreground">{Number(r.totalBaseAmount || 0).toFixed(2)}</td>
-                        </tr>
-                      ))}
-                      {(firmReport.paymentsByMethod || []).length === 0 && (
-                        <tr>
-                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">{tr('No data', "Ma'lumot yo'q")}</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-surface border border-border rounded-lg p-4">
-              <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By flight', 'Reys bo\'yicha')}</h4>
-              <div className="overflow-x-auto">
-                <table className="excel-table">
-                  <thead className="bg-surface-2">
-                    <tr>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Flight', 'Reys')}</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Debt', 'Qarz')}</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Revenue', 'Tushum')}</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Paid', "To'langan")}</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Outstanding', 'Qoldiq')}</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Tickets', 'Biletlar')}</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Sold', 'Sotilgan')}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {(firmReport.byFlight || []).map((r: any) => (
-                      <tr key={r.flightId}>
-                        <td className="px-3 py-2 text-sm text-foreground">{r.flightNumber || r.flightId}</td>
-                        <td className="px-3 py-2 text-sm text-foreground">{Number(r.debt || 0).toFixed(2)}</td>
-                        <td className="px-3 py-2 text-sm text-foreground">{Number(r.revenue || 0).toFixed(2)}</td>
-                        <td className="px-3 py-2 text-sm text-foreground">{Number(r.paid || 0).toFixed(2)}</td>
-                        <td className="px-3 py-2 text-sm text-foreground">{Number(r.outstanding || 0).toFixed(2)}</td>
-                        <td className="px-3 py-2 text-sm text-foreground">{r.ticketsAssigned || 0}</td>
-                        <td className="px-3 py-2 text-sm text-foreground">{r.ticketsSold || 0}</td>
-                      </tr>
-                    ))}
-                    {(firmReport.byFlight || []).length === 0 && (
-                      <tr>
-                        <td colSpan={7} className="px-3 py-3 text-center text-sm text-muted">{tr('No data', "Ma'lumot yo'q")}</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-      </CollapsibleCard>
-
-      {/* Payments report */}
-      <CollapsibleCard
-        title={isFirm ? tr('My payments report', "To'lovlarim hisoboti") : tr('Payments report', "To'lovlar hisoboti")}
-        defaultOpen={false}
-        storageKey="jetstream-reports-payments-report-open"
-        className="rounded-xl"
-        contentClassName="p-6 space-y-4"
-      >
-        {loadingPaymentsReport && <p className="text-sm text-muted">{tr('Loading...', 'Yuklanmoqda...')}</p>}
-        {paymentsReport && (
-          <div className="space-y-4">
-            <div className="text-sm text-muted">
-              {tr('Total payments', "Jami to'lovlar")}: {paymentsReport.totals?.count || 0}
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By method', 'Usul bo\'yicha')}</h4>
-                <div className="overflow-x-auto">
-                  <table className="excel-table">
-                    <thead className="bg-surface-2">
-                      <tr>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Method', 'Usul')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total', 'Jami')}</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {(paymentsReport.byMethod || []).map((r: any) => (
-                        <tr key={r.method}>
-                          <td className="px-3 py-2 text-sm text-foreground">{getPaymentMethodLabel(r.method)}</td>
-                          <td className="px-3 py-2 text-sm text-foreground">{r.count}</td>
-                          <td className="px-3 py-2 text-sm text-foreground">{Number(r.totalBaseAmount || 0).toFixed(2)}</td>
-                        </tr>
-                      ))}
-                      {(paymentsReport.byMethod || []).length === 0 && (
-                        <tr>
-                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">{tr('No data', "Ma'lumot yo'q")}</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By currency', 'Valyuta bo\'yicha')}</h4>
-                <div className="overflow-x-auto">
-                  <table className="excel-table">
-                    <thead className="bg-surface-2">
-                      <tr>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Currency', 'Valyuta')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total', 'Jami')}</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {(paymentsReport.byCurrency || []).map((r: any) => (
-                        <tr key={r.currency}>
-                          <td className="px-3 py-2 text-sm text-foreground">{r.currency}</td>
-                          <td className="px-3 py-2 text-sm text-foreground">{r.count}</td>
-                          <td className="px-3 py-2 text-sm text-foreground">{Number(r.totalOriginalAmount ?? r.totalBaseAmount ?? 0).toFixed(2)} {r.currency}</td>
-                        </tr>
-                      ))}
-                      {(paymentsReport.byCurrency || []).length === 0 && (
-                        <tr>
-                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">{tr('No data', "Ma'lumot yo'q")}</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </CollapsibleCard>
-
-      {/* Transactions report */}
-      <CollapsibleCard
-        title={isFirm ? tr('My transactions report', 'Tranzaksiyalarim hisoboti') : tr('Transactions report', 'Tranzaksiyalar hisoboti')}
-        defaultOpen={false}
-        storageKey="jetstream-reports-transactions-report-open"
-        className="rounded-xl"
-        contentClassName="p-6 space-y-4"
-      >
-        {loadingTransactionsReport && <p className="text-sm text-muted">{tr('Loading...', 'Yuklanmoqda...')}</p>}
-        {transactionsReport && (
-          <div className="space-y-4">
-            <div className="text-sm text-muted">
-              {tr('Total transactions', 'Jami tranzaksiyalar')}: {transactionsReport.totals?.count || 0}
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By type', 'Turi bo\'yicha')}</h4>
-                <div className="overflow-x-auto">
-                  <table className="excel-table">
-                    <thead className="bg-surface-2">
-                      <tr>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Type', 'Turi')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total', 'Jami')}</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {(transactionsReport.byType || []).map((r: any) => (
-                        <tr key={r.type}>
-                          <td className="px-3 py-2 text-sm text-foreground">{getTransactionTypeLabel(r.type)}</td>
-                          <td className="px-3 py-2 text-sm text-foreground">{r.count}</td>
-                          <td className="px-3 py-2 text-sm text-foreground">{Number(r.totalBaseAmount || 0).toFixed(2)}</td>
-                        </tr>
-                      ))}
-                      {(transactionsReport.byType || []).length === 0 && (
-                        <tr>
-                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">{tr('No data', "Ma'lumot yo'q")}</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div className="bg-surface border border-border rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-foreground mb-2">{tr('By currency', 'Valyuta bo\'yicha')}</h4>
-                <div className="overflow-x-auto">
-                  <table className="excel-table">
-                    <thead className="bg-surface-2">
-                      <tr>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Currency', 'Valyuta')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Count', 'Soni')}</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Total', 'Jami')}</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {(transactionsReport.byCurrency || []).map((r: any) => (
-                        <tr key={r.currency}>
-                          <td className="px-3 py-2 text-sm text-foreground">{r.currency}</td>
-                          <td className="px-3 py-2 text-sm text-foreground">{r.count}</td>
-                          <td className="px-3 py-2 text-sm text-foreground">{Number(r.totalOriginalAmount ?? r.totalBaseAmount ?? 0).toFixed(2)} {r.currency}</td>
-                        </tr>
-                      ))}
-                      {(transactionsReport.byCurrency || []).length === 0 && (
-                        <tr>
-                          <td colSpan={3} className="px-3 py-3 text-center text-sm text-muted">{tr('No data', "Ma'lumot yo'q")}</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </CollapsibleCard>
-
-      {/* Superadmin interactions */}
-      {isSuperadmin && (
-        <CollapsibleCard
-          title={tr('Admin ↔ Firm interactions (superadmin)', 'Admin ↔ Firma aloqalari (superadmin)')}
-          defaultOpen={false}
-          storageKey="jetstream-reports-interactions-open"
-          className="rounded-xl"
-          contentClassName="p-6 space-y-4"
-        >
-          {loadingInteractionsReport && <p className="text-sm text-muted">{tr('Loading...', 'Yuklanmoqda...')}</p>}
-          {interactionsReport && (
-            <div className="space-y-4">
-              <div className="text-sm text-muted">
-                {tr('Invites', 'Takliflar')}: {interactionsReport.totals?.invitesSent || 0} — {tr('Allocations', 'Ajratmalar')} {Number(interactionsReport.totals?.allocationsBaseAmount || 0).toFixed(2)} UZS — {tr('Payments', "To'lovlar")} {Number(interactionsReport.totals?.paymentsBaseAmount || 0).toFixed(2)} UZS
-              </div>
-
-              <div className="overflow-x-auto">
-                <table className="excel-table">
-                  <thead className="bg-surface">
-                    <tr>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Admin', 'Admin')}</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Firm', 'Firma')}</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Invites', 'Takliflar')}</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Allocations (UZS)', 'Ajratmalar (UZS)')}</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Payments (UZS)', "To'lovlar (UZS)")}</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase">{tr('Sales (UZS)', 'Sotuv (UZS)')}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {(interactionsReport.pairs || []).map((p: any) => (
-                      <tr key={`${p.adminId}-${p.firmId}`}>
-                        <td className="px-3 py-2 text-sm text-foreground">{p.adminEmail}</td>
-                        <td className="px-3 py-2 text-sm text-foreground">{p.firmName || p.firmId}</td>
-                        <td className="px-3 py-2 text-sm text-foreground">{p.invitesSent}</td>
-                        <td className="px-3 py-2 text-sm text-foreground">{Number(p.allocationsBaseAmount || 0).toFixed(2)}</td>
-                        <td className="px-3 py-2 text-sm text-foreground">{Number(p.paymentsBaseAmount || 0).toFixed(2)}</td>
-                        <td className="px-3 py-2 text-sm text-foreground">{Number(p.salesBaseAmount || 0).toFixed(2)}</td>
-                      </tr>
-                    ))}
-                    {(interactionsReport.pairs || []).length === 0 && (
-                      <tr>
-                        <td colSpan={6} className="px-3 py-3 text-center text-sm text-muted">{tr('No interactions in this period', 'Ushbu davrda aloqa qayd etilmadi')}</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <p className="text-xs text-muted">
-                {tr('Note: allocations/payments/sales are counted only when the acting user was an admin/superadmin.', 'Eslatma: ajratmalar/to\'lovlar/sotuvlar faqat amalni bajargan foydalanuvchi admin/superadmin bo\'lganda hisoblanadi.')}
-              </p>
-            </div>
-          )}
-        </CollapsibleCard>
+      {loading ? <SkeletonGrid /> : !report ? (
+        <div className="rounded-lg border border-border bg-surface p-8 text-center text-muted">{tr('Tanlangan davr uchun ma\'lumot mavjud emas', 'Tanlangan davr uchun ma\'lumot mavjud emas')}</div>
+      ) : (
+        <>
+          {activeTab === 'health' && renderHealth()}
+          {activeTab === 'profitability' && renderProfitability()}
+          {activeTab === 'cash-flow' && renderCashFlow()}
+          {activeTab === 'debt' && renderDebt()}
+          {activeTab === 'flight-profitability' && renderFlightProfitability()}
+        </>
       )}
+
+      {report?.notes?.length ? (
+        <div className="rounded-lg border border-border bg-surface p-4">
+          <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-foreground"><Building2 size={16} />{tr('Accounting notes', 'Buxgalteriya izohlari')}</div>
+          <ul className="space-y-1 text-xs text-muted">
+            {report.notes.map((note: string) => <li key={note}>{note}</li>)}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DebtTable({ title, rows, kind }: { title: string; rows: any[]; kind: 'receivable' | 'payable' }) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border bg-surface p-4">
+      <h3 className="mb-3 text-sm font-bold text-foreground">{title}</h3>
+      <table className="excel-table">
+        <thead>
+          <tr>
+            {(kind === 'receivable'
+              ? ['Customer', 'Sale / Invoice', 'Flight', 'Sale Manager', 'Document Date', 'Due Date', 'Original Amount', 'Paid Amount', 'Outstanding Amount', 'Days Overdue', 'Aging Bucket', 'Status']
+              : ['Supplier', 'Supplier Type', 'Flight', 'Document Date', 'Due Date', 'Invoice Amount', 'Paid Amount', 'Outstanding', 'Days Overdue', 'Status']
+            ).map((h) => <th key={h}>{h}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 ? (
+            <tr><td colSpan={kind === 'receivable' ? 12 : 10} className="text-center text-muted">Tanlangan davr uchun ma'lumot mavjud emas</td></tr>
+          ) : rows.map((row, index) => kind === 'receivable' ? (
+            <tr key={`${row.saleOrInvoice}-${index}`}>
+              <td>{row.customer || '-'}</td>
+              <td>{row.saleOrInvoice || '-'}</td>
+              <td>{row.flightNumber || '-'}</td>
+              <td>{row.saleManager || '-'}</td>
+              <td>{row.documentDate ? new Date(row.documentDate).toLocaleDateString() : '-'}</td>
+              <td>{row.dueDate ? new Date(row.dueDate).toLocaleDateString() : '-'}</td>
+              <td>{fmt(row.originalAmount)}</td>
+              <td>{fmt(row.paidAmount)}</td>
+              <td>{fmt(row.outstandingAmount)}</td>
+              <td>{row.daysOverdue ?? '-'}</td>
+              <td>{row.agingBucket}</td>
+              <td>{row.status}</td>
+            </tr>
+          ) : (
+            <tr key={`${row.saleOrInvoice}-${index}`}>
+              <td>{row.supplier || '-'}</td>
+              <td>{row.supplierType || '-'}</td>
+              <td>{row.flightNumber || '-'}</td>
+              <td>{row.documentDate ? new Date(row.documentDate).toLocaleDateString() : '-'}</td>
+              <td>{row.dueDate ? new Date(row.dueDate).toLocaleDateString() : '-'}</td>
+              <td>{fmt(row.invoiceAmount)}</td>
+              <td>{fmt(row.paidAmount)}</td>
+              <td>{fmt(row.outstandingAmount)}</td>
+              <td>{row.daysOverdue ?? '-'}</td>
+              <td>{row.status}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

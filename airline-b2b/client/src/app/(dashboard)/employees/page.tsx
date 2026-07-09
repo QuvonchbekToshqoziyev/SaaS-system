@@ -25,6 +25,11 @@ type UserRow = {
   email: string;
   role: string;
   firmRole?: string;
+  fullName?: string | null;
+  phone?: string | null;
+  firmId?: string | null;
+  firm?: (FirmOption & { kind?: string | null; currency?: string | null }) | null;
+  status?: string;
   firmAccesses?: Array<{ firmId: string; firm?: FirmOption }>;
 };
 
@@ -69,6 +74,8 @@ export default function EmployeesPage() {
   const [savingEmployeeId, setSavingEmployeeId] = useState<string | null>(null);
   const [employeeDrafts, setEmployeeDrafts] = useState<Record<string, EmployeeDraft>>({});
   const [accessDrafts, setAccessDrafts] = useState<Record<string, string[]>>({});
+  const [resetDrafts, setResetDrafts] = useState<Record<string, string>>({});
+  const [resettingUserId, setResettingUserId] = useState<string | null>(null);
 
   const { data: firms = [] } = useQuery<FirmOption[]>({
     queryKey: ['firms'],
@@ -217,6 +224,29 @@ export default function EmployeesPage() {
       queryClient.invalidateQueries({ queryKey: ['auth-users'] });
     } catch (err: unknown) {
       toast.error(apiErrorMessage(err) || tr('Failed to save access', 'Access saqlanmadi'));
+    }
+  };
+
+  const resetUserPassword = async (account: UserRow) => {
+    const password = (resetDrafts[account.id] || '').trim();
+    if (password.length < 6) {
+      toast.error(tr('Password must be at least 6 characters', 'Parol kamida 6 ta belgidan iborat bo\'lishi kerak'));
+      return;
+    }
+    try {
+      setResettingUserId(account.id);
+      await api.patch(`/auth/users/${account.id}`, { password });
+      toast.success(tr('Password reset saved', 'Parol yangilandi'));
+      setResetDrafts((drafts) => {
+        const next = { ...drafts };
+        delete next[account.id];
+        return next;
+      });
+      queryClient.invalidateQueries({ queryKey: ['auth-users'] });
+    } catch (err: unknown) {
+      toast.error(apiErrorMessage(err) || tr('Failed to reset password', 'Parolni yangilab bo\'lmadi'));
+    } finally {
+      setResettingUserId(null);
     }
   };
 
@@ -442,6 +472,69 @@ export default function EmployeesPage() {
           </tbody>
         </table>
       </div>
+
+      {isSuperAdmin && (
+        <div className="glass-panel p-4">
+          <h3 className="text-lg font-semibold text-foreground">{tr('Registered login accounts', 'Ro\'yxatdan o\'tgan login akkauntlar')}</h3>
+          <p className="mt-1 text-sm text-muted">
+            {tr('Superadmin can review account ownership and set a temporary password when a user asks for reset help.', 'Superadmin akkaunt egasini ko\'rib, foydalanuvchi parol tiklash so\'raganda vaqtinchalik parol berishi mumkin.')}
+          </p>
+          <div className="mt-4 overflow-x-auto scroller-minimal">
+            <table className="excel-table">
+              <thead>
+                <tr>
+                  <th>Email</th>
+                  <th>{tr('Name', 'Ism')}</th>
+                  <th>{tr('Role', 'Rol')}</th>
+                  <th>{tr('Firm', 'Firma')}</th>
+                  <th>{tr('Phone', 'Telefon')}</th>
+                  <th>{tr('Status', 'Status')}</th>
+                  <th>{tr('Password reset', 'Parol tiklash')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.length === 0 ? (
+                  <tr><td colSpan={7} className="text-center text-muted">{tr('No accounts found.', 'Akkauntlar topilmadi.')}</td></tr>
+                ) : users.map((account) => (
+                  <tr key={account.id}>
+                    <td className="font-semibold">{account.email}</td>
+                    <td>{account.fullName || '-'}</td>
+                    <td>
+                      <span className="font-mono text-xs">{String(account.role).toUpperCase()}</span>
+                      {String(account.role).toUpperCase() === 'FIRM' && account.firmRole ? (
+                        <span className="ml-2 text-xs text-muted">{account.firmRole}</span>
+                      ) : null}
+                    </td>
+                    <td>{account.firm?.name || (account.firmAccesses || []).map((item) => item.firm?.name).filter(Boolean).join(', ') || '-'}</td>
+                    <td>{account.phone || '-'}</td>
+                    <td>{account.status || 'ACTIVE'}</td>
+                    <td>
+                      <div className="flex min-w-[260px] items-center gap-2">
+                        <input
+                          type="text"
+                          value={resetDrafts[account.id] || ''}
+                          onChange={(e) => setResetDrafts((drafts) => ({ ...drafts, [account.id]: e.target.value }))}
+                          className="compact-control min-w-[160px]"
+                          placeholder={tr('Temporary password', 'Vaqtinchalik parol')}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => resetUserPassword(account)}
+                          disabled={resettingUserId === account.id}
+                          className="inline-flex items-center gap-1 border border-border bg-surface-2 px-3 py-2 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50"
+                        >
+                          <Save size={14} />
+                          {resettingUserId === account.id ? tr('Saving', 'Saqlanmoqda') : tr('Reset', 'Tiklash')}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {isSuperAdmin && (
         <div className="glass-panel p-4">

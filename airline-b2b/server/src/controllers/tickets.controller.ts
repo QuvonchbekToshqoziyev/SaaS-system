@@ -34,6 +34,23 @@ async function assertCanManageAirlineFlight(user: any, flightId: string) {
   if (!flight || flight.airline?.firmId !== firmId) throw new Error('Flight not found');
 }
 
+async function assertCanManageFirmFlightInventory(user: any, flightId: string) {
+  const role = normalizeRole(user?.role);
+  const firmId = user?.firmId ? String(user.firmId) : '';
+  if (role !== 'FIRM' || !firmId) throw new Error('Forbidden');
+  if (!canManageFirmWork(user)) throw new Error('Only firm admins and managers can manage flight inventory');
+
+  const ownedTickets = await prisma.ticket.count({
+    where: {
+      flightId,
+      assignedFirmId: firmId,
+      deletedAt: null,
+    },
+  });
+  if (ownedTickets <= 0) throw new Error('Flight not found');
+  return firmId;
+}
+
 function parsePositiveInt(value: unknown): number | null {
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return null;
@@ -66,6 +83,19 @@ function parsePositiveDecimal(value: unknown): Prisma.Decimal | null {
   } catch {
     return null;
   }
+}
+
+function parseAllocationRows(value: unknown): Array<{ quantity: number; price: Prisma.Decimal }> {
+  if (!Array.isArray(value)) return [];
+  const rows: Array<{ quantity: number; price: Prisma.Decimal }> = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const raw = item as any;
+    const quantity = parsePositiveInt(raw.quantity ?? raw.count);
+    const price = parsePositiveDecimal(raw.allocationPrice ?? raw.price);
+    if (quantity && price) rows.push({ quantity, price: price.toDecimalPlaces(4) });
+  }
+  return rows;
 }
 
 function normalizeOptionalString(value: unknown): string | undefined {
@@ -170,8 +200,9 @@ export const createTickets = async (req: Request, res: Response) => {
   if (flight.status === 'CANCELLED') {
     return res.status(400).json({ error: 'Cannot create tickets for a cancelled flight' });
   }
+  let ownerFirmId = '';
   try {
-    await assertCanManageAirlineFlight((req as any).user, flightId.trim());
+    ownerFirmId = await assertCanManageFirmFlightInventory((req as any).user, flightId.trim());
   } catch (err: any) {
     const message = err?.message || 'Forbidden';
     return res.status(message === 'Flight not found' ? 404 : 403).json({ error: message });
@@ -181,7 +212,8 @@ export const createTickets = async (req: Request, res: Response) => {
     flightId: flightId.trim(),
     basePrice: price,
     currency,
-    status: 'AVAILABLE' as const,
+    status: 'ASSIGNED' as const,
+    assignedFirmId: ownerFirmId,
   }));
   const result = await prisma.ticket.createMany({ data: newTickets });
   res.json({ success: true, count: result.count });
@@ -189,13 +221,16 @@ export const createTickets = async (req: Request, res: Response) => {
 
 export const allocateTicket = async (req: Request, res: Response) => {
   const user = (req as any).user;
-  const { ticketId, firmId, flightId, flight_id, quantity, count, allocationPrice, price } = req.body;
+  const { ticketId, firmId, flightId, flight_id, quantity, count, allocationPrice, price, allocationRows } = req.body;
   const overridePrice = parsePositiveDecimal(allocationPrice ?? price);
+  const parsedAllocationRows = parseAllocationRows(allocationRows);
 
   const resolvedFlightId = (flightId || flight_id) && typeof (flightId || flight_id) === 'string'
     ? String(flightId || flight_id).trim()
     : '';
-  const resolvedQuantity = parsePositiveInt(quantity ?? count);
+  const resolvedQuantity = parsedAllocationRows.length
+    ? parsedAllocationRows.reduce((sum, row) => sum + row.quantity, 0)
+    : parsePositiveInt(quantity ?? count);
 
   // Batch allocate: allocate N available tickets for a flight to a firm
   if (!ticketId && resolvedFlightId && resolvedQuantity) {
@@ -208,7 +243,10 @@ export const allocateTicket = async (req: Request, res: Response) => {
     }
 
     try {
-      await assertCanManageAirlineFlight(user, resolvedFlightId);
+      const sourceFirmId = await assertCanManageFirmFlightInventory(user, resolvedFlightId);
+      if (sourceFirmId === targetFirmId) {
+        return res.status(400).json({ error: 'Select a different firm for allocation' });
+      }
       const result = await prisma.$transaction(async (tx) => {
         const [firm, flight] = await Promise.all([
           tx.firm.findUnique({ where: { id: targetFirmId }, select: { id: true, name: true } }),
@@ -232,8 +270,9 @@ export const allocateTicket = async (req: Request, res: Response) => {
           SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
           FROM "Ticket"
           WHERE "flightId" = ${resolvedFlightId}
-            AND status = 'AVAILABLE'
-            AND "allocatedFirmId" IS NULL
+            AND status IN ('AVAILABLE', 'ASSIGNED')
+            AND "allocatedFirmId" = ${sourceFirmId}
+            AND "deletedAt" IS NULL
           ORDER BY "createdAt" ASC
           FOR UPDATE SKIP LOCKED
           LIMIT ${resolvedQuantity}
@@ -244,14 +283,31 @@ export const allocateTicket = async (req: Request, res: Response) => {
         }
 
         const ticketIds = tickets.map((t) => String(t.id));
-        await tx.ticket.updateMany({
-          where: { id: { in: ticketIds } },
-          data: {
-            status: 'PENDING',
-            assignedFirmId: targetFirmId,
-            ...(overridePrice?.gt(0) ? { basePrice: overridePrice.toDecimalPlaces(4) } : {}),
-          },
-        });
+        if (parsedAllocationRows.length) {
+          let offset = 0;
+          for (const row of parsedAllocationRows) {
+            const rowTicketIds = ticketIds.slice(offset, offset + row.quantity);
+            offset += row.quantity;
+            if (!rowTicketIds.length) continue;
+            await tx.ticket.updateMany({
+              where: { id: { in: rowTicketIds } },
+              data: {
+                status: 'PENDING',
+                assignedFirmId: targetFirmId,
+                basePrice: row.price,
+              },
+            });
+          }
+        } else {
+          await tx.ticket.updateMany({
+            where: { id: { in: ticketIds } },
+            data: {
+              status: 'PENDING',
+              assignedFirmId: targetFirmId,
+              ...(overridePrice?.gt(0) ? { basePrice: overridePrice.toDecimalPlaces(4) } : {}),
+            },
+          });
+        }
         await createFirmNotification(tx, targetFirmId, {
           title: 'Ticket allocation pending',
           body: `${ticketIds.length} ticket(s) for ${flight.flightNumber || 'flight'} were allocated to your firm. Accept them to start managing these tickets.`,
@@ -275,10 +331,13 @@ export const allocateTicket = async (req: Request, res: Response) => {
           entityId: resolvedFlightId,
           metadata: { flightId: resolvedFlightId, flightNumber: flight.flightNumber, count: ticketIds.length, firmId: targetFirmId, firmName: firm.name },
         });
-        return { count: ticketIds.length };
+        return {
+          count: ticketIds.length,
+          priceRows: parsedAllocationRows.map((row) => ({ quantity: row.quantity, price: row.price.toString() })),
+        };
       });
 
-      return res.json({ success: true, count: result.count });
+      return res.json({ success: true, count: result.count, priceRows: result.priceRows });
     } catch (err: any) {
       return res.status(400).json({ error: err.message });
     }
@@ -294,10 +353,13 @@ export const allocateTicket = async (req: Request, res: Response) => {
   try {
     const ticketFlight = await prisma.ticket.findUnique({
       where: { id: ticketId },
-      select: { flightId: true },
+      select: { flightId: true, assignedFirmId: true },
     });
     if (!ticketFlight) return res.status(404).json({ error: 'Ticket not found' });
-    await assertCanManageAirlineFlight(user, ticketFlight.flightId);
+    const sourceFirmId = await assertCanManageFirmFlightInventory(user, ticketFlight.flightId);
+    if (sourceFirmId === firmId) {
+      return res.status(400).json({ error: 'Select a different firm for allocation' });
+    }
     await prisma.$transaction(async (tx) => {
       // Find ticket
       const tickets: any[] = await tx.$queryRaw`
@@ -323,8 +385,8 @@ export const allocateTicket = async (req: Request, res: Response) => {
         if (!connection) throw new Error('Airline is not connected to this firm');
       }
       
-      if (ticket.status !== 'AVAILABLE') throw new Error('Ticket is not available for allocation');
-      if (ticket.assignedFirmId) throw new Error('Ticket is already allocated');
+      if (!['AVAILABLE', 'ASSIGNED'].includes(String(ticket.status))) throw new Error('Ticket is not available for allocation');
+      if (String(ticket.assignedFirmId || '') !== sourceFirmId) throw new Error('Ticket is not in your inventory');
 
       const firm = await tx.firm.findUnique({ where: { id: firmId }, select: { id: true, name: true } });
       if (!firm) throw new Error('Firm not found');

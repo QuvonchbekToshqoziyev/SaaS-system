@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
@@ -24,7 +24,7 @@ type LocalFlight = {
   flight_id?: string;
   flightNumber?: string;
   airlineId?: string | null;
-  airline?: { id: string; name: string; code?: string | null } | null;
+  airline?: { id: string; name: string; code?: string | null; firmId?: string | null } | null;
   departure: string;
   arrival: string;
   status?: string;
@@ -34,6 +34,13 @@ type LocalFlight = {
   total_allocated?: number | string;
   total_sales?: number | string;
   total_payments?: number | string;
+};
+
+type AirlineOption = {
+  id: string;
+  name: string;
+  code?: string | null;
+  firmId?: string | null;
 };
 
 function getApiErrorMessage(error: unknown): string | undefined {
@@ -51,7 +58,8 @@ export default function FlightsPage() {
   const { user } = useAuth();
   const { tr } = useLanguage();
   const role = user?.role?.toUpperCase() || '';
-  const canCreateFlight = role === 'FIRM' && user?.firmKind === 'AIRLINE';
+  const firmRole = String(user?.firmRole || 'FIRM_ADMIN').toUpperCase();
+  const canCreateFlight = role === 'FIRM' && firmRole !== 'KASSIR';
   const canEdit = role === 'SUPERADMIN';
   const showFlightActions = canCreateFlight || canEdit;
   
@@ -61,6 +69,11 @@ export default function FlightsPage() {
       const res = await api.get('/flights');
       return res.data;
     }
+  });
+  const { data: listedAirlines = [] } = useQuery<AirlineOption[]>({
+    queryKey: ['airlines', 'flight-options'],
+    queryFn: async () => (await api.get('/airlines')).data,
+    enabled: role === 'FIRM',
   });
 
   const [flightsView, setFlightsView] = useState<'boxes' | 'list'>(() => {
@@ -83,6 +96,11 @@ export default function FlightsPage() {
           ticketCount: number;
           ticketPrice: number;
           currency: string;
+          airlineId?: string;
+          airlineName?: string;
+          airlineCode?: string;
+          route?: string;
+          baseTotal: number;
         };
       }
     | { kind: 'cancel'; id: string; label: string }
@@ -95,12 +113,51 @@ export default function FlightsPage() {
   const [currentFlightId, setCurrentFlightId] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     flightNumber: '',
+    route: '',
+    airlineMode: 'LISTED',
+    airlineId: '',
+    airlineName: '',
+    airlineCode: '',
     departure: '',
     arrival: '',
     ticketCount: 10,
     ticketPrice: 500,
     currency: 'UZS'
   });
+  const createBaseTotal = Number(formData.ticketCount || 0) * Number(formData.ticketPrice || 0);
+  const [filters, setFilters] = useState({ q: '', airlineId: 'ALL', status: 'ACTIVE' });
+  const isSuperadmin = role === 'SUPERADMIN';
+  const connectedListedAirlines = useMemo(() => listedAirlines.filter((airline) => airline.firmId), [listedAirlines]);
+
+  const airlineOptions = useMemo(() => {
+    const rows = new Map<string, { id: string; name: string }>();
+    for (const flight of flights) {
+      const airlineId = flight.airline?.id || flight.airlineId || '';
+      if (!airlineId) continue;
+      rows.set(airlineId, { id: airlineId, name: flight.airline?.name || flight.airline?.code || airlineId });
+    }
+    return Array.from(rows.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [flights]);
+
+  const visibleFlights = useMemo(() => {
+    const q = filters.q.trim().toLowerCase();
+    return flights.filter((flight) => {
+      const status = String(flight.status || 'SCHEDULED').toUpperCase();
+      const airlineId = flight.airline?.id || flight.airlineId || '';
+      const haystack = [
+        flight.flightNumber,
+        flight.airline?.name,
+        flight.airline?.code,
+        flight.currency,
+        status,
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (filters.status === 'ACTIVE' && status === 'CANCELLED') return false;
+      if (filters.status !== 'ALL' && filters.status !== 'ACTIVE' && status !== filters.status) return false;
+      if (filters.airlineId !== 'ALL' && airlineId !== filters.airlineId) return false;
+      if (q && !haystack.includes(q)) return false;
+      return true;
+    });
+  }, [filters, flights]);
 
   useEffect(() => {
     try {
@@ -114,6 +171,11 @@ export default function FlightsPage() {
     setModalMode('create');
     setFormData({
       flightNumber: '',
+      route: '',
+      airlineMode: connectedListedAirlines.length > 0 ? 'LISTED' : 'EXTERNAL',
+      airlineId: connectedListedAirlines[0]?.id || '',
+      airlineName: '',
+      airlineCode: '',
       departure: new Date(Date.now() + 86400000).toISOString().slice(0, 16),
       arrival: new Date(Date.now() + 86400000 + 7200000).toISOString().slice(0, 16),
       ticketCount: 10,
@@ -133,15 +195,28 @@ export default function FlightsPage() {
       toast.error(tr('Flight Number is required', 'Reys raqami kerak'));
       return;
     }
+    if (formData.airlineMode === 'LISTED' && !formData.airlineId) {
+      toast.error(tr('Select a connected airline or use external airline', 'Ulangan aviakompaniyani tanlang yoki tashqi aviakompaniya kiriting'));
+      return;
+    }
+    if (formData.airlineMode === 'EXTERNAL' && !formData.airlineName.trim()) {
+      toast.error(tr('External airline name is required', 'Tashqi aviakompaniya nomi kerak'));
+      return;
+    }
     setConfirm({
       kind: 'create',
       payload: {
         flightNumber: formData.flightNumber,
+        route: formData.route,
+        ...(formData.airlineMode === 'LISTED'
+          ? { airlineId: formData.airlineId }
+          : { airlineName: formData.airlineName.trim(), airlineCode: formData.airlineCode.trim().toUpperCase() || undefined }),
         departure: new Date(formData.departure).toISOString(),
         arrival: new Date(formData.arrival).toISOString(),
         ticketCount: Number(formData.ticketCount),
         ticketPrice: Number(formData.ticketPrice),
         currency: formData.currency,
+        baseTotal: Number(formData.ticketCount) * Number(formData.ticketPrice),
       },
     });
   };
@@ -158,6 +233,11 @@ export default function FlightsPage() {
     setCurrentFlightId(flightId);
     setFormData({
       flightNumber: flight.flightNumber || '',
+      route: '',
+      airlineMode: 'LISTED',
+      airlineId: flight.airline?.id || '',
+      airlineName: flight.airline?.name || '',
+      airlineCode: flight.airline?.code || '',
       departure: new Date(flight.departure).toISOString().slice(0, 16),
       arrival: new Date(flight.arrival).toISOString().slice(0, 16),
       ticketCount: flight.ticketCount || 10,
@@ -178,11 +258,16 @@ export default function FlightsPage() {
       if (modalMode === 'create') {
         const payload = {
           flightNumber: formData.flightNumber,
+          route: formData.route,
+          ...(formData.airlineMode === 'LISTED'
+            ? { airlineId: formData.airlineId }
+            : { airlineName: formData.airlineName.trim(), airlineCode: formData.airlineCode.trim().toUpperCase() || undefined }),
           departure: new Date(formData.departure).toISOString(),
           arrival: new Date(formData.arrival).toISOString(),
           ticketCount: Number(formData.ticketCount),
           ticketPrice: Number(formData.ticketPrice),
-          currency: formData.currency
+          currency: formData.currency,
+          baseTotal: Number(formData.ticketCount) * Number(formData.ticketPrice),
         };
         setIsModalOpen(false);
         setConfirm({ kind: 'create', payload });
@@ -268,7 +353,16 @@ export default function FlightsPage() {
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
-        <h2 className="text-3xl font-bold text-foreground">{tr('Available Flights', 'Mavjud reyslar')}</h2>
+        <div>
+          <h2 className="text-3xl font-bold text-foreground">
+            {isSuperadmin ? tr('All Flights', 'Barcha reyslar') : tr('Available Flights', 'Mavjud reyslar')}
+          </h2>
+          <p className="mt-1 text-sm text-muted">
+            {isSuperadmin
+              ? tr('Platform-wide flight monitoring, airline filtering, and correction tools.', 'Barcha reyslarni kuzatish, aviakompaniya bo\'yicha filtrlash va tuzatish vositalari.')
+              : tr('Flights available for your account.', 'Akkauntingiz uchun mavjud reyslar.')}
+          </p>
+        </div>
         <div className="flex items-center gap-3">
           <div className="inline-flex rounded-lg border border-border overflow-hidden">
             <button
@@ -306,9 +400,40 @@ export default function FlightsPage() {
         </div>
       </div>
 
+      <div className="grid gap-3 rounded-lg border border-border bg-surface-2 p-3 md:grid-cols-[minmax(220px,1fr)_minmax(180px,240px)_minmax(150px,200px)_auto] md:items-end">
+        <label className="block">
+          <span className="compact-label">{tr('Search', 'Qidirish')}</span>
+          <input
+            className="compact-control"
+            value={filters.q}
+            onChange={(e) => setFilters((current) => ({ ...current, q: e.target.value }))}
+            placeholder={tr('Flight, airline, status...', 'Reys, aviakompaniya, holat...')}
+          />
+        </label>
+        <label className="block">
+          <span className="compact-label">{tr('Airline', 'Aviakompaniya')}</span>
+          <select className="compact-control" value={filters.airlineId} onChange={(e) => setFilters((current) => ({ ...current, airlineId: e.target.value }))}>
+            <option value="ALL">{tr('All airlines', 'Barcha aviakompaniyalar')}</option>
+            {airlineOptions.map((airline) => <option key={airline.id} value={airline.id}>{airline.name}</option>)}
+          </select>
+        </label>
+        <label className="block">
+          <span className="compact-label">{tr('Status', 'Holat')}</span>
+          <select className="compact-control" value={filters.status} onChange={(e) => setFilters((current) => ({ ...current, status: e.target.value }))}>
+            <option value="ACTIVE">{tr('Active only', 'Faqat aktiv')}</option>
+            <option value="ALL">{tr('All statuses', 'Barcha holatlar')}</option>
+            <option value="SCHEDULED">{tr('Scheduled', 'Rejalashtirilgan')}</option>
+            <option value="CANCELLED">{tr('Cancelled', 'Bekor qilingan')}</option>
+          </select>
+        </label>
+        <div className="text-sm text-muted md:text-right">
+          <span className="font-semibold text-foreground">{visibleFlights.length}</span> / {flights.length}
+        </div>
+      </div>
+
       {flightsView === 'boxes' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {flights.map((flight: LocalFlight) => {
+          {visibleFlights.map((flight: LocalFlight) => {
             const flightId = flight.flight_id || flight.id;
             if (!flightId) return null;
 
@@ -400,7 +525,7 @@ export default function FlightsPage() {
                 <div className="mt-5 pt-4 border-t border-border grid grid-cols-3 gap-2 text-center">
                   <div className="text-muted">
                     <p className="text-xs">{tr('Ticket count', 'Bilet soni')}</p>
-                    <p className="font-bold text-lg text-yellow-600">{Number(flight.total_allocated || 0).toLocaleString()}</p>
+                    <p className="font-bold text-lg text-yellow-600">{Number(flight.ticketCount || 0).toLocaleString()}</p>
                   </div>
                   <div className="text-muted">
                     <p className="text-xs">{tr('Ticket amount', 'Bilet summasi')}</p>
@@ -439,7 +564,7 @@ export default function FlightsPage() {
               </div>
             );
           })}
-          {flights.length === 0 && (
+          {visibleFlights.length === 0 && (
             <div className="col-span-full text-center py-12 bg-surface-2 border border-dashed border-border rounded-lg">
               <Plane className="mx-auto h-12 w-12 text-muted" />
               <h3 className="mt-2 text-lg font-medium text-foreground">{tr('No flights available', 'Reyslar mavjud emas')}</h3>
@@ -477,16 +602,40 @@ export default function FlightsPage() {
                     <input
                       type="text"
                       required
-                      className="compact-control"
+                      className="compact-control min-w-[180px]"
                       placeholder="B2B-999"
                       value={formData.flightNumber}
                       onChange={(e) => setFormData({ ...formData, flightNumber: e.target.value })}
                     />
                   </td>
                   <td className="px-4 py-3">
-                    <span className="text-sm font-medium text-muted">
-                      {tr('Your airline account', 'Sizning aviakompaniya akkauntingiz')}
-                    </span>
+                    <div className="flex min-w-[320px] items-center gap-2">
+                      <select
+                        className="compact-control min-w-[150px]"
+                        value={formData.airlineMode}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          airlineMode: e.target.value,
+                          airlineId: e.target.value === 'LISTED' ? (connectedListedAirlines[0]?.id || '') : '',
+                        })}
+                      >
+                        <option value="LISTED" disabled={connectedListedAirlines.length === 0}>{tr('Listed', 'Ro\'yxatdagi')}</option>
+                        <option value="EXTERNAL">{tr('External', 'Tashqi')}</option>
+                      </select>
+                      {formData.airlineMode === 'LISTED' ? (
+                        <select className="compact-control min-w-[190px]" value={formData.airlineId} onChange={(e) => setFormData({ ...formData, airlineId: e.target.value })}>
+                          <option value="">{tr('Connected airline', 'Ulangan aviakompaniya')}</option>
+                          {connectedListedAirlines.map((airline) => (
+                            <option key={airline.id} value={airline.id}>{airline.name}{airline.code ? ` (${airline.code})` : ''}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <input className="compact-control min-w-[180px]" placeholder={tr('Airline name', 'Aviakompaniya nomi')} value={formData.airlineName} onChange={(e) => setFormData({ ...formData, airlineName: e.target.value })} />
+                          <input className="compact-control w-24" placeholder={tr('Code', 'Kod')} value={formData.airlineCode} onChange={(e) => setFormData({ ...formData, airlineCode: e.target.value.toUpperCase() })} />
+                        </div>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     <span className="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-900/50 text-green-300 border border-green-700">
@@ -516,7 +665,7 @@ export default function FlightsPage() {
                       type="number"
                       min="1"
                       required
-                      className="compact-control w-28"
+                      className="compact-control min-w-[120px]"
                       title={tr('Ticket count', 'Bilet soni')}
                       value={formData.ticketCount}
                       onChange={(e) => setFormData({ ...formData, ticketCount: Number(e.target.value) })}
@@ -528,13 +677,13 @@ export default function FlightsPage() {
                         type="number"
                         min="0"
                         required
-                        className="compact-control w-28"
+                        className="compact-control min-w-[140px]"
                         title={tr('Ticket amount', 'Bilet summasi')}
                         value={formData.ticketPrice}
                         onChange={(e) => setFormData({ ...formData, ticketPrice: Number(e.target.value) })}
                       />
                       <select
-                        className="compact-control w-24"
+                        className="compact-control min-w-[96px]"
                         value={formData.currency}
                         onChange={(e) => setFormData({ ...formData, currency: e.target.value })}
                       >
@@ -544,8 +693,15 @@ export default function FlightsPage() {
                       </select>
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-sm text-muted">
-                    {tr('Ticket count and amount', 'Bilet soni va summasi')}
+                  <td className="px-4 py-3 text-sm text-muted whitespace-nowrap">
+                    <span className="font-semibold text-foreground">{Number.isFinite(createBaseTotal) ? createBaseTotal.toLocaleString() : '0'} {formData.currency}</span>
+                    <span className="block text-xs">{tr('Base total', 'Bazaviy jami')}</span>
+                    <input
+                      className="compact-control mt-2 min-w-[180px]"
+                      placeholder={tr('Route', 'Yo\'nalish')}
+                      value={formData.route}
+                      onChange={(e) => setFormData({ ...formData, route: e.target.value })}
+                    />
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="inline-flex items-center gap-2">
@@ -570,7 +726,7 @@ export default function FlightsPage() {
                   </td>
                 </tr>
               )}
-              {flights.map((flight: LocalFlight) => {
+              {visibleFlights.map((flight: LocalFlight) => {
                 const flightId = flight.flight_id || flight.id;
                 return (
                   <tr key={flightId} className="hover:bg-surface transition">
@@ -615,7 +771,7 @@ export default function FlightsPage() {
                     </td>
                     <td className="px-4 py-3 text-sm text-muted whitespace-nowrap">{new Date(flight.departure).toLocaleString()}</td>
                     <td className="px-4 py-3 text-sm text-muted whitespace-nowrap">{new Date(flight.arrival).toLocaleString()}</td>
-                    <td className="px-4 py-3 text-sm text-yellow-600 font-medium whitespace-nowrap">{Number(flight.total_allocated || 0).toLocaleString()}</td>
+                    <td className="px-4 py-3 text-sm text-yellow-600 font-medium whitespace-nowrap">{Number(flight.ticketCount || 0).toLocaleString()}</td>
                     <td className="px-4 py-3 text-sm text-green-600 font-medium whitespace-nowrap">{Number(flight.total_sales || 0).toLocaleString()}</td>
                     <td className="px-4 py-3 text-sm text-primary font-medium whitespace-nowrap">{Number(flight.total_payments || 0).toLocaleString()}</td>
                     {showFlightActions && (
@@ -651,7 +807,7 @@ export default function FlightsPage() {
                   </tr>
                 );
               })}
-              {flights.length === 0 && (
+              {visibleFlights.length === 0 && (
                 <tr>
                   <td colSpan={showFlightActions ? 9 : 8} className="px-4 py-10 text-center text-sm text-muted">
                     {tr('No flights available.', 'Reyslar mavjud emas.')}
@@ -816,6 +972,12 @@ export default function FlightsPage() {
                     <span className="text-muted">{tr('Price', 'Narx')}</span>
                     <span className="text-foreground">
                       {confirm.payload.ticketPrice} {confirm.payload.currency}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between border-t border-border pt-2">
+                    <span className="text-muted">{tr('Base total', 'Bazaviy jami')}</span>
+                    <span className="font-bold text-foreground">
+                      {confirm.payload.baseTotal.toLocaleString()} {confirm.payload.currency}
                     </span>
                   </div>
                 </div>
