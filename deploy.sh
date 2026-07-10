@@ -12,7 +12,7 @@
 #   ./deploy.sh --skip-dev-sync      # emergency only: do not sync dev first
 #
 # Auth (pick one):
-#   1. File   → create server-pass.md at repo root (git-ignored):
+#   1. File   → create server-pass.md or server_credentials.md at repo root (git-ignored):
 #                  - IP: 206.189.130.168
 #                  - Username: root
 #                  - Password: <your_password>
@@ -61,6 +61,14 @@ header()  { echo -e "\n${BOLD}══ $* ══${RESET}"; }
 
 # ── Load credentials ─────────────────────────────────────────────────────────
 CREDS_FILE="$REPO_ROOT/server-pass.md"
+if [[ ! -f "$CREDS_FILE" ]]; then
+  for candidate in "$REPO_ROOT/server_credentials.md" "$REPO_ROOT/server_credetials.md"; do
+    if [[ -f "$candidate" ]]; then
+      CREDS_FILE="$candidate"
+      break
+    fi
+  done
+fi
 if [[ -f "$CREDS_FILE" ]]; then
   file_user=$(awk -F':[[:space:]]*' 'tolower($1) ~ /username|user/ {print $2; exit}' "$CREDS_FILE" || true)
   file_ip=$(awk -F':[[:space:]]*' 'tolower($1) ~ /(^|- )[[:space:]]*ip$|server/ {print $2; exit}' "$CREDS_FILE" || true)

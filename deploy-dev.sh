@@ -62,6 +62,14 @@ error() { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 header() { echo -e "\n${BOLD}== $* ==${RESET}"; }
 
 CREDS_FILE="$REPO_ROOT/server-pass.md"
+if [[ ! -f "$CREDS_FILE" ]]; then
+  for candidate in "$REPO_ROOT/server_credentials.md" "$REPO_ROOT/server_credetials.md"; do
+    if [[ -f "$candidate" ]]; then
+      CREDS_FILE="$candidate"
+      break
+    fi
+  done
+fi
 if [[ -f "$CREDS_FILE" ]]; then
   file_user=$(awk -F':[[:space:]]*' 'tolower($1) ~ /username|user/ {print $2; exit}' "$CREDS_FILE" || true)
   file_ip=$(awk -F':[[:space:]]*' 'tolower($1) ~ /(^|- )[[:space:]]*ip$|server/ {print $2; exit}' "$CREDS_FILE" || true)
