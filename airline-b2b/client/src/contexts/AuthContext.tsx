@@ -74,25 +74,15 @@ function normalizeUser(raw: unknown): User | null {
 
 function readSavedAccounts(): SavedAccount[] {
   if (typeof window === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem(SAVED_ACCOUNTS_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((item) => {
-        const normalized = normalizeUser(item);
-        const token = typeof item?.token === 'string' ? item.token : '';
-        const lastUsedAt = typeof item?.lastUsedAt === 'string' ? item.lastUsedAt : new Date(0).toISOString();
-        return normalized && token ? { ...normalized, token, lastUsedAt } : null;
-      })
-      .filter((item): item is SavedAccount => Boolean(item))
-      .sort((a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime());
-  } catch {
-    return [];
-  }
+  localStorage.removeItem(SAVED_ACCOUNTS_KEY);
+  return [];
 }
 
 function writeSavedAccounts(accounts: SavedAccount[]) {
+  if (!accounts.length) {
+    localStorage.removeItem(SAVED_ACCOUNTS_KEY);
+    return;
+  }
   localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(accounts));
 }
 
@@ -104,6 +94,10 @@ function persistActiveSession(nextToken: string, nextUser: User) {
 function clearActiveSession() {
   localStorage.removeItem('token');
   localStorage.removeItem('user');
+}
+
+function accountHome(user: User): string {
+  return user.role === 'firm' ? '/firm' : '/admin';
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -139,18 +133,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = (newToken: string, newUser: unknown) => {
     const normalized = normalizeUser(newUser);
     if (!normalized) return;
-    const nextAccounts = [
-      { ...normalized, token: newToken, lastUsedAt: new Date().toISOString() },
-      ...savedAccounts.filter((account) => account.id !== normalized.id && account.email !== normalized.email),
-    ];
-    writeSavedAccounts(nextAccounts);
-    setSavedAccounts(nextAccounts);
+    writeSavedAccounts([]);
+    setSavedAccounts([]);
     persistActiveSession(newToken, normalized);
     setToken(newToken);
     setUser(normalized);
   };
 
   const logout = () => {
+    writeSavedAccounts([]);
+    setSavedAccounts([]);
     clearActiveSession();
     setToken(null);
     setUser(null);
@@ -170,6 +162,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     persistActiveSession(accountToken, nextUser);
     setToken(accountToken);
     setUser(nextUser);
+    router.push(accountHome(nextUser));
   };
 
   const forgetAccount = (accountId: string) => {
@@ -177,10 +170,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     writeSavedAccounts(nextAccounts);
     setSavedAccounts(nextAccounts);
     if (user && (user.id === accountId || user.email === accountId)) {
-      clearActiveSession();
-      setToken(null);
-      setUser(null);
-      router.push('/login');
+      const nextAccount = nextAccounts[0];
+      if (nextAccount) {
+        const { token: nextToken, lastUsedAt: _lastUsedAt, ...nextUser } = nextAccount;
+        persistActiveSession(nextToken, nextUser);
+        setToken(nextToken);
+        setUser(nextUser);
+        router.push(accountHome(nextUser));
+      } else {
+        clearActiveSession();
+        setToken(null);
+        setUser(null);
+        router.push('/login');
+      }
     }
   };
 

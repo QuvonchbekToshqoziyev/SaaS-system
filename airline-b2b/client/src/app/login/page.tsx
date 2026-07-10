@@ -72,19 +72,19 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#02050a] text-white font-outfit lg:h-screen lg:overflow-hidden">
-      <main className="relative flex min-h-screen w-full flex-col overflow-hidden bg-[#030710] px-6 py-7 sm:px-10 lg:h-screen lg:px-12 xl:px-16">
+    <div className="min-h-dvh overflow-x-hidden bg-[#02050a] text-white font-outfit lg:h-screen lg:overflow-hidden">
+      <main className="relative flex min-h-dvh w-full flex-col overflow-x-hidden bg-[#030710] px-4 py-5 sm:px-10 lg:h-screen lg:px-12 lg:py-7 xl:px-16">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_47%_42%,rgba(235,12,33,0.2),transparent_23%),radial-gradient(circle_at_70%_72%,rgba(152,8,21,0.13),transparent_28%),linear-gradient(120deg,#040812_0%,#050915_42%,#02050b_100%)]" />
         <div className="absolute inset-0 opacity-[0.28] [background-image:linear-gradient(rgba(239,35,60,0.16)_1px,transparent_1px),linear-gradient(90deg,rgba(239,35,60,0.12)_1px,transparent_1px)] [background-size:96px_96px] [mask-image:radial-gradient(circle_at_48%_45%,black,transparent_58%)]" />
 
         <div className="relative z-10 flex min-h-0 flex-1 flex-col">
-          <div className="flex items-start justify-between">
-            <div className="flex items-center gap-4">
-              <img src="/ADO-icon.png" alt="ADO Systems" className="h-[92px] w-[92px] object-contain sm:h-[108px] sm:w-[108px] lg:h-[122px] lg:w-[122px]" />
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3 sm:gap-4">
+              <img src="/ADO-icon.png" alt="ADO Systems" className="h-16 w-16 object-contain sm:h-[108px] sm:w-[108px] lg:h-[122px] lg:w-[122px]" />
               <div className="leading-none">
-                <div className="text-[2.2rem] font-black tracking-[-0.03em] text-white sm:text-[2.8rem] lg:text-[3.2rem]">ADO</div>
-                <div className="mt-1 text-[1.85rem] font-medium tracking-[-0.03em] text-white sm:text-[2.35rem] lg:text-[2.7rem]">Systems</div>
-                <div className="mt-3 text-base font-medium text-white sm:text-lg">
+                <div className="text-3xl font-black tracking-normal text-white sm:text-[2.8rem] lg:text-[3.2rem]">ADO</div>
+                <div className="mt-1 text-2xl font-medium tracking-normal text-white sm:text-[2.35rem] lg:text-[2.7rem]">Systems</div>
+                <div className="mt-2 text-xs font-medium text-white sm:mt-3 sm:text-lg">
                   powered by <span className="font-extrabold text-[#ff2337]">ADO-FINANCE</span>
                 </div>
               </div>
@@ -92,8 +92,8 @@ export default function LoginPage() {
             <ThemeLanguageSwitcher />
           </div>
 
-          <section className="grid min-h-0 flex-1 gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(420px,576px)] lg:items-center xl:gap-12">
-            <div className="relative min-h-[560px] lg:min-h-0 lg:self-stretch">
+          <section className="grid min-h-0 flex-1 gap-5 pt-5 lg:grid-cols-[minmax(0,1fr)_minmax(420px,576px)] lg:items-center lg:gap-8 lg:pt-0 xl:gap-12">
+            <div className="relative hidden min-h-[560px] lg:block lg:min-h-0 lg:self-stretch">
               <div className="relative z-10 max-w-[620px] pt-10 lg:pt-16 xl:pt-20">
                 <div className="mb-7 inline-flex items-center gap-3 text-base font-medium uppercase tracking-[0.08em] text-[#ff3046]">
                   <ShieldCheck size={28} strokeWidth={1.9} />
@@ -129,12 +129,12 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <div className="rounded-[1.375rem] border border-[#273142] bg-[#070b15]/72 p-7 shadow-[0_28px_120px_rgba(0,0,0,0.46)] backdrop-blur-xl sm:p-10 lg:self-center xl:p-11">
-              <div className="mb-10">
-                <h2 className="text-[2rem] font-black tracking-normal text-white">
+            <div className="w-full rounded-none border border-[#273142] bg-[#070b15]/72 p-4 shadow-[0_28px_120px_rgba(0,0,0,0.46)] backdrop-blur-xl sm:rounded-[1.375rem] sm:p-10 lg:self-center xl:p-11">
+              <div className="mb-6 sm:mb-10">
+                <h2 className="text-2xl font-black tracking-normal text-white sm:text-[2rem]">
                   {resolveLocalizedText(content.panelTitle, language)}
                 </h2>
-                <p className="mt-4 text-base leading-6 text-[#b2b8c5]">
+                <p className="mt-3 text-sm leading-6 text-[#b2b8c5] sm:mt-4 sm:text-base">
                   {resolveLocalizedText(content.panelSubtitle, language)}
                 </p>
               </div>
@@ -142,7 +142,7 @@ export default function LoginPage() {
               <form className="space-y-5" onSubmit={handleSubmit}>
                 <div>
                   <label className="sr-only" htmlFor="email-address">{resolveLocalizedText(content.emailLabel, language)}</label>
-                  <div className="flex min-h-[72px] items-center gap-4 rounded-lg border border-[#273142] bg-[#111622]/78 px-5 text-[#a4abb8] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition focus-within:border-[#ff2337]">
+                  <div className="flex min-h-12 items-center gap-3 rounded-lg border border-[#273142] bg-[#111622]/78 px-4 text-[#a4abb8] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition focus-within:border-[#ff2337] sm:min-h-[72px] sm:gap-4 sm:px-5">
                     <Mail size={22} />
                     <input
                       id="email-address"
@@ -159,7 +159,7 @@ export default function LoginPage() {
 
                 <div>
                   <label className="sr-only" htmlFor="password">{resolveLocalizedText(content.passwordLabel, language)}</label>
-                  <div className="flex min-h-[72px] items-center gap-4 rounded-lg border border-[#273142] bg-[#111622]/78 px-5 text-[#a4abb8] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition focus-within:border-[#ff2337]">
+                  <div className="flex min-h-12 items-center gap-3 rounded-lg border border-[#273142] bg-[#111622]/78 px-4 text-[#a4abb8] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition focus-within:border-[#ff2337] sm:min-h-[72px] sm:gap-4 sm:px-5">
                     <Lock size={22} />
                     <input
                       id="password"
@@ -177,7 +177,7 @@ export default function LoginPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between gap-4 text-sm text-[#aeb4c0]">
+                <div className="flex flex-col gap-3 text-sm text-[#aeb4c0] sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                   <label className="inline-flex items-center gap-3">
                     <input type="checkbox" className="h-5 w-5 rounded border-[#303a4f] bg-[#101520] accent-[#ff2337]" />
                     {tr('Remember me', 'Meni eslab qolish')}
@@ -190,7 +190,7 @@ export default function LoginPage() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="mt-8 flex min-h-[66px] w-full items-center justify-center gap-3 rounded-lg bg-gradient-to-r from-[#ff142c] to-[#b60919] px-4 text-base font-extrabold text-white shadow-[0_18px_48px_rgba(239,35,60,0.3)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70"
+                  className="mt-6 flex min-h-12 w-full items-center justify-center gap-3 rounded-lg bg-gradient-to-r from-[#ff142c] to-[#b60919] px-4 text-base font-extrabold text-white shadow-[0_18px_48px_rgba(239,35,60,0.3)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70 sm:mt-8 sm:min-h-[66px]"
                 >
                   <Lock size={22} />
                   {loading ? resolveLocalizedText(content.submittingLabel, language) : resolveLocalizedText(content.submitLabel, language)}
@@ -249,7 +249,16 @@ export default function LoginPage() {
                 <div className="h-px flex-1 bg-[#273142]" />
               </div>
 
-              <div className="rounded-lg border border-[#273142] bg-[#111622]/72 p-6">
+              <a
+                href="https://t.me/ADO_support"
+                target="_blank"
+                rel="noreferrer"
+                className="mb-4 flex min-h-12 items-center justify-center rounded-lg border border-[#273142] bg-[#111622]/72 px-4 text-sm font-bold text-white transition hover:border-[#ff2337]"
+              >
+                {tr('Telegram support', 'Telegram orqali yordam')}
+              </a>
+
+              <div className="rounded-lg border border-[#273142] bg-[#111622]/72 p-4 sm:p-6">
                 <div className="flex items-center gap-5">
                   <ShieldCheck size={38} className="shrink-0 text-[#ff2337]" />
                   <div>

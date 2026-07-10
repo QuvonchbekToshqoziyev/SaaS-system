@@ -17,11 +17,17 @@ type PaymentCard = {
   id: string;
   ownerName: string;
   cardNumber: string;
-  currency: 'UZS' | 'USD';
+  currency: string;
+  openingBalance?: string | number;
   balance?: number;
+  balanceByCurrency?: Record<string, number>;
+  dailyByCurrency?: Record<string, { in: number; out: number; net: number }>;
   dailyIn?: number;
   dailyOut?: number;
   dailyNet?: number;
+  firmId?: string | null;
+  firm?: { id: string; name: string | null } | null;
+  status?: string;
 };
 
 type KassaDesk = {
@@ -48,6 +54,21 @@ type KassaSummary = {
     dailyIncomeTotal?: number;
     dailyExpenseTotal?: number;
     cardBalanceTotal?: number;
+    cardBalanceByCurrency?: Record<string, number>;
+    byCurrency?: Record<string, {
+      cashTotal?: number;
+      cashInTotal?: number;
+      cashOutTotal?: number;
+      cardTotal?: number;
+      cardInTotal?: number;
+      cardOutTotal?: number;
+      dailyIncomeTotal?: number;
+      dailyExpenseTotal?: number;
+      paymentCount?: number;
+      saleTotal?: number;
+      payableTotal?: number;
+      transactionCount?: number;
+    }>;
     paymentCount: number;
     saleTotal: number;
     payableTotal: number;
@@ -80,6 +101,26 @@ function formatMoney(value: number) {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value);
 }
 
+function formatCurrencyMap(values?: Record<string, number>) {
+  const entries = Object.entries(values || {})
+    .filter(([, value]) => Number.isFinite(Number(value)) && Math.abs(Number(value)) > 0.0001)
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (!entries.length) return '0';
+  return entries.map(([currency, value]) => `${formatMoney(Number(value))} ${currency}`).join(' · ');
+}
+
+function formatCardLabel(card: PaymentCard) {
+  const balances = formatCurrencyMap(card.balanceByCurrency);
+  return `${card.ownerName} — ${card.cardNumber} (${card.currency}) · ${balances}`;
+}
+
+function totalsByCurrency(summary: KassaSummary | null, field: keyof NonNullable<KassaSummary['totals']['byCurrency']>[string]) {
+  const rows = summary?.totals?.byCurrency || {};
+  return Object.fromEntries(
+    Object.entries(rows).map(([currency, totals]) => [currency, Number(totals?.[field] || 0)]),
+  );
+}
+
 export default function KassaPage() {
   const { user } = useAuth();
   const { tr } = useLanguage();
@@ -95,7 +136,9 @@ export default function KassaPage() {
   const [summaryKassaDeskId, setSummaryKassaDeskId] = useState('');
   const [summary, setSummary] = useState<KassaSummary | null>(null);
   const canManageKassa = Boolean(summary?.permissions?.canOperateKassa) || isSuperAdmin;
+  const canManageCards = isAdmin || (isFirm && user?.firmRole === 'FIRM_ADMIN');
   const canFilterFirm = isAdmin;
+  const canChooseTransactionFirm = canFilterFirm || canManageKassa;
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -117,6 +160,7 @@ export default function KassaPage() {
   const [payAmount, setPayAmount] = useState('');
   const [payCurrency, setPayCurrency] = useState<'USD' | 'UZS' | 'OTHER'>('UZS');
   const [payOtherCurrency, setPayOtherCurrency] = useState('');
+  const [payExchangeRate, setPayExchangeRate] = useState('');
   const [payMethod, setPayMethod] = useState<'cash' | 'card'>('cash');
   const [payCardId, setPayCardId] = useState('');
   const [payCardReference, setPayCardReference] = useState('');
@@ -129,13 +173,26 @@ export default function KassaPage() {
   const [cashFirmId, setCashFirmId] = useState('');
   const [cashCounterpartyFirmId, setCashCounterpartyFirmId] = useState('');
   const [cashAmount, setCashAmount] = useState('');
+  const [cashCurrency, setCashCurrency] = useState<'USD' | 'UZS' | 'OTHER'>('UZS');
+  const [cashOtherCurrency, setCashOtherCurrency] = useState('');
+  const [cashExchangeRate, setCashExchangeRate] = useState('');
   const [cashNote, setCashNote] = useState('');
   const [cashKassaDeskId, setCashKassaDeskId] = useState('');
   const [recordingCash, setRecordingCash] = useState(false);
   const [cardOwnerName, setCardOwnerName] = useState('');
   const [cardNumber, setCardNumber] = useState('');
-  const [cardCurrency, setCardCurrency] = useState<'UZS' | 'USD'>('UZS');
+  const [cardCurrency, setCardCurrency] = useState('UZS');
+  const [cardOpeningBalance, setCardOpeningBalance] = useState('0');
   const [creatingCard, setCreatingCard] = useState(false);
+  const [editingCardId, setEditingCardId] = useState('');
+  const [cardEditDraft, setCardEditDraft] = useState({
+    ownerName: '',
+    cardNumber: '',
+    currency: 'UZS',
+    openingBalance: '0',
+    status: 'ACTIVE',
+  });
+  const [savingCard, setSavingCard] = useState(false);
   const [deskName, setDeskName] = useState('');
   const [deskCode, setDeskCode] = useState('');
   const [deskFirmId, setDeskFirmId] = useState('');
@@ -146,6 +203,12 @@ export default function KassaPage() {
   const isClosed = summary?.status === 'CLOSED';
   const isNotOpen = summary?.status === 'NOT_OPEN';
   const canRecordPayment = canManageKassa;
+  const dailyIncomeByCurrency = useMemo(() => totalsByCurrency(summary, 'dailyIncomeTotal'), [summary]);
+  const dailyExpenseByCurrency = useMemo(() => totalsByCurrency(summary, 'dailyExpenseTotal'), [summary]);
+  const cashInByCurrency = useMemo(() => totalsByCurrency(summary, 'cashInTotal'), [summary]);
+  const cashOutByCurrency = useMemo(() => totalsByCurrency(summary, 'cashOutTotal'), [summary]);
+  const cardInByCurrency = useMemo(() => totalsByCurrency(summary, 'cardInTotal'), [summary]);
+  const cardOutByCurrency = useMemo(() => totalsByCurrency(summary, 'cardOutTotal'), [summary]);
   const cashBalanceByCurrency = useMemo(() => {
     const balances: Record<string, number> = { UZS: Number(summary?.kassa?.openingBalance || 0) || 0, USD: 0 };
     for (const tx of summary?.transactions || []) {
@@ -166,16 +229,16 @@ export default function KassaPage() {
   const selectedPayCard = useMemo(() => paymentCards.find((card) => card.id === payCardId), [paymentCards, payCardId]);
   const selectedCashCard = useMemo(() => paymentCards.find((card) => card.id === cashCardId), [paymentCards, cashCardId]);
   const selectedPayFirm = useMemo(() => firmOptions.find((firm) => firm.id === payFirmId), [firmOptions, payFirmId]);
-  const selectedCashFirm = useMemo(() => firmOptions.find((firm) => firm.id === (canFilterFirm ? cashFirmId : user?.firmId)), [firmOptions, cashFirmId, canFilterFirm, user?.firmId]);
+  const selectedCashFirm = useMemo(() => firmOptions.find((firm) => firm.id === (canChooseTransactionFirm ? cashFirmId : user?.firmId)), [firmOptions, cashFirmId, canChooseTransactionFirm, user?.firmId]);
   const selectedPayFlight = useMemo(() => flightOptions.find((flight) => String(flight.id || flight.flight_id || '') === payFlightId), [flightOptions, payFlightId]);
   const selectedPayDesk = useMemo(() => deskOptions.find((desk) => desk.id === payKassaDeskId), [deskOptions, payKassaDeskId]);
   const selectedCashDesk = useMemo(() => deskOptions.find((desk) => desk.id === cashKassaDeskId), [deskOptions, cashKassaDeskId]);
   const cashCounterpartyOptions = useMemo(
-    () => firmOptions.filter((firm) => firm.id !== (canFilterFirm ? cashFirmId : user?.firmId)),
-    [firmOptions, canFilterFirm, cashFirmId, user?.firmId],
+    () => firmOptions.filter((firm) => firm.id !== (canChooseTransactionFirm ? cashFirmId : user?.firmId)),
+    [firmOptions, canChooseTransactionFirm, cashFirmId, user?.firmId],
   );
-  const payDeskFirmId = canFilterFirm ? payFirmId : String(user?.firmId || '');
-  const cashDeskFirmId = canFilterFirm ? cashFirmId : String(user?.firmId || '');
+  const payDeskFirmId = isAdmin ? payFirmId : String(user?.firmId || '');
+  const cashDeskFirmId = isAdmin ? cashFirmId : String(user?.firmId || '');
   const payDeskOptions = useMemo(
     () => deskOptions.filter((desk) => !payDeskFirmId || desk.firmId === payDeskFirmId),
     [deskOptions, payDeskFirmId],
@@ -194,6 +257,23 @@ export default function KassaPage() {
     } else {
       setPayCurrency('OTHER');
       setPayOtherCurrency(next);
+    }
+  };
+
+  const cashCurrencyCode = useMemo(() => {
+    const c = cashCurrency === 'OTHER' ? cashOtherCurrency : cashCurrency;
+    return String(c || '').trim().toUpperCase();
+  }, [cashCurrency, cashOtherCurrency]);
+
+  const setCashCurrencyCode = (currency: string) => {
+    const next = String(currency || '').trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(next)) return;
+    if (next === 'UZS' || next === 'USD') {
+      setCashCurrency(next);
+      setCashOtherCurrency('');
+    } else {
+      setCashCurrency('OTHER');
+      setCashOtherCurrency(next);
     }
   };
 
@@ -230,7 +310,7 @@ export default function KassaPage() {
       try {
         const [flightsRes, firmsRes, desksRes, cardsRes] = await Promise.all([
           api.get('/flights'),
-          canFilterFirm ? api.get('/firms') : Promise.resolve({ data: [] }),
+          canChooseTransactionFirm ? api.get('/firms') : Promise.resolve({ data: [] }),
           api.get('/kassa/desks'),
           api.get('/kassa/cards'),
         ]);
@@ -243,13 +323,26 @@ export default function KassaPage() {
       }
     };
     loadOptions();
-  }, [canFilterFirm, canAccess]);
+  }, [canChooseTransactionFirm, canAccess]);
 
   useEffect(() => {
     if (selectedPayFirm?.currency) {
       setPaymentCurrencyCode(selectedPayFirm.currency);
     }
   }, [selectedPayFirm?.currency]);
+
+  useEffect(() => {
+    if (isFirm && user?.firmId) {
+      if (!payFirmId) setPayFirmId(String(user.firmId));
+      if (!cashFirmId) setCashFirmId(String(user.firmId));
+    }
+  }, [isFirm, user?.firmId, payFirmId, cashFirmId]);
+
+  useEffect(() => {
+    if (selectedCashFirm?.currency) {
+      setCashCurrencyCode(selectedCashFirm.currency);
+    }
+  }, [selectedCashFirm?.currency]);
 
   useEffect(() => {
     if (payKassaDeskId && payDeskFirmId && !payDeskOptions.some((desk) => desk.id === payKassaDeskId)) {
@@ -346,7 +439,8 @@ export default function KassaPage() {
     e.preventDefault();
     if (recordingCash || !isEditable || !canRecordPayment) return;
     const amount = cashAmount.trim();
-    const firmId = canFilterFirm ? cashFirmId.trim() : String(user?.firmId || '');
+    const firmId = canChooseTransactionFirm ? cashFirmId.trim() : String(user?.firmId || '');
+    const currency = cashCurrencyCode;
     if (!firmId) {
       toast.error(tr('Select a firm', 'Firmani tanlang'));
       return;
@@ -363,6 +457,14 @@ export default function KassaPage() {
       toast.error(tr('Select a card', 'Kartani tanlang'));
       return;
     }
+    if (!/^[A-Z]{3}$/.test(currency)) {
+      toast.error(tr('Invalid currency code', 'Noto\'g\'ri valyuta kodi'));
+      return;
+    }
+    if (currency !== 'UZS' && (!cashExchangeRate.trim() || Number(cashExchangeRate) <= 0)) {
+      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
+      return;
+    }
     const body = {
         flow: cashFlow,
         method: cashMethod,
@@ -372,7 +474,8 @@ export default function KassaPage() {
         counterpartyFirmId: cashCounterpartyFirmId || undefined,
         kassaDeskId: cashKassaDeskId || undefined,
         amount,
-        currency: cashMethod === 'card' ? selectedCashCard?.currency || 'UZS' : selectedCashFirm?.currency || 'UZS',
+        currency,
+        exchangeRate: currency !== 'UZS' ? cashExchangeRate.trim() : undefined,
         note: cashNote.trim() || undefined,
       };
     setConfirmAction({
@@ -390,6 +493,7 @@ export default function KassaPage() {
       setCashAmount('');
       setCashNote('');
       setCashCounterpartyFirmId('');
+      setCashExchangeRate('');
       setReloadKey((k) => k + 1);
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to record cash movement', 'Kassa harakatini qayd etib bo\'lmadi'));
@@ -407,7 +511,7 @@ export default function KassaPage() {
     const amount = payAmount.trim();
     const flightId = payFlightId.trim();
 
-    if (canFilterFirm && !payFirmId) {
+    if (canChooseTransactionFirm && !payFirmId) {
       toast.error(tr('Select a firm', 'Firmani tanlang'));
       return;
     }
@@ -423,6 +527,10 @@ export default function KassaPage() {
       toast.error(tr('Select a kassa desk', 'Kassani tanlang'));
       return;
     }
+    if (currency !== 'UZS' && (!payExchangeRate.trim() || Number(payExchangeRate) <= 0)) {
+      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
+      return;
+    }
 
     const metadata: Record<string, string> = {};
     if (payReference.trim()) metadata.reference = payReference.trim();
@@ -433,17 +541,14 @@ export default function KassaPage() {
         toast.error(tr('Select a card', 'Kartani tanlang'));
         return;
       }
-      if (selectedPayCard?.currency && selectedPayCard.currency !== currency) {
-        toast.error(tr('Selected card currency must match payment currency', 'Tanlangan karta valyutasi to\'lov valyutasiga mos bo\'lishi kerak'));
-        return;
-      }
       metadata.payment_provider = selectedPayCard?.ownerName || '';
       if (payCardReference.trim()) metadata.transaction_reference = payCardReference.trim();
     }
 
     const body: any = { amount, currency, method, metadata };
     if (method === 'card') body.paymentCardId = payCardId;
-    if (canFilterFirm) body.firmId = payFirmId;
+    if (canChooseTransactionFirm) body.firmId = payFirmId;
+    if (currency !== 'UZS') body.exchangeRate = payExchangeRate.trim();
     if (flightId) body.flightId = flightId;
     if (payKassaDeskId) body.kassaDeskId = payKassaDeskId;
     setConfirmAction({
@@ -462,6 +567,7 @@ export default function KassaPage() {
       setPayCardId('');
       setPayCardReference('');
       setPayReference('');
+      setPayExchangeRate('');
       setReloadKey((k) => k + 1);
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to record payment', 'To\'lovni qayd etib bo\'lmadi'));
@@ -480,6 +586,11 @@ export default function KassaPage() {
     return cashMovementConfirmed(action.body);
   };
 
+  const refreshCards = async () => {
+    const cardsRes = await api.get('/kassa/cards');
+    setPaymentCards(Array.isArray(cardsRes.data) ? cardsRes.data : []);
+  };
+
   const createCard = async (e: FormEvent) => {
     e.preventDefault();
     if (creatingCard) return;
@@ -493,18 +604,57 @@ export default function KassaPage() {
         ownerName: cardOwnerName.trim(),
         cardNumber: cardNumber.trim(),
         currency: cardCurrency,
+        openingBalance: cardOpeningBalance.trim() || '0',
+        firmId: isFirm ? user?.firmId : undefined,
       });
       toast.success(tr('Card added', 'Karta qo\'shildi'));
       setCardOwnerName('');
       setCardNumber('');
+      setCardOpeningBalance('0');
       setCardCurrency('UZS');
       setReloadKey((k) => k + 1);
-      const cardsRes = await api.get('/kassa/cards');
-      setPaymentCards(Array.isArray(cardsRes.data) ? cardsRes.data : []);
+      await refreshCards();
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to add card', 'Kartani qo\'shib bo\'lmadi'));
     } finally {
       setCreatingCard(false);
+    }
+  };
+
+  const startEditCard = (card: PaymentCard) => {
+    setEditingCardId(card.id);
+    setCardEditDraft({
+      ownerName: card.ownerName || '',
+      cardNumber: card.cardNumber || '',
+      currency: card.currency || 'UZS',
+      openingBalance: String(card.openingBalance ?? '0'),
+      status: String(card.status || 'ACTIVE').toUpperCase(),
+    });
+  };
+
+  const saveCardEdit = async (cardId: string) => {
+    if (savingCard) return;
+    if (!cardEditDraft.ownerName.trim()) {
+      toast.error(tr('Card owner is required', 'Karta egasi kerak'));
+      return;
+    }
+    try {
+      setSavingCard(true);
+      await api.patch(`/kassa/cards/${cardId}`, {
+        ownerName: cardEditDraft.ownerName.trim(),
+        cardNumber: cardEditDraft.cardNumber.trim() || undefined,
+        currency: cardEditDraft.currency.trim().toUpperCase(),
+        openingBalance: cardEditDraft.openingBalance.trim() || '0',
+        status: cardEditDraft.status,
+      });
+      toast.success(tr('Card updated', 'Karta yangilandi'));
+      setEditingCardId('');
+      setReloadKey((k) => k + 1);
+      await refreshCards();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || tr('Failed to update card', 'Kartani yangilab bo\'lmadi'));
+    } finally {
+      setSavingCard(false);
     }
   };
 
@@ -689,18 +839,18 @@ export default function KassaPage() {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: tr('Daily income (UZS)', 'Kunlik jami kirim (UZS)'), value: summary?.totals.dailyIncomeTotal ?? 0, icon: Unlock },
-          { label: tr('Daily expense (UZS)', 'Kunlik jami chiqim (UZS)'), value: summary?.totals.dailyExpenseTotal ?? 0, icon: Lock },
-          { label: tr('Cash balance (UZS)', 'Kassa qoldig\'i (UZS)'), value: summary?.totals.expectedCash ?? 0, icon: Wallet },
-          { label: tr('Card balance (UZS)', 'Kartalarda qoldiq (UZS)'), value: summary?.totals.cardBalanceTotal ?? 0, icon: CreditCard },
+          { label: tr('Daily income', 'Kunlik jami kirim'), value: formatCurrencyMap(dailyIncomeByCurrency), icon: Unlock },
+          { label: tr('Daily expense', 'Kunlik jami chiqim'), value: formatCurrencyMap(dailyExpenseByCurrency), icon: Lock },
+          { label: tr('Cash balance', 'Kassa qoldig\'i'), value: formatCurrencyMap(cashBalanceByCurrency), icon: Wallet },
+          { label: tr('Card balance', 'Kartalarda qoldiq'), value: formatCurrencyMap(summary?.totals.cardBalanceByCurrency), icon: CreditCard },
         ].map(({ label, value, icon: Icon }) => (
           <div key={label} className="bg-surface border border-border rounded-xl p-4 shadow-sm">
             <div className="flex items-center gap-2 text-muted text-xs font-semibold uppercase tracking-wider mb-2">
               <Icon size={14} />
               {label}
             </div>
-            <div className="text-2xl font-bold text-foreground">
-              {loading ? '—' : `${formatMoney(value)}`}
+            <div className="text-xl font-bold text-foreground leading-tight">
+              {loading ? '—' : value}
             </div>
           </div>
         ))}
@@ -728,12 +878,12 @@ export default function KassaPage() {
             <tbody>
               <tr>
                 <td>{selectedDate}</td>
-                <td className="text-right font-mono">{formatMoney(summary?.totals.cashInTotal ?? 0)}</td>
-                <td className="text-right font-mono">{formatMoney(summary?.totals.cashOutTotal ?? 0)}</td>
-                <td className="text-right font-mono">{formatMoney(summary?.totals.expectedCash ?? 0)}</td>
-                <td className="text-right font-mono">{formatMoney(summary?.totals.cardInTotal ?? 0)}</td>
-                <td className="text-right font-mono">{formatMoney(summary?.totals.cardOutTotal ?? 0)}</td>
-                <td className="text-right font-mono">{formatMoney(summary?.totals.cardBalanceTotal ?? 0)}</td>
+                <td className="text-right font-mono">{formatCurrencyMap(cashInByCurrency)}</td>
+                <td className="text-right font-mono">{formatCurrencyMap(cashOutByCurrency)}</td>
+                <td className="text-right font-mono">{formatCurrencyMap(cashBalanceByCurrency)}</td>
+                <td className="text-right font-mono">{formatCurrencyMap(cardInByCurrency)}</td>
+                <td className="text-right font-mono">{formatCurrencyMap(cardOutByCurrency)}</td>
+                <td className="text-right font-mono">{formatCurrencyMap(summary?.totals.cardBalanceByCurrency)}</td>
               </tr>
             </tbody>
           </table>
@@ -746,7 +896,7 @@ export default function KassaPage() {
         storageKey="kassa-card-info-card"
         defaultOpen={true}
       >
-        {canManageKassa && (
+        {canManageCards && (
           <form onSubmit={createCard} className="compact-toolbar mb-4">
             <div>
               <label className="compact-label">{tr('Card owner', 'Karta egasi')}</label>
@@ -758,10 +908,11 @@ export default function KassaPage() {
             </div>
             <div>
               <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
-              <select value={cardCurrency} onChange={(e) => setCardCurrency(e.target.value as 'UZS' | 'USD')} className="compact-control">
-                <option value="UZS">UZS</option>
-                <option value="USD">USD</option>
-              </select>
+              <input value={cardCurrency} onChange={(e) => setCardCurrency(e.target.value.toUpperCase())} className="compact-control" placeholder="UZS" maxLength={3} />
+            </div>
+            <div>
+              <label className="compact-label">{tr('Opening balance', 'Boshlang\'ich qoldiq')}</label>
+              <input inputMode="decimal" value={cardOpeningBalance} onChange={(e) => setCardOpeningBalance(e.target.value)} className="compact-control" />
             </div>
             <div className="flex items-end">
               <button type="submit" disabled={creatingCard} className="px-5 py-2.5 bg-primary text-ink rounded-lg font-semibold text-sm uppercase tracking-wide hover:bg-primary/90 disabled:opacity-50">
@@ -774,27 +925,80 @@ export default function KassaPage() {
           <table className="excel-table">
             <thead>
               <tr>
-                <th>{tr('Owner', 'Egasi')}</th>
+                <th>{tr('Full name', 'To\'liq ism')}</th>
                 <th>{tr('Card number', 'Karta raqami')}</th>
-                <th>{tr('Currency', 'Valyuta')}</th>
-                <th className="text-right">{tr('Today in', 'Bugun kirim')}</th>
-                <th className="text-right">{tr('Today out', 'Bugun chiqim')}</th>
-                <th className="text-right">{tr('Balance', 'Qoldiq')}</th>
+                <th>{tr('Primary currency', 'Asosiy valyuta')}</th>
+                <th>{tr('Firm', 'Firma')}</th>
+                <th>{tr('Status', 'Holat')}</th>
+                <th className="text-right">{tr('Opening balance', 'Boshlang\'ich qoldiq')}</th>
+                <th>{tr('Today movement', 'Bugungi harakat')}</th>
+                <th>{tr('Real balance', 'Haqiqiy qoldiq')}</th>
+                {canManageCards && <th className="text-right">{tr('Actions', 'Amallar')}</th>}
               </tr>
             </thead>
             <tbody>
               {paymentCards.length === 0 ? (
-                <tr><td colSpan={6} className="text-center text-muted">{tr('No cards added yet.', 'Hali karta qo\'shilmagan.')}</td></tr>
-              ) : paymentCards.map((card) => (
-                <tr key={card.id}>
-                  <td className="font-semibold">{card.ownerName}</td>
-                  <td className="font-mono">{card.cardNumber}</td>
-                  <td>{card.currency}</td>
-                  <td className="text-right font-mono">{formatMoney(card.dailyIn || 0)}</td>
-                  <td className="text-right font-mono">{formatMoney(card.dailyOut || 0)}</td>
-                  <td className="text-right font-mono">{formatMoney(card.balance || 0)}</td>
-                </tr>
-              ))}
+                <tr><td colSpan={canManageCards ? 9 : 8} className="text-center text-muted">{tr('No cards added yet.', 'Hali karta qo\'shilmagan.')}</td></tr>
+              ) : paymentCards.map((card) => {
+                const isEditing = editingCardId === card.id;
+                return (
+                  <tr key={card.id}>
+                    <td className="font-semibold min-w-[180px]">
+                      {isEditing ? (
+                        <input value={cardEditDraft.ownerName} onChange={(e) => setCardEditDraft((draft) => ({ ...draft, ownerName: e.target.value }))} className="compact-control" />
+                      ) : card.ownerName}
+                    </td>
+                    <td className="font-mono min-w-[170px]">
+                      {isEditing ? (
+                        <input value={cardEditDraft.cardNumber} onChange={(e) => setCardEditDraft((draft) => ({ ...draft, cardNumber: e.target.value }))} className="compact-control" />
+                      ) : card.cardNumber}
+                    </td>
+                    <td className="min-w-[110px]">
+                      {isEditing ? (
+                        <input value={cardEditDraft.currency} onChange={(e) => setCardEditDraft((draft) => ({ ...draft, currency: e.target.value.toUpperCase() }))} className="compact-control" maxLength={3} />
+                      ) : card.currency}
+                    </td>
+                    <td>{card.firm?.name || tr('Platform', 'Platforma')}</td>
+                    <td>
+                      {isEditing ? (
+                        <select value={cardEditDraft.status} onChange={(e) => setCardEditDraft((draft) => ({ ...draft, status: e.target.value }))} className="compact-control">
+                          <option value="ACTIVE">ACTIVE</option>
+                          <option value="INACTIVE">INACTIVE</option>
+                        </select>
+                      ) : (
+                        <span className={String(card.status || 'ACTIVE').toUpperCase() === 'ACTIVE' ? 'text-emerald-600 font-semibold' : 'text-muted font-semibold'}>
+                          {String(card.status || 'ACTIVE').toUpperCase()}
+                        </span>
+                      )}
+                    </td>
+                    <td className="text-right font-mono min-w-[130px]">
+                      {isEditing ? (
+                        <input inputMode="decimal" value={cardEditDraft.openingBalance} onChange={(e) => setCardEditDraft((draft) => ({ ...draft, openingBalance: e.target.value }))} className="compact-control text-right" />
+                      ) : `${formatMoney(Number(card.openingBalance || 0))} ${card.currency}`}
+                    </td>
+                    <td className="font-mono min-w-[180px]">{formatCurrencyMap(Object.fromEntries(Object.entries(card.dailyByCurrency || {}).map(([currency, totals]) => [currency, totals.net])))}</td>
+                    <td className="font-mono min-w-[220px] font-semibold text-foreground">{formatCurrencyMap(card.balanceByCurrency)}</td>
+                    {canManageCards && (
+                      <td className="text-right whitespace-nowrap">
+                        {isEditing ? (
+                          <div className="inline-flex items-center gap-2">
+                            <button type="button" onClick={() => saveCardEdit(card.id)} disabled={savingCard} className="px-3 py-2 bg-primary text-ink rounded-lg text-xs font-bold uppercase disabled:opacity-50">
+                              {tr('Save', 'Saqlash')}
+                            </button>
+                            <button type="button" onClick={() => setEditingCardId('')} className="px-3 py-2 bg-surface-2 border border-border rounded-lg text-xs font-semibold uppercase">
+                              {tr('Cancel', 'Bekor')}
+                            </button>
+                          </div>
+                        ) : (
+                          <button type="button" onClick={() => startEditCard(card)} className="px-3 py-2 bg-surface-2 border border-border rounded-lg text-xs font-semibold uppercase hover:bg-surface">
+                            {tr('Edit', 'Tahrir')}
+                          </button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -812,7 +1016,7 @@ export default function KassaPage() {
           storageKey="kassa-payment-card"
         >
           <form onSubmit={submitPayment} className={`compact-toolbar ${!isEditable ? 'opacity-50 pointer-events-none' : ''}`}>
-          {canFilterFirm && (
+          {canChooseTransactionFirm && (
             <div>
               <label className="compact-label">{tr('Firm', 'Firma')}</label>
               <select value={payFirmId} onChange={(e) => setPayFirmId(e.target.value)} className="compact-control">
@@ -851,6 +1055,12 @@ export default function KassaPage() {
               <input value={payOtherCurrency} onChange={(e) => setPayOtherCurrency(e.target.value.toUpperCase())} maxLength={3} className="compact-control uppercase" />
             </div>
           )}
+          {payCurrencyCode !== 'UZS' && (
+            <div>
+              <label className="compact-label">{tr('Rate to UZS', 'UZS kursi')}</label>
+              <input inputMode="decimal" value={payExchangeRate} onChange={(e) => setPayExchangeRate(e.target.value)} className="compact-control" placeholder="12600" />
+            </div>
+          )}
           <div>
             <label className="compact-label">{tr('Method', 'Usul')}</label>
             <select value={payMethod} onChange={(e) => handlePayMethodChange(e.target.value as 'cash' | 'card')} className="compact-control">
@@ -884,7 +1094,7 @@ export default function KassaPage() {
                 >
                   <option value="">{tr('Select card', 'Kartani tanlang')}</option>
                   {paymentCards.map((card) => (
-                    <option key={card.id} value={card.id}>{card.ownerName} — {card.cardNumber} ({card.currency})</option>
+                    <option key={card.id} value={card.id}>{formatCardLabel(card)}</option>
                   ))}
                 </select>
               </div>
@@ -941,15 +1151,25 @@ export default function KassaPage() {
             {cashMethod === 'card' && (
               <div>
                 <label className="compact-label">{tr('Card', 'Karta')}</label>
-                <select value={cashCardId} onChange={(e) => setCashCardId(e.target.value)} className="compact-control" required>
+                <select
+                  value={cashCardId}
+                  onChange={(e) => {
+                    const nextId = e.target.value;
+                    const card = paymentCards.find((item) => item.id === nextId);
+                    setCashCardId(nextId);
+                    if (card?.currency) setCashCurrencyCode(card.currency);
+                  }}
+                  className="compact-control"
+                  required
+                >
                   <option value="">{tr('Select card', 'Kartani tanlang')}</option>
                   {paymentCards.map((card) => (
-                    <option key={card.id} value={card.id}>{card.ownerName} — {card.cardNumber} ({card.currency})</option>
+                    <option key={card.id} value={card.id}>{formatCardLabel(card)}</option>
                   ))}
                 </select>
               </div>
             )}
-            {canFilterFirm && (
+            {canChooseTransactionFirm && (
               <div>
                 <label className="compact-label">{tr('Firm', 'Firma')}</label>
                 <select value={cashFirmId} onChange={(e) => setCashFirmId(e.target.value)} className="compact-control">
@@ -975,10 +1195,30 @@ export default function KassaPage() {
             </div>
             <div>
               <label className="compact-label">
-                {tr('Amount', 'Summa')} ({cashMethod === 'card' ? selectedCashCard?.currency || 'UZS' : selectedCashFirm?.currency || 'UZS'})
+                {tr('Amount', 'Summa')} ({cashCurrencyCode || 'UZS'})
               </label>
               <input inputMode="decimal" value={cashAmount} onChange={(e) => setCashAmount(e.target.value)} className="compact-control" />
             </div>
+            <div>
+              <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
+              <select value={cashCurrency} onChange={(e) => setCashCurrency(e.target.value as 'USD' | 'UZS' | 'OTHER')} className="compact-control">
+                <option value="UZS">UZS</option>
+                <option value="USD">USD</option>
+                <option value="OTHER">{tr('Other', 'Boshqa')}</option>
+              </select>
+            </div>
+            {cashCurrency === 'OTHER' && (
+              <div>
+                <label className="compact-label">{tr('Currency code', 'Valyuta kodi')}</label>
+                <input value={cashOtherCurrency} onChange={(e) => setCashOtherCurrency(e.target.value.toUpperCase())} maxLength={3} className="compact-control uppercase" />
+              </div>
+            )}
+            {cashCurrencyCode !== 'UZS' && (
+              <div>
+                <label className="compact-label">{tr('Rate to UZS', 'UZS kursi')}</label>
+                <input inputMode="decimal" value={cashExchangeRate} onChange={(e) => setCashExchangeRate(e.target.value)} className="compact-control" placeholder="12600" />
+              </div>
+            )}
             <div>
               <label className="compact-label">{tr('Note', 'Izoh')}</label>
               <input value={cashNote} onChange={(e) => setCashNote(e.target.value)} className="compact-control" />
@@ -1112,11 +1352,11 @@ export default function KassaPage() {
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                   <div className="rounded-lg border border-border bg-surface-2 p-3">
                     <div className="text-xs uppercase text-muted">{tr('Daily income', 'Bugungi jami kirim')}</div>
-                    <div className="mt-1 text-lg font-bold">{formatMoney(summary?.totals.dailyIncomeTotal || 0)} UZS</div>
+                    <div className="mt-1 text-lg font-bold">{formatCurrencyMap(dailyIncomeByCurrency)}</div>
                   </div>
                   <div className="rounded-lg border border-border bg-surface-2 p-3">
                     <div className="text-xs uppercase text-muted">{tr('Daily expense', 'Bugungi jami chiqim')}</div>
-                    <div className="mt-1 text-lg font-bold">{formatMoney(summary?.totals.dailyExpenseTotal || 0)} UZS</div>
+                    <div className="mt-1 text-lg font-bold">{formatCurrencyMap(dailyExpenseByCurrency)}</div>
                   </div>
                   <div className="rounded-lg border border-border bg-surface-2 p-3">
                     <div className="text-xs uppercase text-muted">{tr('Physical count', 'Sanab kiritilgan')}</div>
@@ -1126,17 +1366,20 @@ export default function KassaPage() {
                 <div className="overflow-x-auto scroller-minimal">
                   <table className="excel-table">
                     <tbody>
-                      <tr>
-                        <td>{tr('Cash balance UZS', 'Naqd qoldiq UZS')}</td>
-                        <td className="text-right font-mono">{formatMoney(cashBalanceByCurrency.UZS || 0)} UZS</td>
-                      </tr>
-                      <tr>
-                        <td>{tr('Cash balance USD', 'Naqd qoldiq USD')}</td>
-                        <td className="text-right font-mono">{formatMoney(cashBalanceByCurrency.USD || 0)} USD</td>
-                      </tr>
+                      {Object.entries(cashBalanceByCurrency)
+                        .filter(([, value]) => Math.abs(Number(value || 0)) > 0.0001)
+                        .sort(([a], [b]) => a.localeCompare(b))
+                        .map(([currency, value]) => (
+                          <tr key={currency}>
+                            <td>{tr('Cash balance', 'Naqd qoldiq')} {currency}</td>
+                            <td className="text-right font-mono">{formatMoney(Number(value || 0))} {currency}</td>
+                          </tr>
+                        ))}
                       <tr>
                         <td>{tr('Cards total', 'Kartalardagi jami qoldiq')}</td>
-                        <td className="text-right font-mono">{formatMoney(summary?.totals.cardBalanceTotal || 0)} UZS</td>
+                        <td className="text-right font-mono">
+                          {formatCurrencyMap(summary?.totals.cardBalanceByCurrency)}
+                        </td>
                       </tr>
                     </tbody>
                   </table>
@@ -1157,7 +1400,7 @@ export default function KassaPage() {
                         <tr key={card.id}>
                           <td>{card.ownerName} · {card.cardNumber}</td>
                           <td>{card.currency}</td>
-                          <td className="text-right font-mono">{formatMoney(card.balance || 0)} {card.currency}</td>
+                          <td className="text-right font-mono">{formatCurrencyMap(card.balanceByCurrency)}</td>
                         </tr>
                       ))}
                     </tbody>

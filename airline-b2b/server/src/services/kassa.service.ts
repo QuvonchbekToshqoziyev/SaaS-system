@@ -13,10 +13,12 @@ import {
 import { isPayableDebtType } from '../utils/transaction-types';
 import { getAccessibleFirmIds } from '../utils/access';
 import { assertCanOperateKassa, canOperateKassa } from '../utils/kassa-permissions';
+import { normalizeFirmUserRole } from '../utils/firm-user-roles';
 
 export type AuthUser = {
   userId?: string;
   role?: Role | string;
+  firmRole?: string | null;
   firmId?: string | null;
 };
 
@@ -96,9 +98,23 @@ async function resolveKassaDeskFilter(rawKassaDeskId: unknown, firmScopeIds?: st
 
 async function loadDayTransactions(businessDate: Date, firmScopeIds?: string[], kassaDeskId?: string) {
   const dayKey = formatBusinessDateKey(businessDate);
+  const scopedDeskIds = kassaDeskId
+    ? [kassaDeskId]
+    : firmScopeIds
+      ? (await prisma.kassaDesk.findMany({
+          where: { firmId: { in: firmScopeIds }, status: { not: 'DELETED' }, deletedAt: null },
+          select: { id: true },
+        })).map((desk) => desk.id)
+      : [];
   const where: Prisma.TransactionWhereInput = {
-    ...(firmScopeIds ? { firmId: { in: firmScopeIds } } : {}),
-    ...(kassaDeskId ? { kassaDeskId } : {}),
+    ...(firmScopeIds
+      ? {
+          OR: [
+            { firmId: { in: firmScopeIds } },
+            ...(scopedDeskIds.length ? [{ kassaDeskId: { in: scopedDeskIds } }] : []),
+          ],
+        }
+      : kassaDeskId ? { kassaDeskId } : {}),
   };
   const rows = await prisma.transaction.findMany({
     where,
@@ -119,41 +135,97 @@ function computeDayTotals(transactions: Awaited<ReturnType<typeof loadDayTransac
   let paymentCount = 0;
   let saleTotal = 0;
   let payableTotal = 0;
+  const byCurrency: Record<string, {
+    cashTotal: number;
+    cashInTotal: number;
+    cashOutTotal: number;
+    cardTotal: number;
+    cardInTotal: number;
+    cardOutTotal: number;
+    dailyIncomeTotal: number;
+    dailyExpenseTotal: number;
+    paymentCount: number;
+    saleTotal: number;
+    payableTotal: number;
+    transactionCount: number;
+  }> = {};
+
+  const currencyRow = (currency: string) => {
+    const key = normalizeCurrency(currency) || 'UZS';
+    byCurrency[key] ||= {
+      cashTotal: 0,
+      cashInTotal: 0,
+      cashOutTotal: 0,
+      cardTotal: 0,
+      cardInTotal: 0,
+      cardOutTotal: 0,
+      dailyIncomeTotal: 0,
+      dailyExpenseTotal: 0,
+      paymentCount: 0,
+      saleTotal: 0,
+      payableTotal: 0,
+      transactionCount: 0,
+    };
+    return byCurrency[key];
+  };
 
   for (const tx of transactions) {
     const base = sumToNumber(tx.baseAmount);
+    const original = sumToNumber(tx.originalAmount);
     const method = String(tx.paymentMethod || '').toLowerCase();
+    const row = currencyRow(tx.currency);
+    row.transactionCount += 1;
     if (tx.type === 'PAYMENT') {
       paymentCount += 1;
+      row.paymentCount += 1;
       if (method === 'cash') {
         cashTotal += base;
         cashInTotal += base;
+        row.cashTotal += original;
+        row.cashInTotal += original;
       }
       else if (method === 'card') {
         cardTotal += base;
         cardInTotal += base;
+        row.cardTotal += original;
+        row.cardInTotal += original;
       }
     } else if (tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_IN') {
       if (method === 'card') {
         cardTotal += base;
         cardInTotal += base;
+        row.cardTotal += original;
+        row.cardInTotal += original;
       } else {
         cashTotal += base;
         cashInTotal += base;
+        row.cashTotal += original;
+        row.cashInTotal += original;
       }
     } else if (tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_OUT') {
       if (method === 'card') {
         cardTotal -= base;
         cardOutTotal += base;
+        row.cardTotal -= original;
+        row.cardOutTotal += original;
       } else {
         cashTotal -= base;
         cashOutTotal += base;
+        row.cashTotal -= original;
+        row.cashOutTotal += original;
       }
     } else if (tx.type === 'SALE') {
       saleTotal += base;
+      row.saleTotal += original;
     } else if (isPayableDebtType(tx.type)) {
       payableTotal += base;
+      row.payableTotal += original;
     }
+  }
+
+  for (const row of Object.values(byCurrency)) {
+    row.dailyIncomeTotal = row.cashInTotal + row.cardInTotal;
+    row.dailyExpenseTotal = row.cashOutTotal + row.cardOutTotal;
   }
 
   return {
@@ -169,6 +241,7 @@ function computeDayTotals(transactions: Awaited<ReturnType<typeof loadDayTransac
     saleTotal,
     payableTotal,
     transactionCount: transactions.length,
+    byCurrency,
   };
 }
 
@@ -176,17 +249,48 @@ function normalizeCurrency(value: unknown) {
   return String(value || '').trim().toUpperCase();
 }
 
+function isPlatformAdmin(authUser: AuthUser) {
+  const role = normalizeRole(authUser.role);
+  return role === 'SUPERADMIN' || role === 'ADMIN';
+}
+
+function isFirmAdmin(authUser: AuthUser) {
+  return normalizeRole(authUser.role) === 'FIRM' && normalizeFirmUserRole(authUser.firmRole) === 'FIRM_ADMIN';
+}
+
 function serializePaymentCard(card: any) {
   return {
     id: card.id,
     ownerName: card.ownerName,
-    cardNumber: card.cardNumber,
+    cardNumber: maskCardNumber(card.cardNumber),
     currency: card.currency,
+    openingBalance: String(card.openingBalance ?? 0),
     firmId: card.firmId,
     firm: card.firm ?? null,
     status: card.status,
     createdAt: card.createdAt instanceof Date ? card.createdAt.toISOString() : card.createdAt,
   };
+}
+
+function emptyCurrencyTotals() {
+  return { in: 0, out: 0, net: 0 };
+}
+
+function addCurrencyAmount(target: Record<string, { in: number; out: number; net: number }>, currencyValue: unknown, amount: number) {
+  const currency = normalizeCurrency(currencyValue) || 'UZS';
+  target[currency] ||= emptyCurrencyTotals();
+  if (amount >= 0) target[currency].in += amount;
+  else target[currency].out += Math.abs(amount);
+  target[currency].net += amount;
+}
+
+function maskCardNumber(value: unknown) {
+  const raw = String(value || '').trim();
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length < 4) return raw ? '****' : '';
+  const last4 = digits.slice(-4);
+  const first4 = digits.length >= 8 ? digits.slice(0, 4) : '';
+  return first4 ? `${first4} **** **** ${last4}` : `**** ${last4}`;
 }
 
 export async function listKassaDesksService(authUser: AuthUser) {
@@ -258,18 +362,17 @@ export async function createKassaDeskService(
   return serializeKassaDesk(created);
 }
 
-function cardFlowAmount(tx: { type: string; direction: string | null; baseAmount: unknown }) {
-  const base = sumToNumber(tx.baseAmount as any);
-  if (tx.type === 'PAYMENT') return base;
-  if (tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_IN') return base;
-  if (tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_OUT') return -base;
+function cardFlowAmount(tx: { type: string; direction: string | null; originalAmount: unknown }) {
+  const original = sumToNumber(tx.originalAmount as any);
+  if (tx.type === 'PAYMENT') return original;
+  if (tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_IN') return original;
+  if (tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_OUT') return -original;
   return 0;
 }
 
 async function loadPaymentCards(firmScopeIds?: string[]) {
   return prisma.paymentCard.findMany({
     where: {
-      status: 'ACTIVE',
       deletedAt: null,
       ...(firmScopeIds ? { OR: [{ firmId: { in: firmScopeIds } }, { firmId: null }] } : {}),
     },
@@ -296,37 +399,53 @@ async function loadCardSummaries(
           paymentCardId: true,
           type: true,
           direction: true,
-          baseAmount: true,
+          originalAmount: true,
+          currency: true,
+          metadata: true,
+          createdAt: true,
         },
       })
     : [];
 
   const dayKey = formatBusinessDateKey(businessDate);
-  const daily = new Map<string, { in: number; out: number }>();
+  const daily = new Map<string, Record<string, { in: number; out: number; net: number }>>();
   for (const tx of dayTransactions) {
     if (!tx.paymentCardId || String(tx.paymentMethod || '').toLowerCase() !== 'card') continue;
     const amount = cardFlowAmount(tx);
-    const row = daily.get(tx.paymentCardId) || { in: 0, out: 0 };
-    if (amount >= 0) row.in += amount;
-    else row.out += Math.abs(amount);
+    const row = daily.get(tx.paymentCardId) || {};
+    addCurrencyAmount(row, tx.currency, amount);
     daily.set(tx.paymentCardId, row);
   }
 
-  const balances = new Map<string, number>();
+  const balances = new Map<string, Record<string, { in: number; out: number; net: number }>>();
   for (const tx of allCardTransactions) {
     if (!tx.paymentCardId) continue;
-    balances.set(tx.paymentCardId, (balances.get(tx.paymentCardId) || 0) + cardFlowAmount(tx));
+    const row = balances.get(tx.paymentCardId) || {};
+    addCurrencyAmount(row, tx.currency, cardFlowAmount(tx));
+    balances.set(tx.paymentCardId, row);
   }
 
   return cards.map((card) => {
-    const d = daily.get(card.id) || { in: 0, out: 0 };
+    const primaryCurrency = normalizeCurrency(card.currency) || 'UZS';
+    const dailyByCurrency = daily.get(card.id) || {};
+    const balanceTotals = balances.get(card.id) || {};
+    balanceTotals[primaryCurrency] ||= emptyCurrencyTotals();
+    const opening = sumToNumber(card.openingBalance);
+    balanceTotals[primaryCurrency].in += opening;
+    balanceTotals[primaryCurrency].net += opening;
+    const balanceByCurrency = Object.fromEntries(
+      Object.entries(balanceTotals).map(([currency, totals]) => [currency, totals.net]),
+    );
+    const primaryDaily = dailyByCurrency[primaryCurrency] || emptyCurrencyTotals();
     return {
       ...serializePaymentCard(card),
       day: dayKey,
-      dailyIn: d.in,
-      dailyOut: d.out,
-      dailyNet: d.in - d.out,
-      balance: balances.get(card.id) || 0,
+      dailyIn: primaryDaily.in,
+      dailyOut: primaryDaily.out,
+      dailyNet: primaryDaily.net,
+      dailyByCurrency,
+      balance: balanceByCurrency[primaryCurrency] || 0,
+      balanceByCurrency,
     };
   });
 }
@@ -356,12 +475,19 @@ export async function getKassaDayService(authUser: AuthUser, rawDate: unknown, i
   const status = kassa?.status === KassaStatus.CLOSED ? KassaStatus.CLOSED : kassa ? KassaStatus.OPEN : 'NOT_OPEN';
   const expectedCash = kassa ? sumToNumber(kassa.openingBalance) + totals.cashTotal : null;
   const cardBalanceTotal = paymentCards.reduce((sum, card) => sum + card.balance, 0);
+  const cardBalanceByCurrency = paymentCards.reduce<Record<string, number>>((acc, card) => {
+    const balances = (card as any).balanceByCurrency || {};
+    for (const [currency, amount] of Object.entries(balances)) {
+      acc[currency] = (acc[currency] || 0) + Number(amount || 0);
+    }
+    return acc;
+  }, {});
 
   return {
     businessDate: formatBusinessDateKey(day),
     status,
     kassa: kassa ? serializeKassa(kassa) : null,
-    totals: { ...totals, expectedCash, cardBalanceTotal },
+    totals: { ...totals, expectedCash, cardBalanceTotal, cardBalanceByCurrency },
     paymentCards,
     kassaDesks: kassaDesks.map(serializeKassaDesk),
     filters: {
@@ -395,25 +521,36 @@ export async function getKassaDayService(authUser: AuthUser, rawDate: unknown, i
 
 export async function listPaymentCardsService(authUser: AuthUser) {
   const firmScopeIds = await getAccessibleFirmIds(authUser);
-  const cards = await loadPaymentCards(firmScopeIds);
-  return cards.map(serializePaymentCard);
+  return loadCardSummaries(new Date(), [], firmScopeIds);
 }
 
-export async function createPaymentCardService(authUser: AuthUser, input: { ownerName?: unknown; cardNumber?: unknown; currency?: unknown; firmId?: unknown }) {
+export async function createPaymentCardService(authUser: AuthUser, input: { ownerName?: unknown; cardNumber?: unknown; currency?: unknown; firmId?: unknown; openingBalance?: unknown }) {
   const role = normalizeRole(authUser.role);
   const ownerName = String(input.ownerName || '').trim();
   const cardNumber = String(input.cardNumber || '').trim();
   const currency = normalizeCurrency(input.currency || 'UZS');
-  const firmId = typeof input.firmId === 'string' && input.firmId.trim() ? input.firmId.trim() : undefined;
+  let firmId = typeof input.firmId === 'string' && input.firmId.trim() ? input.firmId.trim() : undefined;
+  let openingBalance = new Prisma.Decimal(0);
 
-  if (role !== 'SUPERADMIN' && role !== 'ADMIN') {
+  if (!isPlatformAdmin(authUser) && !isFirmAdmin(authUser)) {
     throw new ServiceError('Forbidden', 403);
+  }
+  if (role === 'FIRM') {
+    if (!authUser.firmId) throw new ServiceError('Firm account is missing firmId', 400);
+    if (firmId && firmId !== authUser.firmId) throw new ServiceError('Forbidden', 403);
+    firmId = authUser.firmId;
   }
   if (!ownerName || !cardNumber || !currency) {
     throw new ServiceError('Card owner, number and currency are required');
   }
-  if (currency !== 'UZS' && currency !== 'USD') {
-    throw new ServiceError('Card currency must be UZS or USD');
+  if (!/^[A-Z]{3}$/.test(currency)) {
+    throw new ServiceError('Invalid card currency');
+  }
+  if (input.openingBalance != null && String(input.openingBalance).trim() !== '') {
+    openingBalance = new Prisma.Decimal(String(input.openingBalance));
+    if (!openingBalance.isFinite() || openingBalance.lt(0)) {
+      throw new ServiceError('Opening balance must be zero or greater');
+    }
   }
   const accessibleFirmIds = await getAccessibleFirmIds(authUser);
   if (firmId && accessibleFirmIds && !accessibleFirmIds.includes(firmId)) {
@@ -423,8 +560,9 @@ export async function createPaymentCardService(authUser: AuthUser, input: { owne
   const created = await prisma.paymentCard.create({
     data: {
       ownerName,
-      cardNumber,
+      cardNumber: maskCardNumber(cardNumber),
       currency,
+      openingBalance: openingBalance.toDecimalPlaces(4),
       firmId,
       createdByUserId: authUser.userId ? String(authUser.userId) : undefined,
     },
@@ -432,6 +570,74 @@ export async function createPaymentCardService(authUser: AuthUser, input: { owne
   });
 
   return serializePaymentCard(created);
+}
+
+export async function updatePaymentCardService(
+  authUser: AuthUser,
+  id: string,
+  input: { ownerName?: unknown; cardNumber?: unknown; currency?: unknown; firmId?: unknown; openingBalance?: unknown; status?: unknown },
+) {
+  const role = normalizeRole(authUser.role);
+  if (!isPlatformAdmin(authUser) && !isFirmAdmin(authUser)) {
+    throw new ServiceError('Forbidden', 403);
+  }
+  const existing = await prisma.paymentCard.findUnique({
+    where: { id },
+    select: { id: true, firmId: true, deletedAt: true },
+  });
+  if (!existing || existing.deletedAt) {
+    throw new ServiceError('Payment card not found', 404);
+  }
+  if (role === 'FIRM') {
+    if (!authUser.firmId) throw new ServiceError('Firm account is missing firmId', 400);
+    if (existing.firmId !== authUser.firmId) throw new ServiceError('Forbidden', 403);
+  }
+
+  const accessibleFirmIds = await getAccessibleFirmIds(authUser);
+  if (accessibleFirmIds && existing.firmId && !accessibleFirmIds.includes(existing.firmId)) {
+    throw new ServiceError('Forbidden', 403);
+  }
+
+  const data: Prisma.PaymentCardUpdateInput = {};
+  if (input.ownerName != null) {
+    const ownerName = String(input.ownerName || '').trim();
+    if (!ownerName) throw new ServiceError('Card owner is required');
+    data.ownerName = ownerName;
+  }
+  if (input.cardNumber != null) {
+    const cardNumber = String(input.cardNumber || '').trim();
+    if (!cardNumber) throw new ServiceError('Card number is required');
+    data.cardNumber = maskCardNumber(cardNumber);
+  }
+  if (input.currency != null) {
+    const currency = normalizeCurrency(input.currency);
+    if (!/^[A-Z]{3}$/.test(currency)) throw new ServiceError('Invalid card currency');
+    data.currency = currency;
+  }
+  if (input.openingBalance != null) {
+    const openingBalance = new Prisma.Decimal(String(input.openingBalance || '0'));
+    if (!openingBalance.isFinite()) throw new ServiceError('Opening balance is invalid');
+    data.openingBalance = openingBalance.toDecimalPlaces(4);
+  }
+  if (input.status != null) {
+    const status = String(input.status || '').trim().toUpperCase();
+    if (!['ACTIVE', 'INACTIVE'].includes(status)) throw new ServiceError('Invalid card status');
+    data.status = status;
+  }
+  if (input.firmId !== undefined) {
+    const firmId = typeof input.firmId === 'string' && input.firmId.trim() ? input.firmId.trim() : null;
+    if (role === 'FIRM' && firmId !== authUser.firmId) throw new ServiceError('Forbidden', 403);
+    if (firmId && accessibleFirmIds && !accessibleFirmIds.includes(firmId)) throw new ServiceError('Forbidden', 403);
+    data.firm = firmId ? { connect: { id: firmId } } : { disconnect: true };
+  }
+
+  const updated = await prisma.paymentCard.update({
+    where: { id },
+    data,
+    include: { firm: { select: { id: true, name: true } } },
+  });
+
+  return serializePaymentCard(updated);
 }
 
 export async function openKassaService(authUser: AuthUser, input: { businessDate?: unknown; openingBalance?: unknown }) {

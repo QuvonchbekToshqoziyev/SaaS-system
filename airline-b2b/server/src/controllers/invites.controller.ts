@@ -2,12 +2,41 @@ import { Request, Response } from 'express';
 import { prisma } from '../db';
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
-import { Role } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import jwt from 'jsonwebtoken';
 import { canAccessFirm } from '../utils/access';
 import { isFirmAdminLike, normalizeFirmUserRole } from '../utils/firm-user-roles';
+import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
 
 const ALLOWED_ROLES = new Set(Object.values(Role));
+
+function normalizeCurrency(value: unknown): string {
+  const currency = String(value || 'UZS').trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) throw new Error('Invalid currency code');
+  return currency;
+}
+
+function parseDecimal(value: unknown): Prisma.Decimal | undefined {
+  if (value === null || value === undefined || String(value).trim() === '') return undefined;
+  const decimal = new Prisma.Decimal(String(value).trim());
+  if (!decimal.isFinite()) throw new Error('Amount must be a valid number');
+  return decimal.toDecimalPlaces(4);
+}
+
+function readPriorBalanceInput(body: any) {
+  const amount = parseDecimal(body?.priorBalanceAmount);
+  if (!amount) return null;
+  const direction = String(body?.priorBalanceDirection || 'DEBT').trim().toUpperCase();
+  if (!['DEBT', 'CREDIT'].includes(direction)) throw new Error('Balance direction must be DEBT or CREDIT');
+  if (!amount.gt(0)) throw new Error('Prior balance amount must be greater than 0');
+  return {
+    amount,
+    direction,
+    currency: normalizeCurrency(body?.priorBalanceCurrency || 'UZS'),
+    counterpartyFirmId: typeof body?.priorBalanceCounterpartyFirmId === 'string' ? body.priorBalanceCounterpartyFirmId.trim() : '',
+    exchangeRate: body?.priorBalanceExchangeRate,
+  };
+}
 
 function firstHeaderValue(value: string | undefined): string | undefined {
   if (!value) return undefined;
@@ -94,6 +123,7 @@ export const createInvite = async (req: Request, res: Response) => {
     : undefined;
 
   let resolvedFirmId: string | undefined = typeof firmId === 'string' ? firmId : undefined;
+  const priorBalance = readPriorBalanceInput(req.body);
 
   if (actorRole === 'FIRM') {
     if (!isFirmAdminLike(authUser)) {
@@ -141,6 +171,48 @@ export const createInvite = async (req: Request, res: Response) => {
       },
     });
     resolvedFirmId = newFirm.id;
+    if (priorBalance) {
+      const counterparty = priorBalance.counterpartyFirmId
+        ? await prisma.firm.findUnique({ where: { id: priorBalance.counterpartyFirmId }, select: { id: true, name: true } })
+        : null;
+      if (priorBalance.counterpartyFirmId && !counterparty) {
+        return res.status(404).json({ error: 'Counterparty firm not found' });
+      }
+      if (priorBalance.direction === 'CREDIT' && !counterparty) {
+        return res.status(400).json({ error: 'Counterparty firm is required when recording firm credit' });
+      }
+      if (counterparty?.id === newFirm.id) {
+        return res.status(400).json({ error: 'Counterparty firm must be different' });
+      }
+      const exchangeRate = await resolveExchangeRateToUzs(authUser, {
+        currency: priorBalance.currency,
+        date: new Date(),
+        overrideRate: priorBalance.exchangeRate,
+      });
+      const targetOwes = priorBalance.direction === 'DEBT';
+      await prisma.transaction.create({
+        data: {
+          firmId: newFirm.id,
+          payerFirmId: targetOwes ? newFirm.id : counterparty?.id,
+          receiverFirmId: targetOwes ? counterparty?.id : newFirm.id,
+          createdByUserId: createdBy,
+          type: 'PAYABLE',
+          direction: 'OPENING_BALANCE',
+          subjectType: 'FIRM_OPENING_BALANCE',
+          subjectId: newFirm.id,
+          originalAmount: priorBalance.amount,
+          currency: priorBalance.currency,
+          exchangeRate: exchangeRate.toDecimalPlaces(6),
+          baseAmount: priorBalance.amount.mul(exchangeRate).toDecimalPlaces(4),
+          metadata: {
+            targetFirmName: newFirm.name,
+            counterpartyFirmId: counterparty?.id,
+            counterpartyLabel: counterparty?.name,
+            source: 'manual_prior_balance',
+          },
+        },
+      });
+    }
   } else if (resolvedFirmId && roleValue === Role.FIRM) {
     await prisma.firm.update({
       where: { id: resolvedFirmId },

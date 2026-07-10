@@ -40,6 +40,11 @@ export default function SettingsPage() {
   const [selectedFirmId, setSelectedFirmId] = useState('');
   const [firmCurrency, setFirmCurrency] = useState('UZS');
   const [savingCurrency, setSavingCurrency] = useState(false);
+  const [rateDate, setRateDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [rateCurrency, setRateCurrency] = useState('USD');
+  const [rateValue, setRateValue] = useState('');
+  const [savingRate, setSavingRate] = useState(false);
+  const [currencyRates, setCurrencyRates] = useState<Array<{ id: string; targetCurrency: string; rate: string | number; source?: string; recordedAt: string }>>([]);
   const [loginContent, setLoginContent] = useState<LoginPageContent>(defaultLoginPageContent);
   const [loadingLoginContent, setLoadingLoginContent] = useState(true);
   const [savingLoginContent, setSavingLoginContent] = useState(false);
@@ -88,6 +93,19 @@ export default function SettingsPage() {
   useEffect(() => {
     if (selectedFirm) setFirmCurrency(String(selectedFirm.currency || 'UZS'));
   }, [selectedFirm]);
+
+  useEffect(() => {
+    if (!user) return;
+    const loadRates = async () => {
+      try {
+        const res = await api.get('/currency-rates', { params: { date: rateDate } });
+        setCurrencyRates(Array.isArray(res.data) ? res.data : []);
+      } catch {
+        setCurrencyRates([]);
+      }
+    };
+    loadRates();
+  }, [rateDate, user]);
 
   useEffect(() => {
     let cancelled = false;
@@ -207,6 +225,35 @@ export default function SettingsPage() {
       toast.error(tr('Failed to save default currency', 'Default valyutani saqlab bo\'lmadi'));
     } finally {
       setSavingCurrency(false);
+    }
+  };
+
+  const saveDailyRate = async () => {
+    const currency = rateCurrency.trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency) || currency === 'UZS') {
+      toast.error(tr('Choose a non-UZS currency code', 'UZSdan boshqa valyuta kodini tanlang'));
+      return;
+    }
+    if (!rateValue.trim() || Number(rateValue) <= 0) {
+      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
+      return;
+    }
+    try {
+      setSavingRate(true);
+      await api.post('/currency-rates', {
+        baseCurrency: 'UZS',
+        targetCurrency: currency,
+        rate: rateValue.trim(),
+        date: rateDate,
+      });
+      toast.success(tr('Exchange rate saved', 'Valyuta kursi saqlandi'));
+      setRateValue('');
+      const res = await api.get('/currency-rates', { params: { date: rateDate } });
+      setCurrencyRates(Array.isArray(res.data) ? res.data : []);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Failed to save exchange rate', 'Valyuta kursini saqlab bo\'lmadi'));
+    } finally {
+      setSavingRate(false);
     }
   };
 
@@ -475,6 +522,44 @@ export default function SettingsPage() {
             {tr('Subscription', 'Obuna')}: {subscriptionLabel(selectedFirm.subscriptionEndsAt)}
           </p>
         )}
+      </div>
+
+      <div className="glass-panel p-6">
+        <h3 className="text-lg font-semibold text-foreground">{tr('Daily exchange rates', 'Kunlik valyuta kurslari')}</h3>
+        <p className="mt-2 text-sm text-muted">
+          {tr('Non-UZS payments and kassa transactions use this rate by default; each entry can still override it.', 'UZSdan boshqa to\'lov va kassa tranzaksiyalari default shu kursdan foydalanadi; har bir yozuvda alohida o\'zgartirish mumkin.')}
+        </p>
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[160px_140px_180px_auto] md:items-end">
+          <div>
+            <label className="compact-label">{tr('Date', 'Sana')}</label>
+            <input type="date" value={rateDate} onChange={(e) => setRateDate(e.target.value)} className="compact-control" />
+          </div>
+          <div>
+            <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
+            <input value={rateCurrency} maxLength={3} onChange={(e) => setRateCurrency(e.target.value.toUpperCase())} className="compact-control uppercase" />
+          </div>
+          <div>
+            <label className="compact-label">{tr('Rate to UZS', 'UZS kursi')}</label>
+            <input inputMode="decimal" value={rateValue} onChange={(e) => setRateValue(e.target.value)} className="compact-control" placeholder="12600" />
+          </div>
+          <button
+            type="button"
+            onClick={saveDailyRate}
+            disabled={savingRate}
+            className="inline-flex items-center justify-center px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg transition disabled:opacity-50"
+          >
+            {savingRate ? tr('Saving...', 'Saqlanmoqda...') : tr('Save rate', 'Kursni saqlash')}
+          </button>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {currencyRates.length === 0 ? (
+            <span className="text-sm text-muted">{tr('No rates saved for this date.', 'Bu sana uchun kurs saqlanmagan.')}</span>
+          ) : currencyRates.map((rate) => (
+            <span key={rate.id} className="rounded-md border border-border bg-surface-2 px-3 py-2 text-sm font-mono">
+              {rate.targetCurrency}: {Number(rate.rate).toLocaleString('en-US')} UZS
+            </span>
+          ))}
+        </div>
       </div>
 
       <div className="glass-panel p-6">

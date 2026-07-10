@@ -26,22 +26,9 @@ api.interceptors.response.use(
     if (typeof window !== 'undefined') {
       const status = error?.response?.status;
       if (status === 401) {
-        try {
-          const rawUser = localStorage.getItem('user');
-          const user = rawUser ? JSON.parse(rawUser) : null;
-          const rawAccounts = localStorage.getItem(savedAccountsKey);
-          const accounts = rawAccounts ? JSON.parse(rawAccounts) : [];
-          if (user && Array.isArray(accounts)) {
-            localStorage.setItem(
-              savedAccountsKey,
-              JSON.stringify(accounts.filter((account) => account?.id !== user?.id && account?.email !== user?.email)),
-            );
-          }
-        } catch {
-          // ignore malformed local test data
-        }
         localStorage.removeItem('token');
         localStorage.removeItem('user');
+        localStorage.removeItem(savedAccountsKey);
 
         const path = window.location.pathname;
         if (path !== '/login' && path !== '/login/') {

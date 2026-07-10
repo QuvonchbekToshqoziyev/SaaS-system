@@ -70,7 +70,7 @@ export default function ToursPage() {
   const [loading, setLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [createRow, setCreateRow] = useState(emptyCreateRow);
-  const [sellRows, setSellRows] = useState<Record<string, { buyerFirmId: string; quantity: number; unitPrice: string }>>({});
+  const [sellRows, setSellRows] = useState<Record<string, { buyerFirmId: string; quantity: number; unitPrice: string; exchangeRate: string }>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [filters, setFilters] = useState({ q: '', firmId: 'ALL', status: 'ACTIVE' });
 
@@ -174,20 +174,22 @@ export default function ToursPage() {
     }
   };
 
-  const updateSellRow = (packageId: string, patch: Partial<{ buyerFirmId: string; quantity: number; unitPrice: string }>) => {
+  const updateSellRow = (packageId: string, patch: Partial<{ buyerFirmId: string; quantity: number; unitPrice: string; exchangeRate: string }>) => {
     setSellRows((current) => ({
       ...current,
-      [packageId]: {
-        ...(current[packageId] || { buyerFirmId: '', quantity: 1, unitPrice: '' }),
-        ...patch,
-      },
+      [packageId]: { ...(current[packageId] || { buyerFirmId: '', quantity: 1, unitPrice: '', exchangeRate: '' }), ...patch },
     }));
   };
 
   const sellPackage = async (pkg: TourPackage) => {
-    const row = sellRows[pkg.id] || { buyerFirmId: '', quantity: 1, unitPrice: '' };
+    const row = sellRows[pkg.id] || { buyerFirmId: '', quantity: 1, unitPrice: '', exchangeRate: '' };
     if (!row.buyerFirmId) {
       toast.error(tr('Select buyer firm', 'Xaridor firmani tanlang'));
+      return;
+    }
+    const currency = String(pkg.currency || 'UZS').trim().toUpperCase();
+    if (currency !== 'UZS' && (!row.exchangeRate.trim() || Number(row.exchangeRate) <= 0)) {
+      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
       return;
     }
     try {
@@ -196,9 +198,10 @@ export default function ToursPage() {
         buyerFirmId: row.buyerFirmId,
         quantity: row.quantity,
         unitPrice: row.unitPrice || undefined,
+        exchangeRate: currency !== 'UZS' ? row.exchangeRate.trim() : undefined,
       });
       toast.success(tr('Tour package sold', 'Tur paket sotildi'));
-      setSellRows((current) => ({ ...current, [pkg.id]: { buyerFirmId: '', quantity: 1, unitPrice: '' } }));
+      setSellRows((current) => ({ ...current, [pkg.id]: { buyerFirmId: '', quantity: 1, unitPrice: '', exchangeRate: '' } }));
       await loadData();
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to sell tour package', 'Tur paketni sotib bo\'lmadi'));
@@ -363,7 +366,7 @@ export default function ToursPage() {
                 </td>
               </tr>
             ) : visiblePackages.map((pkg) => {
-              const sellRow = sellRows[pkg.id] || { buyerFirmId: '', quantity: 1, unitPrice: '' };
+              const sellRow = sellRows[pkg.id] || { buyerFirmId: '', quantity: 1, unitPrice: '', exchangeRate: '' };
               const canSell = isAdmin || pkg.ownerFirmId === ownFirmId;
               return (
                 <tr key={pkg.id}>
@@ -394,6 +397,9 @@ export default function ToursPage() {
                         </select>
                         <input type="number" min="1" max={pkg.availableQuantity} className="compact-control w-20 text-right" value={sellRow.quantity} onChange={(e) => updateSellRow(pkg.id, { quantity: Number(e.target.value) })} />
                         <input type="number" min="0" className="compact-control w-28 text-right" placeholder={String(pkg.unitPrice)} value={sellRow.unitPrice} onChange={(e) => updateSellRow(pkg.id, { unitPrice: e.target.value })} />
+                        {String(pkg.currency || 'UZS').trim().toUpperCase() !== 'UZS' && (
+                          <input inputMode="decimal" className="compact-control w-28 text-right" placeholder={tr('Rate to UZS', 'UZS kursi')} value={sellRow.exchangeRate} onChange={(e) => updateSellRow(pkg.id, { exchangeRate: e.target.value })} />
+                        )}
                         <button type="button" onClick={() => sellPackage(pkg)} disabled={busyId === pkg.id || pkg.availableQuantity <= 0} className="px-3 py-2 bg-primary text-ink rounded-lg text-xs font-bold uppercase disabled:opacity-50">
                           {tr('Sell', 'Sotish')}
                         </button>

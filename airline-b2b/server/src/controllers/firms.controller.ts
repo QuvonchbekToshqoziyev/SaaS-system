@@ -5,6 +5,7 @@ import { isPayableDebtType, payableAndPaymentTypeFilter } from '../utils/transac
 import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
 import { writeAuditLog } from '../utils/audit';
 import { canManageFirmWork } from '../utils/firm-user-roles';
+import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
 
 type AuthUser = {
   userId?: string;
@@ -102,6 +103,92 @@ function normalizeCurrency(value: unknown): string {
   const currency = String(value || 'USD').trim().toUpperCase();
   if (!/^[A-Z]{3}$/.test(currency)) throw new Error('Invalid currency code');
   return currency;
+}
+
+function parseDecimal(value: unknown): Prisma.Decimal | undefined {
+  if (value === null || value === undefined || String(value).trim() === '') return undefined;
+  const decimal = new Prisma.Decimal(String(value).trim());
+  if (!decimal.isFinite()) throw new Error('Amount must be a valid number');
+  return decimal.toDecimalPlaces(4);
+}
+
+function readPriorBalanceInput(body: any) {
+  const amount = parseDecimal(body?.priorBalanceAmount ?? body?.balanceAdjustmentAmount);
+  if (!amount) return null;
+  const direction = String(body?.priorBalanceDirection ?? body?.balanceAdjustmentDirection ?? 'DEBT').trim().toUpperCase();
+  if (!['DEBT', 'CREDIT'].includes(direction)) {
+    throw new Error('Balance direction must be DEBT or CREDIT');
+  }
+  if (!amount.gt(0)) throw new Error('Prior balance amount must be greater than 0');
+  return {
+    amount,
+    direction,
+    currency: normalizeCurrency(body?.priorBalanceCurrency ?? body?.balanceAdjustmentCurrency ?? body?.currency ?? 'UZS'),
+    counterpartyFirmId: typeof (body?.priorBalanceCounterpartyFirmId ?? body?.balanceAdjustmentCounterpartyFirmId) === 'string'
+      ? String(body?.priorBalanceCounterpartyFirmId ?? body?.balanceAdjustmentCounterpartyFirmId).trim()
+      : '',
+    note: typeof (body?.priorBalanceNote ?? body?.balanceAdjustmentNote) === 'string'
+      ? String(body?.priorBalanceNote ?? body?.balanceAdjustmentNote).trim()
+      : '',
+    exchangeRate: body?.exchangeRate ?? body?.priorBalanceExchangeRate ?? body?.balanceAdjustmentExchangeRate,
+  };
+}
+
+async function createPriorBalanceTransaction(args: {
+  tx: Prisma.TransactionClient;
+  authUser: AuthUser;
+  targetFirmId: string;
+  targetFirmName: string;
+  actorFirmId: string | null;
+  input: NonNullable<ReturnType<typeof readPriorBalanceInput>>;
+}) {
+  const counterpartyFirmId = args.input.counterpartyFirmId || args.actorFirmId || '';
+  if (args.input.direction === 'CREDIT' && !counterpartyFirmId) {
+    throw new Error('Counterparty firm is required when recording firm credit');
+  }
+  if (counterpartyFirmId === args.targetFirmId) {
+    throw new Error('Counterparty firm must be different');
+  }
+
+  const counterparty = counterpartyFirmId
+    ? await args.tx.firm.findUnique({ where: { id: counterpartyFirmId }, select: { id: true, name: true } })
+    : null;
+  if (counterpartyFirmId && !counterparty) throw new Error('Counterparty firm not found');
+
+  const exchangeRate = await resolveExchangeRateToUzs(args.authUser, {
+    currency: args.input.currency,
+    date: new Date(),
+    overrideRate: args.input.exchangeRate,
+  });
+  const baseAmount = args.input.amount.mul(exchangeRate).toDecimalPlaces(4);
+  const targetOwes = args.input.direction === 'DEBT';
+
+  return args.tx.transaction.create({
+    data: {
+      firmId: args.targetFirmId,
+      payerFirmId: targetOwes ? args.targetFirmId : counterpartyFirmId,
+      receiverFirmId: targetOwes ? counterpartyFirmId || undefined : args.targetFirmId,
+      createdByUserId: args.authUser.userId ? String(args.authUser.userId) : undefined,
+      type: 'PAYABLE',
+      direction: 'OPENING_BALANCE',
+      subjectType: 'FIRM_OPENING_BALANCE',
+      subjectId: args.targetFirmId,
+      originalAmount: args.input.amount,
+      currency: args.input.currency,
+      exchangeRate: exchangeRate.toDecimalPlaces(6),
+      baseAmount,
+      metadata: {
+        note: args.input.note,
+        targetFirmName: args.targetFirmName,
+        counterpartyFirmId: counterparty?.id,
+        counterpartyLabel: counterparty?.name,
+        directionLabel: targetOwes
+          ? `${args.targetFirmName} owes ${counterparty?.name || 'opening balance'}`
+          : `${counterparty?.name || 'counterparty'} owes ${args.targetFirmName}`,
+        source: 'manual_prior_balance',
+      },
+    },
+  });
 }
 
 function parseOptionalDate(value: unknown): Date | undefined {
@@ -219,6 +306,7 @@ export const createFirm = async (req: Request, res: Response) => {
   try {
     const subscriptionEndsAt = parseOptionalDate(req.body?.subscriptionEndsAt);
     const creditLimit = parseCreditLimit(req.body?.creditLimit);
+    const priorBalance = readPriorBalanceInput(req.body);
     const created = await prisma.$transaction(async (tx) => {
       const firm = await tx.firm.create({
         data: {
@@ -259,6 +347,17 @@ export const createFirm = async (req: Request, res: Response) => {
       if (role === 'ADMIN') {
         await tx.userFirmAccess.create({
           data: { userId: actorUserId, firmId: firm.id },
+        });
+      }
+
+      if (priorBalance) {
+        await createPriorBalanceTransaction({
+          tx,
+          authUser,
+          targetFirmId: firm.id,
+          targetFirmName: firm.name,
+          actorFirmId: role === 'FIRM' ? actorFirmId : null,
+          input: priorBalance,
         });
       }
 
@@ -304,6 +403,7 @@ export const updateFirm = async (req: Request, res: Response) => {
       },
     });
     const data: Prisma.FirmUpdateInput = {};
+    const priorBalance = role === 'SUPERADMIN' ? readPriorBalanceInput(req.body) : null;
     if (role === 'FIRM') {
       if (!authUser.firmId || String(authUser.firmId) !== id) {
         return res.status(403).json({ error: 'Forbidden' });
@@ -341,26 +441,56 @@ export const updateFirm = async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    if (Object.keys(data).length === 0) {
+    if (Object.keys(data).length === 0 && !priorBalance) {
       return res.status(400).json({ error: 'No valid fields to update' });
     }
 
-    const firm = await prisma.firm.update({
-      where: { id },
-      data,
-      select: {
-        id: true,
-        name: true,
-        contactFullName: true,
-        phone: true,
-        subscriptionEndsAt: true,
-        creditLimit: true,
-        currency: true,
-        kind: true,
-        status: true,
-        createdAt: true,
-        updatedAt: true,
-      },
+    const firm = await prisma.$transaction(async (tx) => {
+      const updated = Object.keys(data).length > 0
+        ? await tx.firm.update({
+            where: { id },
+            data,
+            select: {
+              id: true,
+              name: true,
+              contactFullName: true,
+              phone: true,
+              subscriptionEndsAt: true,
+              creditLimit: true,
+              currency: true,
+              kind: true,
+              status: true,
+              createdAt: true,
+              updatedAt: true,
+            },
+          })
+        : await tx.firm.findUniqueOrThrow({
+            where: { id },
+            select: {
+              id: true,
+              name: true,
+              contactFullName: true,
+              phone: true,
+              subscriptionEndsAt: true,
+              creditLimit: true,
+              currency: true,
+              kind: true,
+              status: true,
+              createdAt: true,
+              updatedAt: true,
+            },
+          });
+      if (priorBalance) {
+        await createPriorBalanceTransaction({
+          tx,
+          authUser,
+          targetFirmId: updated.id,
+          targetFirmName: updated.name,
+          actorFirmId: null,
+          input: priorBalance,
+        });
+      }
+      return updated;
     });
     const balances = await getFirmBalances([firm.id]);
     await writeAuditLog(req, {
@@ -371,7 +501,7 @@ export const updateFirm = async (req: Request, res: Response) => {
       summary: `Updated firm ${firm.name}`,
       before,
       after: firm,
-      metadata: { fields: Object.keys(data) },
+      metadata: { fields: Object.keys(data), priorBalanceAdded: Boolean(priorBalance) },
     });
     return res.json(withBalance(firm, balances));
   } catch (err: any) {

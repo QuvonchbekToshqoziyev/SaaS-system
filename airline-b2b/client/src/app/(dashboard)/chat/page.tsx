@@ -6,6 +6,7 @@ import toast from 'react-hot-toast';
 import type { AxiosError } from 'axios';
 import {
   AtSign,
+  ArrowLeft,
   Bot,
   Building2,
   CheckCheck,
@@ -386,8 +387,8 @@ export default function ChatPage() {
   const firmName = (id: string) => firms.find((firm) => firm.id === id)?.name || id;
 
   return (
-    <div className="h-full min-h-[720px] grid grid-cols-1 xl:grid-cols-[360px_minmax(0,1fr)] gap-4">
-      <aside className="glass-panel overflow-hidden flex flex-col min-h-[520px]">
+    <div className="h-[calc(100dvh-9.5rem)] min-h-[520px] md:h-full md:min-h-[720px] grid grid-cols-1 xl:grid-cols-[360px_minmax(0,1fr)] gap-4">
+      <aside className={`glass-panel overflow-hidden flex-col min-h-0 ${selectedId ? 'hidden xl:flex' : 'flex'}`}>
         <div className="p-4 border-b border-border">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -594,7 +595,7 @@ export default function ChatPage() {
         )}
       </aside>
 
-      <section className="glass-panel overflow-hidden flex flex-col min-h-[720px]">
+      <section className={`glass-panel overflow-hidden flex-col min-h-0 ${selectedId ? 'flex' : 'hidden xl:flex'}`}>
         {section === 'settings' ? (
           <div className="h-full flex items-center justify-center p-8 text-center">
             <div>
@@ -605,8 +606,16 @@ export default function ChatPage() {
           </div>
         ) : selectedConversation ? (
           <>
-            <header className="p-4 border-b border-border flex items-center justify-between gap-3">
+            <header className="p-3 md:p-4 border-b border-border flex items-center justify-between gap-3">
               <div className="flex items-center gap-3 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setSelectedId('')}
+                  className="grid h-10 w-10 place-items-center rounded-md border border-border bg-surface-2 xl:hidden"
+                  aria-label={tr('Back to chats', 'Chatlarga qaytish')}
+                >
+                  <ArrowLeft size={18} />
+                </button>
                 <div className="w-12 h-12 rounded-md bg-surface-2 border border-border flex items-center justify-center text-primary font-bold">
                   <SelectedHeaderIcon size={22} />
                 </div>
@@ -629,7 +638,7 @@ export default function ChatPage() {
               </div>
             </header>
 
-            <div className="flex-1 overflow-y-auto scroller-minimal p-4 space-y-3 bg-background/40">
+            <div className="flex-1 overflow-y-auto scroller-minimal p-3 md:p-4 space-y-3 bg-background/40">
               {messagesLoading && <p className="text-sm text-muted">{tr('Loading messages...', 'Xabarlar yuklanmoqda...')}</p>}
               {!messagesLoading && visibleMessages.length === 0 && (
                 <div className="h-full min-h-[280px] flex items-center justify-center text-center">
@@ -652,7 +661,7 @@ export default function ChatPage() {
                 const mine = row.senderUserId === user?.id;
                 return (
                   <div key={row.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`group max-w-[820px] rounded-md border p-3 ${mine ? 'bg-primary text-primary-foreground border-primary' : 'bg-surface border-border text-foreground'}`}>
+                    <div className={`group max-w-[min(820px,88vw)] rounded-md border p-3 ${mine ? 'bg-primary text-primary-foreground border-primary' : 'bg-surface border-border text-foreground'}`}>
                       <div className="flex items-center gap-2 text-[11px] opacity-80">
                         <span className="font-semibold">{row.sender?.fullName || row.sender?.email || 'AI Assistant'}</span>
                         <span>{formatTime(row.createdAt)}</span>
@@ -692,7 +701,7 @@ export default function ChatPage() {
             </div>
 
             {canWriteSelected ? (
-            <form onSubmit={sendMessage} className="border-t border-border p-3 bg-surface">
+            <form onSubmit={sendMessage} className="border-t border-border bg-surface p-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
               {(replyTo || editing) && (
                 <div className="mb-2 flex items-center justify-between gap-3 rounded-md border border-border bg-surface-2 px-3 py-2 text-sm">
                   <span className="truncate">
@@ -728,7 +737,7 @@ export default function ChatPage() {
                   placeholder={kind === 'TEXT' ? tr('Message...', 'Xabar...') : tr('Type caption or file name...', 'Izoh yoki fayl nomini yozing...')}
                   className="compact-control min-h-[52px] resize-none"
                 />
-                <button type="submit" className="w-12 rounded-md bg-primary text-primary-foreground flex items-center justify-center">
+                <button type="submit" className="min-h-[52px] w-12 shrink-0 rounded-md bg-primary text-primary-foreground flex items-center justify-center">
                   <Send size={18} />
                 </button>
               </div>

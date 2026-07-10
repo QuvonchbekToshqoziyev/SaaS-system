@@ -3,7 +3,7 @@
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { usePathname, useRouter } from 'next/navigation';
-import { Plane, PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, Wallet, PackageOpen, Users, ShieldCheck, MessageCircle, History, Bell, CheckCheck } from 'lucide-react';
+import { Plane, PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, Wallet, PackageOpen, Users, ShieldCheck, MessageCircle, History, Bell, CheckCheck, Menu, MoreHorizontal, X } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
@@ -52,15 +52,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname();
   const router = useRouter();
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const normalizedRole = String(user?.role || '').toLowerCase();
-  const firmRole = user?.firmRole || 'FIRM_ADMIN';
+  const firmRole = String(user?.firmRole || 'FIRM_ADMIN').toUpperCase();
   const isAirlineFirm = false;
   const isFirmKassir = normalizedRole === 'firm' && firmRole === 'KASSIR';
   const isFirmManager = normalizedRole === 'firm' && firmRole === 'MANAGER';
-  const isKassirAllowedPath = pathname.startsWith('/kassa') || pathname.startsWith('/settings');
+  const isKassirAllowedPath = pathname.startsWith('/kassa') || pathname.startsWith('/chat') || pathname.startsWith('/settings');
 
   useEffect(() => {
     if (!isLoading && isFirmKassir && !isKassirAllowedPath) {
@@ -145,6 +146,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   const firmNavLinks = isAirlineFirm ? airlineNavLinks : isFirmKassir ? [
     { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
+    { key: 'navChat' as const, href: '/chat', icon: MessageCircle },
     { key: 'navSettings' as const, href: '/settings', icon: Settings },
   ] : [
     { key: 'navDashboard' as const, href: '/firm', icon: LayoutDashboard },
@@ -207,9 +209,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   });
 
   const pageTitle = t(activeNavLink?.key ?? navLinks[0].key);
+  const bottomNavLinks = isFirmKassir ? navLinks : navLinks.filter((link) => ['/admin', '/firm', '/firms', '/flights', '/kassa', '/chat', '/reports'].includes(link.href)).slice(0, 4);
+  const bottomMoreLinks = navLinks.filter((link) => !bottomNavLinks.some((item) => item.href === link.href));
 
   return (
-    <div className="flex min-h-screen md:h-screen bg-transparent text-foreground w-full font-sans overflow-hidden">
+    <div className="flex min-h-dvh md:h-screen bg-transparent text-foreground w-full font-sans overflow-x-hidden md:overflow-hidden">
       {/* Sidebar (desktop) */}
       <div className="hidden w-[260px] md:flex flex-col h-full overflow-visible glass-soft border-r border-border z-30">
         {/* Sidebar Header */}
@@ -317,9 +321,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {/* Main Container */}
       <div className="flex-1 flex flex-col overflow-hidden relative">
         {/* Top Header */}
-        <header className="h-[72px] px-4 lg:px-6 flex items-center justify-between gap-4 glass-soft border-b border-border shrink-0 sticky top-0 z-20">
-          <div className="flex items-center gap-4">
-            <h2 className="text-xl md:text-2xl font-bold tracking-tight text-foreground">
+        <header className="h-[64px] md:h-[72px] px-3 sm:px-4 lg:px-6 flex items-center justify-between gap-3 glass-soft border-b border-border shrink-0 sticky top-0 z-20">
+          <div className="flex min-w-0 items-center gap-2 md:gap-4">
+            <button
+              type="button"
+              onClick={() => setIsMobileMenuOpen(true)}
+              className="md:hidden grid h-10 w-10 place-items-center rounded-md border border-border bg-surface-2 text-foreground"
+              aria-label="Open navigation"
+            >
+              <Menu size={20} />
+            </button>
+            <h2 className="truncate text-xl md:text-2xl font-bold tracking-tight text-foreground">
               {pageTitle}
             </h2>
           </div>
@@ -390,30 +402,86 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
         </header>
 
-        <nav className="md:hidden flex gap-1 overflow-x-auto border-b border-border glass-soft px-2 py-2 scroller-minimal">
-          {navLinks.map((link) => {
+        <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-flow-col auto-cols-fr border-t border-border bg-surface/95 px-1 pb-[calc(env(safe-area-inset-bottom)+0.25rem)] pt-1 backdrop-blur md:hidden">
+          {bottomNavLinks.map((link) => {
             const isActive = pathname === link.href || (link.href !== '/firm' && link.href !== '/admin' && pathname.startsWith(link.href));
             return (
               <Link
                 key={link.href}
                 href={link.href}
-                className={`shrink-0 border px-3 py-2 text-sm font-semibold ${
-                  isActive ? 'border-border bg-surface-2 text-foreground' : 'border-transparent text-muted'
+                onClick={() => setIsMobileMenuOpen(false)}
+                className={`flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-md px-1 text-[11px] font-semibold ${
+                  isActive ? 'bg-surface-2 text-foreground' : 'text-muted'
                 }`}
               >
-                {t(link.key)}
+                <link.icon size={18} />
+                <span className="max-w-full truncate">{t(link.key)}</span>
               </Link>
             );
           })}
+          {bottomMoreLinks.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setIsMobileMenuOpen(true)}
+              className="flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-md px-1 text-[11px] font-semibold text-muted"
+            >
+              <MoreHorizontal size={18} />
+              <span>More</span>
+            </button>
+          )}
         </nav>
 
         {/* Scrollable Page Content */}
-        <main className="flex-1 overflow-y-auto scroller-minimal p-3 md:p-5 relative">
-          <div className="max-w-[1600px] mx-auto w-full relative z-10 h-full">
+        <main className="flex-1 overflow-y-auto scroller-minimal p-3 pb-24 md:p-5 relative">
+          <div className="max-w-[1600px] mx-auto w-full relative z-10 min-h-full">
             {children}
           </div>
         </main>
       </div>
+
+      {isMobileMenuOpen && (
+        <div className="fixed inset-0 z-[90] md:hidden">
+          <button className="absolute inset-0 bg-black/60" aria-label="Close navigation" onClick={() => setIsMobileMenuOpen(false)} />
+          <aside className="absolute left-0 top-0 flex h-dvh w-[min(86vw,360px)] flex-col border-r border-border bg-surface p-4 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between gap-3 border-b border-border pb-4">
+              <div className="min-w-0">
+                <div className="text-lg font-bold text-foreground">ADO Financial</div>
+                <div className="truncate text-xs uppercase tracking-wide text-muted">{normalizedRole === 'firm' ? firmRole.replace('_', ' ') : user.role}</div>
+              </div>
+              <button type="button" onClick={() => setIsMobileMenuOpen(false)} className="grid h-10 w-10 place-items-center rounded-md border border-border bg-surface-2" aria-label="Close navigation">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto scroller-minimal">
+              {navGroups.map((group) => group.links.length > 0 && (
+                <div key={group.label} className="mb-4">
+                  <div className="mb-1 px-1 text-[11px] font-bold uppercase tracking-widest text-muted">{group.label}</div>
+                  <div className="grid gap-1">
+                    {group.links.map((link) => {
+                      const isActive = pathname === link.href || (link.href !== '/firm' && link.href !== '/admin' && pathname.startsWith(link.href));
+                      return (
+                        <Link
+                          key={link.href}
+                          href={link.href}
+                          onClick={() => setIsMobileMenuOpen(false)}
+                          className={`flex min-h-12 items-center gap-3 rounded-md px-3 text-sm font-semibold ${isActive ? 'bg-surface-2 text-foreground' : 'text-muted'}`}
+                        >
+                          <link.icon size={20} />
+                          {t(link.key)}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button onClick={logout} className="mt-4 flex min-h-12 items-center justify-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 font-bold text-red-600">
+              <LogOut size={18} />
+              {t('signOut')}
+            </button>
+          </aside>
+        </div>
+      )}
 
       {/* Mobile Account Modal - Hidden on desktop mostly */}
       {isAccountModalOpen && (

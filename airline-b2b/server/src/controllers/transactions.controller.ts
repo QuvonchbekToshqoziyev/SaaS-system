@@ -5,6 +5,7 @@ import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
 import { assertKassaOpenForDate, parseBusinessDate } from '../utils/kassa';
 import { writeAuditLog } from '../utils/audit';
 import { assertActiveKassaDesk, assertKassaDeskForFirmSetSelection } from '../utils/kassa-desk-policy';
+import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
 
 type AuthUser = {
   userId?: string;
@@ -170,6 +171,7 @@ export const createDirectedTransaction = async (req: Request, res: Response) => 
   const flightId = String(body.flightId || '').trim() || undefined;
   const amount = parseDecimal(body.amount);
   const currency = normalizeCurrency(body.currency || DEFAULT_CURRENCY);
+  const rawExchangeRate = body.exchangeRate;
   const note = typeof body.note === 'string' ? body.note.trim() : '';
   let kassaDesk: Awaited<ReturnType<typeof resolveKassaDesk>> = null;
 
@@ -218,8 +220,12 @@ export const createDirectedTransaction = async (req: Request, res: Response) => 
     if (!receiver) return res.status(404).json({ error: 'Receiver firm not found' });
     if (flightId && !flight) return res.status(404).json({ error: 'Flight not found' });
 
-    const exchangeRate = new Prisma.Decimal(1);
-    const baseAmount = amount.toDecimalPlaces(4);
+    const exchangeRate = await resolveExchangeRateToUzs(authUser, {
+      currency,
+      date: new Date(),
+      overrideRate: rawExchangeRate,
+    });
+    const baseAmount = amount.mul(exchangeRate).toDecimalPlaces(4);
     const created = await prisma.transaction.create({
       data: {
         firmId: receiverFirmId,
@@ -274,6 +280,7 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
   const flightId = String(body.flightId || '').trim() || undefined;
   const amount = parseDecimal(body.amount);
   const currency = normalizeCurrency(body.currency || DEFAULT_CURRENCY);
+  const rawExchangeRate = body.exchangeRate;
   const note = typeof body.note === 'string' ? body.note.trim() : '';
   const businessDate = parseBusinessDate(String(body.businessDate || body.date || ''));
   const method = String(body.method || body.paymentMethod || 'cash').trim().toLowerCase();
@@ -334,11 +341,14 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
     if (method === 'card') {
       if (!paymentCard) return res.status(404).json({ error: 'Payment card not found' });
       if (paymentCard.status !== 'ACTIVE') return res.status(400).json({ error: 'Payment card is not active' });
-      if (paymentCard.currency !== currency) return res.status(400).json({ error: `Selected card currency is ${paymentCard.currency}` });
     }
 
-    const exchangeRate = new Prisma.Decimal(1);
-    const baseAmount = amount.toDecimalPlaces(4);
+    const exchangeRate = await resolveExchangeRateToUzs(authUser, {
+      currency,
+      date: businessDate || new Date(),
+      overrideRate: rawExchangeRate,
+    });
+    const baseAmount = amount.mul(exchangeRate).toDecimalPlaces(4);
     const created = await prisma.transaction.create({
       data: {
         firmId,

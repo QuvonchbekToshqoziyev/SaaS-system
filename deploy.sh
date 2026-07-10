@@ -9,6 +9,7 @@
 #   ./deploy.sh --backend-only       # only backend (PM2)
 #   ./deploy.sh --frontend-only      # only frontend (Nginx static)
 #   ./deploy.sh --schema             # also run prisma db push
+#   ./deploy.sh --skip-dev-sync      # emergency only: do not sync dev first
 #
 # Auth (pick one):
 #   1. File   → create server-pass.md at repo root (git-ignored):
@@ -35,12 +36,17 @@ CLIENT_DIR="$REPO_ROOT/airline-b2b/client"
 NGINX_CONF_SRC="$REPO_ROOT/nginx.conf.b2b.ado-finance.com"
 
 # ── Flags ────────────────────────────────────────────────────────────────────
-BACKEND_ONLY=0; FRONTEND_ONLY=0; RUN_SCHEMA=0; USE_SSH_KEY="${USE_SSH_KEY:-0}"
+BACKEND_ONLY=0; FRONTEND_ONLY=0; RUN_SCHEMA=0; SKIP_DEV_SYNC="${SKIP_DEV_SYNC:-0}"; USE_SSH_KEY="${USE_SSH_KEY:-0}"
 for arg in "$@"; do
   case $arg in
     --backend-only)  BACKEND_ONLY=1 ;;
     --frontend-only) FRONTEND_ONLY=1 ;;
     --schema)        RUN_SCHEMA=1 ;;
+    --skip-dev-sync) SKIP_DEV_SYNC=1 ;;
+    *)
+      echo "Unknown argument: $arg" >&2
+      exit 1
+      ;;
   esac
 done
 
@@ -87,6 +93,25 @@ command -v npm   &>/dev/null || { error "npm not found";   exit 1; }
 
 info "Target: ${REMOTE_HOST}  domain: ${DOMAIN}"
 remote "echo 'SSH OK'" && success "SSH connection OK"
+
+sync_dev_before_prod() {
+  if [[ "$SKIP_DEV_SYNC" == "1" ]]; then
+    warn "Skipping dev sync before production deploy. Use only for emergencies."
+    return 0
+  fi
+
+  [[ -x "$REPO_ROOT/deploy-dev.sh" ]] || { error "Missing executable dev deploy script: $REPO_ROOT/deploy-dev.sh"; exit 1; }
+
+  local dev_args=()
+  if [[ "$BACKEND_ONLY" == "1" ]]; then dev_args+=(--backend-only); fi
+  if [[ "$FRONTEND_ONLY" == "1" ]]; then dev_args+=(--frontend-only); fi
+  if [[ "$RUN_SCHEMA" == "1" ]]; then dev_args+=(--schema); fi
+
+  header "Dev sync before production"
+  info "Production deploy policy: dev may be ahead of prod, but prod must not move ahead of dev."
+  "$REPO_ROOT/deploy-dev.sh" "${dev_args[@]}"
+  success "Dev is updated from this source tree; continuing production deploy"
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BACKEND
@@ -256,6 +281,8 @@ NGINX_SETUP
 # ─────────────────────────────────────────────────────────────────────────────
 # RUN
 # ─────────────────────────────────────────────────────────────────────────────
+sync_dev_before_prod
+
 if [[ "$FRONTEND_ONLY" == "0" ]]; then deploy_backend; fi
 if [[ "$BACKEND_ONLY"  == "0" ]]; then deploy_frontend; fi
 

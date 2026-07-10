@@ -23,6 +23,7 @@ type LocalFlight = {
   id?: string;
   flight_id?: string;
   flightNumber?: string;
+  route?: string;
   airlineId?: string | null;
   airline?: { id: string; name: string; code?: string | null; firmId?: string | null } | null;
   departure: string;
@@ -60,7 +61,7 @@ export default function FlightsPage() {
   const role = user?.role?.toUpperCase() || '';
   const firmRole = String(user?.firmRole || 'FIRM_ADMIN').toUpperCase();
   const canCreateFlight = role === 'FIRM' && firmRole !== 'KASSIR';
-  const canEdit = role === 'SUPERADMIN';
+  const canEdit = role === 'SUPERADMIN' || canCreateFlight;
   const showFlightActions = canCreateFlight || canEdit;
   
   const { data: flights = [], isLoading: loading } = useQuery<LocalFlight[]>({
@@ -73,7 +74,7 @@ export default function FlightsPage() {
   const { data: listedAirlines = [] } = useQuery<AirlineOption[]>({
     queryKey: ['airlines', 'flight-options'],
     queryFn: async () => (await api.get('/airlines')).data,
-    enabled: role === 'FIRM',
+    enabled: role === 'FIRM' || role === 'SUPERADMIN',
   });
 
   const [flightsView, setFlightsView] = useState<'boxes' | 'list'>(() => {
@@ -128,6 +129,10 @@ export default function FlightsPage() {
   const [filters, setFilters] = useState({ q: '', airlineId: 'ALL', status: 'ACTIVE' });
   const isSuperadmin = role === 'SUPERADMIN';
   const connectedListedAirlines = useMemo(() => listedAirlines.filter((airline) => airline.firmId), [listedAirlines]);
+  const editableListedAirlines = useMemo(
+    () => (isSuperadmin ? listedAirlines : connectedListedAirlines),
+    [connectedListedAirlines, isSuperadmin, listedAirlines]
+  );
 
   const airlineOptions = useMemo(() => {
     const rows = new Map<string, { id: string; name: string }>();
@@ -233,8 +238,8 @@ export default function FlightsPage() {
     setCurrentFlightId(flightId);
     setFormData({
       flightNumber: flight.flightNumber || '',
-      route: '',
-      airlineMode: 'LISTED',
+      route: flight.route || '',
+      airlineMode: flight.airline?.id ? 'LISTED' : 'EXTERNAL',
       airlineId: flight.airline?.id || '',
       airlineName: flight.airline?.name || '',
       airlineCode: flight.airline?.code || '',
@@ -273,7 +278,18 @@ export default function FlightsPage() {
         setConfirm({ kind: 'create', payload });
         return;
       } else {
-        await api.put(`/flights/${currentFlightId}`, { flightNumber: formData.flightNumber });
+        await api.put(`/flights/${currentFlightId}`, {
+          flightNumber: formData.flightNumber,
+          route: formData.route,
+          ...(formData.airlineMode === 'LISTED'
+            ? { airlineId: formData.airlineId }
+            : { airlineName: formData.airlineName.trim(), airlineCode: formData.airlineCode.trim().toUpperCase() || undefined }),
+          departure: new Date(formData.departure).toISOString(),
+          arrival: new Date(formData.arrival).toISOString(),
+          ticketCount: Number(formData.ticketCount),
+          ticketPrice: Number(formData.ticketPrice),
+          currency: formData.currency,
+        });
         toast.success(tr('Flight updated!', 'Reys yangilandi!'));
       }
       setIsModalOpen(false);
@@ -821,7 +837,7 @@ export default function FlightsPage() {
 
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-md p-6">
+          <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto p-6">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-xl font-bold text-foreground">
                 {tr('Edit Flight', 'Reysni tahrirlash')}
@@ -844,70 +860,126 @@ export default function FlightsPage() {
                 />
               </div>
 
-              {false && (
-                <>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-muted mb-1">{tr('Departure', 'Jo\'nab ketish')}</label>
-                      <input
-                        type="datetime-local"
-                        required
-                        className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
-                        value={formData.departure}
-                        onChange={(e) => setFormData({...formData, departure: e.target.value})}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-muted mb-1">{tr('Arrival', 'Yetib kelish')}</label>
-                      <input
-                        type="datetime-local"
-                        required
-                        className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
-                        value={formData.arrival}
-                        onChange={(e) => setFormData({...formData, arrival: e.target.value})}
-                      />
-                    </div>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-muted mb-1">{tr('Ticket Count', 'Bilet soni')}</label>
-                      <input
-                        type="number"
-                        min="1"
-                        required
-                        className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
-                        value={formData.ticketCount}
-                        onChange={(e) => setFormData({...formData, ticketCount: Number(e.target.value)})}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-muted mb-1">{tr('Ticket Amount', 'Bilet summasi')}</label>
-                      <input
-                        type="number"
-                        min="0"
-                        required
-                        className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
-                        value={formData.ticketPrice}
-                        onChange={(e) => setFormData({...formData, ticketPrice: Number(e.target.value)})}
-                      />
-                    </div>
-                  </div>
-
+              <div className="grid gap-4 md:grid-cols-[160px_1fr]">
+                <div>
+                  <label className="block text-sm font-medium text-muted mb-1">{tr('Airline type', 'Aviakompaniya turi')}</label>
+                  <select
+                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
+                    value={formData.airlineMode}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      airlineMode: e.target.value,
+                      airlineId: e.target.value === 'LISTED' ? (editableListedAirlines[0]?.id || '') : '',
+                    })}
+                  >
+                    <option value="LISTED" disabled={editableListedAirlines.length === 0}>{tr('Listed', 'Ro\'yxatdagi')}</option>
+                    <option value="EXTERNAL">{tr('External', 'Tashqi')}</option>
+                  </select>
+                </div>
+                {formData.airlineMode === 'LISTED' ? (
                   <div>
-                    <label className="block text-sm font-medium text-muted mb-1">{tr('Currency', 'Valyuta')}</label>
+                    <label className="block text-sm font-medium text-muted mb-1">{tr('Airline', 'Aviakompaniya')}</label>
                     <select
                       className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
-                      value={formData.currency}
-                      onChange={(e) => setFormData({...formData, currency: e.target.value})}
+                      value={formData.airlineId}
+                      onChange={(e) => setFormData({...formData, airlineId: e.target.value})}
                     >
-                        <option value="UZS">UZS</option>
-                      <option value="USD">USD</option>
-                      <option value="EUR">EUR</option>
+                      <option value="">{tr('Select airline', 'Aviakompaniyani tanlang')}</option>
+                      {editableListedAirlines.map((airline) => (
+                        <option key={airline.id} value={airline.id}>{airline.name}{airline.code ? ` (${airline.code})` : ''}</option>
+                      ))}
                     </select>
                   </div>
-                </>
-              )}
+                ) : (
+                  <div className="grid gap-4 md:grid-cols-[1fr_120px]">
+                    <div>
+                      <label className="block text-sm font-medium text-muted mb-1">{tr('Airline name', 'Aviakompaniya nomi')}</label>
+                      <input
+                        className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
+                        value={formData.airlineName}
+                        onChange={(e) => setFormData({...formData, airlineName: e.target.value})}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-muted mb-1">{tr('Code', 'Kod')}</label>
+                      <input
+                        className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
+                        value={formData.airlineCode}
+                        onChange={(e) => setFormData({...formData, airlineCode: e.target.value.toUpperCase()})}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-muted mb-1">{tr('Route', 'Yo\'nalish')}</label>
+                <input
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
+                  value={formData.route}
+                  onChange={(e) => setFormData({...formData, route: e.target.value})}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div>
+                  <label className="block text-sm font-medium text-muted mb-1">{tr('Departure', 'Jo\'nab ketish')}</label>
+                  <input
+                    type="datetime-local"
+                    required
+                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
+                    value={formData.departure}
+                    onChange={(e) => setFormData({...formData, departure: e.target.value})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-muted mb-1">{tr('Arrival', 'Yetib kelish')}</label>
+                  <input
+                    type="datetime-local"
+                    required
+                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
+                    value={formData.arrival}
+                    onChange={(e) => setFormData({...formData, arrival: e.target.value})}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_1fr_120px]">
+                <div>
+                  <label className="block text-sm font-medium text-muted mb-1">{tr('Ticket Count', 'Bilet soni')}</label>
+                  <input
+                    type="number"
+                    min="0"
+                    required
+                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
+                    value={formData.ticketCount}
+                    onChange={(e) => setFormData({...formData, ticketCount: Number(e.target.value)})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-muted mb-1">{tr('Ticket Amount', 'Bilet summasi')}</label>
+                  <input
+                    type="number"
+                    min="0"
+                    required
+                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
+                    value={formData.ticketPrice}
+                    onChange={(e) => setFormData({...formData, ticketPrice: Number(e.target.value)})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-muted mb-1">{tr('Currency', 'Valyuta')}</label>
+                  <select
+                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
+                    value={formData.currency}
+                    onChange={(e) => setFormData({...formData, currency: e.target.value})}
+                  >
+                    <option value="UZS">UZS</option>
+                    <option value="USD">USD</option>
+                    <option value="EUR">EUR</option>
+                  </select>
+                </div>
+              </div>
               
               <div className="mt-6 flex justify-end gap-3">
                 <button

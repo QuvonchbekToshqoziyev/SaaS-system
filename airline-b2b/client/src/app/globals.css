@@ -80,6 +80,15 @@ body {
   font-family: var(--font-outfit), 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+html {
+  overflow-x: hidden;
+}
+
+* {
+  min-width: 0;
 }
 
 input[type='number']::-webkit-outer-spin-button,
@@ -257,4 +266,29 @@ select:-webkit-autofill {
   box-shadow: 0 14px 44px var(--glass-shadow);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+}
+
+@media (max-width: 639px) {
+  .compact-toolbar {
+    grid-template-columns: 1fr;
+    max-width: none;
+  }
+
+  .compact-control {
+    min-height: 2.75rem;
+    font-size: 1rem;
+  }
+
+  .glass-panel {
+    border-radius: 12px;
+  }
+
+  .excel-table {
+    font-size: 0.75rem;
+  }
+
+  .excel-table thead th,
+  .excel-table tbody td {
+    padding: 0.55rem 0.6rem;
+  }
 }

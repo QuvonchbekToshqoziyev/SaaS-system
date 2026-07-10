@@ -6,6 +6,7 @@ import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
 import { assertActiveKassaDesk, assertKassaDeskForFirmSelection } from '../utils/kassa-desk-policy';
 import { canManageFirmWork } from '../utils/firm-user-roles';
 import { createFirmNotification } from '../utils/notifications';
+import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
 
 function normalizeRole(role: unknown): string {
   return String(role || '').toUpperCase();
@@ -481,11 +482,14 @@ export const confirmAllocation = async (req: Request, res: Response) => {
           data: { status: 'ASSIGNED' },
         });
 
-        const transactionRows = tickets.map((t) => {
+        const transactionRows = await Promise.all(tickets.map(async (t) => {
           const originalAmount = new Prisma.Decimal(String(t.basePrice)).toDecimalPlaces(4);
           const currency = normalizeCurrency(t.currency);
-          const exchangeRate = new Prisma.Decimal(1);
-          const baseAmount = originalAmount.toDecimalPlaces(4);
+          const exchangeRate = await resolveExchangeRateToUzs(user, {
+            currency,
+            overrideRate: req.body?.exchangeRate,
+          });
+          const baseAmount = originalAmount.mul(exchangeRate).toDecimalPlaces(4);
 
           return {
             firmId: ownFirmId,
@@ -510,7 +514,7 @@ export const confirmAllocation = async (req: Request, res: Response) => {
               kassaDeskLabel: kassaDesk?.name,
             } as any,
           };
-        });
+        }));
 
         await tx.transaction.createMany({ data: transactionRows });
         await createFirmNotification(tx, ownFirmId, {
@@ -566,8 +570,11 @@ export const confirmAllocation = async (req: Request, res: Response) => {
       const originalAmount = new Prisma.Decimal(String(ticket.basePrice));
       const currency = normalizeCurrency(ticket.currency);
 
-      const exchangeRate = new Prisma.Decimal(1);
-      const baseAmount = originalAmount.toDecimalPlaces(4);
+      const exchangeRate = await resolveExchangeRateToUzs(user, {
+        currency,
+        overrideRate: req.body?.exchangeRate,
+      });
+      const baseAmount = originalAmount.mul(exchangeRate).toDecimalPlaces(4);
       const airlineFirmId = flight.airline?.firmId || null;
 
       await tx.ticket.update({
@@ -822,11 +829,21 @@ export const sellTicket = async (req: Request, res: Response) => {
 
   const saleAmount = parsePositiveDecimal(salePrice);
   const currency = normalizeCurrency(saleCurrency);
+  const rawExchangeRate = (req.body as any)?.exchangeRate;
   if (!saleAmount) {
     return res.status(400).json({ error: 'salePrice is required' });
   }
   if (!/^[A-Z]{3}$/.test(currency)) {
     return res.status(400).json({ error: 'saleCurrency must be a 3-letter code (e.g. UZS)' });
+  }
+  let saleExchangeRate: Prisma.Decimal;
+  try {
+    saleExchangeRate = await resolveExchangeRateToUzs(user, {
+      currency,
+      overrideRate: rawExchangeRate,
+    });
+  } catch (err: any) {
+    return res.status(err?.statusCode || 400).json({ error: err?.message || 'Exchange rate to UZS is required' });
   }
 
   const purchaserRaw = (req.body as any).purchaser ?? (req.body as any).purchaserInfo;
@@ -879,8 +896,8 @@ export const sellTicket = async (req: Request, res: Response) => {
           throw new Error(`Not enough assigned tickets (requested ${resolvedQuantity}, found ${tickets.length})`);
         }
 
-        const exchangeRate = new Prisma.Decimal(1);
-        const baseAmount = saleAmount.toDecimalPlaces(4);
+        const exchangeRate = saleExchangeRate;
+        const baseAmount = saleAmount.mul(exchangeRate).toDecimalPlaces(4);
 
         const ticketIds = tickets.map((t) => String(t.id));
         await tx.ticket.updateMany({
@@ -955,8 +972,8 @@ export const sellTicket = async (req: Request, res: Response) => {
       kassaDesk = await resolveKassaDesk(user, req.body?.kassaDeskId);
       await assertKassaDeskForFirm(kassaDesk, assignedFirmId);
 
-      const exchangeRate = new Prisma.Decimal(1);
-      const baseAmount = saleAmount.toDecimalPlaces(4);
+      const exchangeRate = saleExchangeRate;
+      const baseAmount = saleAmount.mul(exchangeRate).toDecimalPlaces(4);
 
       await tx.ticket.update({
         where: { id: ticketId },

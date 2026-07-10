@@ -93,6 +93,8 @@ Expected for the login page editor feature:
 
 Use the root deploy script only after gates 1-4 pass.
 
+Production deploys must never put prod ahead of dev. `./deploy.sh` automatically runs the matching `./deploy-dev.sh` step first, from the same source tree. Dev may be ahead of prod, but prod should not move unless dev has already accepted that code. Use `--skip-dev-sync` only for a true emergency and note it in the release summary.
+
 ```bash
 ./deploy.sh --schema
 ```

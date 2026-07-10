@@ -11,10 +11,16 @@ export function parseBusinessDate(value: unknown): Date | null {
 }
 
 export function formatBusinessDateKey(date: Date): string {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    throw new Error('Invalid business date');
+  }
   return date.toISOString().slice(0, 10);
 }
 
 export function startOfDayUtc(d: Date): Date {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) {
+    throw new Error('Invalid business date');
+  }
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
 }
 
@@ -34,7 +40,7 @@ export function getTransactionBusinessDateKey(tx: {
   type: string;
   paymentMethod?: string | null;
   metadata?: unknown;
-  createdAt: Date;
+  createdAt?: Date | string | null;
 }): string {
   if (tx.type === 'PAYMENT' || tx.type === 'ADJUSTMENT') {
     const meta = isRecord(tx.metadata) ? tx.metadata : null;
@@ -43,7 +49,15 @@ export function getTransactionBusinessDateKey(tx: {
       return dateValue.trim();
     }
   }
-  return formatBusinessDateKey(startOfDayUtc(tx.createdAt));
+  const createdAt = tx.createdAt instanceof Date
+    ? tx.createdAt
+    : typeof tx.createdAt === 'string'
+      ? new Date(tx.createdAt)
+      : null;
+  if (!createdAt || Number.isNaN(createdAt.getTime())) {
+    throw new Error('Transaction createdAt is required for kassa business date');
+  }
+  return formatBusinessDateKey(startOfDayUtc(createdAt));
 }
 
 export async function findKassaForDate(businessDate: Date) {

@@ -4,6 +4,7 @@ import { prisma } from '../db';
 import { canAccessFirm } from '../utils/access';
 import { writeAuditLog } from '../utils/audit';
 import { canManageFirmWork } from '../utils/firm-user-roles';
+import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
 
 type AuthUser = {
   userId?: string;
@@ -112,52 +113,28 @@ export const createTourPackage = async (req: Request, res: Response) => {
 
   let created: Awaited<ReturnType<typeof prisma.tourPackage.create>>;
   try {
-    created = await prisma.$transaction(async (tx) => {
-      const tickets: Array<{ id: string }> = await tx.$queryRaw`
-        SELECT id
-        FROM "Ticket"
-        WHERE "flightId" = ${flightId}
-          AND "allocatedFirmId" = ${ownerFirmId}
-          AND status = 'ASSIGNED'
-          AND "deletedAt" IS NULL
-        ORDER BY "createdAt" ASC
-        FOR UPDATE SKIP LOCKED
-        LIMIT ${quantity}
-      `;
-
-      if (tickets.length < quantity) {
-        throw new Error(`Not enough assigned tickets to create this tour (requested ${quantity}, available ${tickets.length})`);
-      }
-
-      const ticketIds = tickets.map((ticket) => ticket.id);
-      await tx.ticket.updateMany({
-        where: { id: { in: ticketIds } },
-        data: { status: 'ALLOCATED' },
-      });
-
-      return tx.tourPackage.create({
-        data: {
-          ownerFirmId,
-          flightId,
-          name,
-          destination: destination || flight.route,
-          quantity,
-          availableQuantity: quantity,
-          unitPrice: unitPrice.toDecimalPlaces(4),
-          ticketPrice: ticketPrice.toDecimalPlaces(4),
-          servicePrice: servicePrice.toDecimalPlaces(4),
-          currency,
-          notes: typeof body.notes === 'string' ? body.notes.trim() : undefined,
-        },
-        include: {
-          ownerFirm: { select: { id: true, name: true } },
-          flight: { select: { id: true, flightNumber: true, route: true, departure: true, arrival: true, currency: true } },
-          sales: true,
-        },
-      });
+    created = await prisma.tourPackage.create({
+      data: {
+        ownerFirmId,
+        flightId,
+        name,
+        destination: destination || flight.route,
+        quantity,
+        availableQuantity: quantity,
+        unitPrice: unitPrice.toDecimalPlaces(4),
+        ticketPrice: ticketPrice.toDecimalPlaces(4),
+        servicePrice: servicePrice.toDecimalPlaces(4),
+        currency,
+        notes: typeof body.notes === 'string' ? body.notes.trim() : undefined,
+      },
+      include: {
+        ownerFirm: { select: { id: true, name: true } },
+        flight: { select: { id: true, flightNumber: true, route: true, departure: true, arrival: true, currency: true } },
+        sales: true,
+      },
     });
   } catch (err: any) {
-    return res.status(400).json({ error: err?.message || 'Failed to reserve tickets for tour package' });
+    return res.status(400).json({ error: err?.message || 'Failed to create tour package' });
   }
 
   await writeAuditLog(req, {
@@ -167,7 +144,7 @@ export const createTourPackage = async (req: Request, res: Response) => {
     entityLabel: created.name,
     summary: `Created tour package ${created.name}`,
     after: created,
-    metadata: { reservedTicketCount: quantity },
+    metadata: { packageQuantity: quantity, ticketReservationRequired: false },
   });
   res.status(201).json(created);
 };
@@ -213,8 +190,11 @@ export const sellTourPackage = async (req: Request, res: Response) => {
       const unitPrice = overrideUnitPrice?.gt(0) ? overrideUnitPrice : new Prisma.Decimal(String(pkg.unitPrice));
       const totalAmount = unitPrice.mul(quantity).toDecimalPlaces(4);
       const currency = normalizeCurrency(pkg.currency);
-      const exchangeRate = new Prisma.Decimal(1);
-      const baseAmount = totalAmount.toDecimalPlaces(4);
+      const exchangeRate = await resolveExchangeRateToUzs(authUser, {
+        currency,
+        overrideRate: req.body?.exchangeRate,
+      });
+      const baseAmount = totalAmount.mul(exchangeRate).toDecimalPlaces(4);
 
       const txRow = await tx.transaction.create({
         data: {
@@ -322,7 +302,7 @@ export const listTourPackageSales = async (req: Request, res: Response) => {
 export const listTourCounterpartyFirms = async (_req: Request, res: Response) => {
   const firms = await prisma.firm.findMany({
     where: { status: 'ACTIVE' },
-    select: { id: true, name: true },
+    select: { id: true, name: true, currency: true, kind: true },
     orderBy: { name: 'asc' },
   });
   res.json(firms);

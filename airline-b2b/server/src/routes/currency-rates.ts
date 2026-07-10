@@ -8,7 +8,7 @@ const router = Router();
 router.use(authMiddleware);
 
 router.get('/', listCurrencyRates);
-router.post('/', roleMiddleware(['SUPERADMIN', 'ADMIN']), createCurrencyRate);
+router.post('/', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), createCurrencyRate);
 router.patch('/:id', roleMiddleware(['SUPERADMIN']), (req, res) => {
   req.params.model = 'currencyRate';
   return updateRecord(req, res);

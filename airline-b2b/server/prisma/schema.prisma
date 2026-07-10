@@ -565,6 +565,7 @@ model PaymentCard {
   ownerName       String
   cardNumber      String
   currency        String        @default("UZS")
+  openingBalance  Decimal       @default(0) @db.Decimal(12, 4)
   firmId          String?
   firm            Firm?         @relation(fields: [firmId], references: [id])
   status          String        @default("ACTIVE")

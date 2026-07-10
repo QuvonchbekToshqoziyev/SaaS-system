@@ -226,7 +226,6 @@ async function conversationAccessWhere(authUser: AuthUser): Promise<Prisma.ChatC
       { type: { in: [ChatType.PERSONAL, ChatType.BRANCH, ChatType.AI] }, participants: { some: { userId } } },
       ...(canReadCompanyChannel(authUser) ? [{ type: ChatType.COMPANY }] : []),
       ...(canReadSupportTicket(authUser) && authUser.firmId ? [{ type: ChatType.SUPPORT, firmId: String(authUser.firmId) }] : []),
-      ...(authUser.firmId ? [{ type: ChatType.BRANCH, firmId: String(authUser.firmId) }] : []),
     ],
   };
 }

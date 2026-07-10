@@ -9,6 +9,7 @@ import {
   listPaymentCardsService,
   openKassaService,
   reopenKassaService,
+  updatePaymentCardService,
   type AuthUser,
 } from '../services/kassa.service';
 import { writeAuditLog } from '../utils/audit';
@@ -155,6 +156,7 @@ export const createPaymentCard = async (req: Request, res: Response) => {
       cardNumber: req.body?.cardNumber,
       currency: req.body?.currency,
       firmId: req.body?.firmId,
+      openingBalance: req.body?.openingBalance,
     });
     await writeAuditLog(req, {
       action: 'CREATE',
@@ -165,6 +167,30 @@ export const createPaymentCard = async (req: Request, res: Response) => {
       after: result,
     });
     return res.status(201).json(result);
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
+export const updatePaymentCard = async (req: Request, res: Response) => {
+  try {
+    const result = await updatePaymentCardService(getAuthUser(req), String(req.params.id || ''), {
+      ownerName: req.body?.ownerName,
+      cardNumber: req.body?.cardNumber,
+      currency: req.body?.currency,
+      firmId: req.body?.firmId,
+      openingBalance: req.body?.openingBalance,
+      status: req.body?.status,
+    });
+    await writeAuditLog(req, {
+      action: 'UPDATE',
+      entityType: 'paymentCard',
+      entityId: result.id,
+      entityLabel: result.ownerName,
+      summary: `Updated payment card ${result.ownerName}`,
+      after: result,
+    });
+    return res.json(result);
   } catch (err) {
     return sendError(res, err);
   }

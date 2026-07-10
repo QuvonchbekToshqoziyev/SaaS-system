@@ -27,6 +27,8 @@ function FlightDetailContent() {
   const [selectedFirmId, setSelectedFirmId] = useState<string>('');
   const [allocateQuantity, setAllocateQuantity] = useState<string>('1');
   const [allocatePrice, setAllocatePrice] = useState<string>('');
+  const [allocatePricingMode, setAllocatePricingMode] = useState<'SAME' | 'MIXED'>('SAME');
+  const [allocationRows, setAllocationRows] = useState<Array<{ quantity: string; price: string }>>([{ quantity: '1', price: '' }]);
   const [allocateBusy, setAllocateBusy] = useState(false);
 
   const [sellConfirmTicketId, setSellConfirmTicketId] = useState<string | null>(null);
@@ -35,6 +37,7 @@ function FlightDetailContent() {
   const [sellPrice, setSellPrice] = useState<string>('');
   const [sellCurrency, setSellCurrency] = useState<'USD' | 'UZS' | 'OTHER'>('UZS');
   const [sellOtherCurrency, setSellOtherCurrency] = useState<string>('');
+  const [sellExchangeRate, setSellExchangeRate] = useState<string>('');
   const [sellPurchaserName, setSellPurchaserName] = useState<string>('');
   const [sellPurchaserIdNumber, setSellPurchaserIdNumber] = useState<string>('');
   const [sellPurchaserPhone, setSellPurchaserPhone] = useState<string>('');
@@ -50,6 +53,7 @@ function FlightDetailContent() {
   const [sellBatchPrice, setSellBatchPrice] = useState<string>('');
   const [sellBatchCurrency, setSellBatchCurrency] = useState<'USD' | 'UZS' | 'OTHER'>('UZS');
   const [sellBatchOtherCurrency, setSellBatchOtherCurrency] = useState<string>('');
+  const [sellBatchExchangeRate, setSellBatchExchangeRate] = useState<string>('');
   const [sellBatchPurchaserName, setSellBatchPurchaserName] = useState<string>('');
   const [sellBatchPurchaserIdNumber, setSellBatchPurchaserIdNumber] = useState<string>('');
   const [sellBatchPurchaserPhone, setSellBatchPurchaserPhone] = useState<string>('');
@@ -60,10 +64,12 @@ function FlightDetailContent() {
 
   const [confirmAllocationTicketId, setConfirmAllocationTicketId] = useState<string | null>(null);
   const [confirmAllocationBusy, setConfirmAllocationBusy] = useState(false);
+  const [confirmAllocationExchangeRate, setConfirmAllocationExchangeRate] = useState<string>('');
 
   const [confirmBatchModalOpen, setConfirmBatchModalOpen] = useState(false);
   const [confirmBatchQuantity, setConfirmBatchQuantity] = useState<string>('1');
   const [confirmBatchBusy, setConfirmBatchBusy] = useState(false);
+  const [confirmBatchExchangeRate, setConfirmBatchExchangeRate] = useState<string>('');
 
   const [deallocateConfirm, setDeallocateConfirm] = useState<null | { ticketId: string; status: string }>(null);
   const [deallocateBusy, setDeallocateBusy] = useState(false);
@@ -81,11 +87,15 @@ function FlightDetailContent() {
   const fetchData = async () => {
     try {
       if (!id) return;
+      const role = String(user?.role || '').toUpperCase();
+      const firmRole = user?.firmRole || 'FIRM_ADMIN';
+      const canManageFirmWork = role !== 'FIRM' || firmRole === 'FIRM_ADMIN' || firmRole === 'MANAGER';
+      const canAllocateTickets = role === 'FIRM' && canManageFirmWork;
 
       const [reportRes, ticketsRes, firmsRes, cancelReqRes, desksRes] = await Promise.all([
         api.get(`/reports/flight?flight_id=${id}`),
         api.get(`/tickets?flight_id=${id}`),
-        Promise.resolve({ data: [] as any[] }),
+        canAllocateTickets ? api.get('/firms') : Promise.resolve({ data: [] as any[] }),
         api.get(`/tickets/cancel-sale-requests?flight_id=${id}&status=PENDING`).catch(() => ({ data: [] })),
         api.get('/kassa/desks').catch(() => ({ data: [] })),
       ]);
@@ -122,25 +132,58 @@ function FlightDetailContent() {
     setAllocateQuantity('1');
     const ticket = Array.isArray(data?.tickets) ? data.tickets.find((t: any) => String(t.id) === String(ticketId)) : null;
     setAllocatePrice(ticket?.price != null ? String(ticket.price) : '');
+    setAllocatePricingMode('SAME');
+    setAllocationRows([{ quantity: '1', price: ticket?.price != null ? String(ticket.price) : '' }]);
     setIsAllocateModalOpen(true);
   };
 
   const openAllocateBatchModal = () => {
     setSelectedTicketId(null);
     setAllocateQuantity('1');
-    const firstAvailable = Array.isArray(data?.tickets) ? data.tickets.find((t: any) => String(t.status).toUpperCase() === 'AVAILABLE') : null;
+    const firstAvailable = Array.isArray(data?.tickets)
+      ? data.tickets.find((t: any) => ['AVAILABLE', 'ASSIGNED'].includes(String(t.status).toUpperCase()) && !t.soldPrice)
+      : null;
     setAllocatePrice(firstAvailable?.price != null ? String(firstAvailable.price) : '');
+    setAllocatePricingMode('SAME');
+    setAllocationRows([{ quantity: '1', price: firstAvailable?.price != null ? String(firstAvailable.price) : '' }]);
     setIsAllocateModalOpen(true);
+  };
+
+  const updateAllocationRow = (index: number, patch: Partial<{ quantity: string; price: string }>) => {
+    setAllocationRows((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row));
+  };
+
+  const addAllocationRow = () => {
+    setAllocationRows((rows) => [...rows, { quantity: '1', price: allocatePrice || rows[rows.length - 1]?.price || '' }]);
+  };
+
+  const removeAllocationRow = (index: number) => {
+    setAllocationRows((rows) => rows.length <= 1 ? rows : rows.filter((_, rowIndex) => rowIndex !== index));
   };
 
   const handleAllocateSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (allocateBusy) return;
     if (!selectedFirmId) return;
+    const useMixedPrices = !selectedTicketId && allocatePricingMode === 'MIXED';
+    const normalizedRows = useMixedPrices
+      ? allocationRows.map((row) => ({
+          quantity: Number.parseInt(String(row.quantity || '').trim(), 10),
+          price: String(row.price || '').trim(),
+          priceNumber: Number(String(row.price || '').trim()),
+        }))
+      : [];
     const priceNum = Number(allocatePrice);
-    if (!allocatePrice.trim() || !Number.isFinite(priceNum) || priceNum <= 0) {
+    if (!useMixedPrices && (!allocatePrice.trim() || !Number.isFinite(priceNum) || priceNum <= 0)) {
       toast.error(tr('Enter allocation price', 'Ajratma narxini kiriting'));
       return;
+    }
+    if (useMixedPrices) {
+      const hasInvalidRow = normalizedRows.some((row) => !Number.isFinite(row.quantity) || row.quantity <= 0 || !row.price || !Number.isFinite(row.priceNumber) || row.priceNumber <= 0);
+      if (hasInvalidRow) {
+        toast.error(tr('Enter valid quantity and price for every row', 'Har bir qator uchun to\'g\'ri miqdor va narx kiriting'));
+        return;
+      }
     }
     
     try {
@@ -149,7 +192,9 @@ function FlightDetailContent() {
         await api.post(`/tickets/allocate`, { ticketId: selectedTicketId, firmId: selectedFirmId, allocationPrice: allocatePrice.trim() });
         toast.success('Allocation created (pending firm confirmation)');
       } else {
-        const qty = Number.parseInt(String(allocateQuantity || '').trim(), 10);
+        const qty = useMixedPrices
+          ? normalizedRows.reduce((sum, row) => sum + row.quantity, 0)
+          : Number.parseInt(String(allocateQuantity || '').trim(), 10);
         if (!id) {
           toast.error('Missing flight id');
           return;
@@ -158,8 +203,15 @@ function FlightDetailContent() {
           toast.error('Enter a valid quantity');
           return;
         }
-        const res = await api.post(`/tickets/allocate`, { flightId: id, firmId: selectedFirmId, quantity: qty, allocationPrice: allocatePrice.trim() });
-        const count = res?.data?.count ?? qty;
+        const payload = useMixedPrices
+          ? {
+              flightId: id,
+              firmId: selectedFirmId,
+              allocationRows: normalizedRows.map((row) => ({ quantity: row.quantity, price: row.price })),
+            }
+          : { flightId: id, firmId: selectedFirmId, quantity: qty, allocationPrice: allocatePrice.trim() };
+        const res = await api.post(`/tickets/allocate`, payload);
+        const count = res?.data?.count ?? (useMixedPrices ? normalizedRows.reduce((sum, row) => sum + row.quantity, 0) : qty);
         toast.success(`Allocated ${count} ticket(s) (pending confirmation)`);
       }
       setIsAllocateModalOpen(false);
@@ -179,6 +231,16 @@ function FlightDetailContent() {
     () => kassaDesks.filter((desk) => !sellBatchFirmId || String(desk.firmId) === sellBatchFirmId),
     [kassaDesks, sellBatchFirmId],
   );
+  const confirmAllocationTicket = useMemo(
+    () => (Array.isArray(data?.tickets) ? data.tickets : []).find((ticket: any) => String(ticket?.id || '') === String(confirmAllocationTicketId || '')),
+    [data?.tickets, confirmAllocationTicketId],
+  );
+  const confirmAllocationCurrency = String(confirmAllocationTicket?.currency || data?.flight?.currency || 'UZS').trim().toUpperCase();
+  const firstPendingTicket = useMemo(
+    () => (Array.isArray(data?.tickets) ? data.tickets : []).find((ticket: any) => String(ticket?.status || '').toUpperCase() === 'PENDING'),
+    [data?.tickets],
+  );
+  const confirmBatchCurrency = String(firstPendingTicket?.currency || data?.flight?.currency || 'UZS').trim().toUpperCase();
 
   const handleSell = async (ticketId: string, body: any) => {
     try {
@@ -207,6 +269,7 @@ function FlightDetailContent() {
       setSellCurrency('OTHER');
       setSellOtherCurrency(currencyCode);
     }
+    setSellExchangeRate('');
 
     setSellPurchaserName('');
     setSellPurchaserIdNumber('');
@@ -234,6 +297,10 @@ function FlightDetailContent() {
       toast.error('Sale currency must be a 3-letter code (e.g. UZS)');
       return;
     }
+    if (currencyCode !== 'UZS' && (!sellExchangeRate.trim() || Number(sellExchangeRate) <= 0)) {
+      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
+      return;
+    }
 
     const purchaserName = sellPurchaserName.trim();
     const purchaserIdNumber = sellPurchaserIdNumber.trim();
@@ -259,6 +326,7 @@ function FlightDetailContent() {
       await handleSell(sellConfirmTicketId, {
         salePrice: priceRaw,
         saleCurrency: currencyCode,
+        exchangeRate: currencyCode !== 'UZS' ? sellExchangeRate.trim() : undefined,
         purchaser,
         kassaDeskId: sellKassaDeskId || undefined,
       });
@@ -282,6 +350,7 @@ function FlightDetailContent() {
       setSellBatchCurrency('OTHER');
       setSellBatchOtherCurrency(currencyCode);
     }
+    setSellBatchExchangeRate('');
     setSellBatchPurchaserName('');
     setSellBatchPurchaserIdNumber('');
     setSellBatchPurchaserPhone('');
@@ -334,6 +403,10 @@ function FlightDetailContent() {
       toast.error('Sale currency must be a 3-letter code (e.g. UZS)');
       return;
     }
+    if (currencyCode !== 'UZS' && (!sellBatchExchangeRate.trim() || Number(sellBatchExchangeRate) <= 0)) {
+      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
+      return;
+    }
 
     const purchaserName = sellBatchPurchaserName.trim();
     const purchaserIdNumber = sellBatchPurchaserIdNumber.trim();
@@ -381,6 +454,7 @@ function FlightDetailContent() {
         quantity: qty,
         salePrice: priceRaw,
         saleCurrency: currencyCode,
+        exchangeRate: currencyCode !== 'UZS' ? sellBatchExchangeRate.trim() : undefined,
         purchaser,
         kassaDeskId: sellBatchKassaDeskId || undefined,
       });
@@ -397,6 +471,7 @@ function FlightDetailContent() {
 
   const openConfirmAllocation = (ticketId: string) => {
     setConfirmAllocationTicketId(ticketId);
+    setConfirmAllocationExchangeRate('');
   };
 
   const closeConfirmAllocation = () => {
@@ -406,9 +481,16 @@ function FlightDetailContent() {
 
   const confirmAllocation = async () => {
     if (!confirmAllocationTicketId || confirmAllocationBusy) return;
+    if (confirmAllocationCurrency !== 'UZS' && (!confirmAllocationExchangeRate.trim() || Number(confirmAllocationExchangeRate) <= 0)) {
+      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
+      return;
+    }
     setConfirmAllocationBusy(true);
     try {
-      await api.post('/tickets/confirm', { ticketId: confirmAllocationTicketId });
+      await api.post('/tickets/confirm', {
+        ticketId: confirmAllocationTicketId,
+        exchangeRate: confirmAllocationCurrency !== 'UZS' ? confirmAllocationExchangeRate.trim() : undefined,
+      });
       toast.success('Allocation confirmed');
       setConfirmAllocationTicketId(null);
       fetchData();
@@ -421,6 +503,7 @@ function FlightDetailContent() {
 
   const openConfirmBatchModal = () => {
     setConfirmBatchQuantity('1');
+    setConfirmBatchExchangeRate('');
     setConfirmBatchModalOpen(true);
   };
 
@@ -440,10 +523,18 @@ function FlightDetailContent() {
       toast.error('Enter a valid quantity');
       return;
     }
+    if (confirmBatchCurrency !== 'UZS' && (!confirmBatchExchangeRate.trim() || Number(confirmBatchExchangeRate) <= 0)) {
+      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
+      return;
+    }
 
     setConfirmBatchBusy(true);
     try {
-      const res = await api.post('/tickets/confirm', { flightId: id, quantity: qty });
+      const res = await api.post('/tickets/confirm', {
+        flightId: id,
+        quantity: qty,
+        exchangeRate: confirmBatchCurrency !== 'UZS' ? confirmBatchExchangeRate.trim() : undefined,
+      });
       const count = res?.data?.count ?? qty;
       toast.success(`Confirmed ${count} ticket(s)`);
       setConfirmBatchModalOpen(false);
@@ -590,7 +681,8 @@ function FlightDetailContent() {
   const role = String(user?.role || '').toUpperCase();
   const firmRole = user?.firmRole || 'FIRM_ADMIN';
   const canManageFirmWork = role !== 'FIRM' || firmRole === 'FIRM_ADMIN' || firmRole === 'MANAGER';
-  const canAllocate = false;
+  const canAllocate = role === 'FIRM' && canManageFirmWork;
+  const canDeallocateTickets = ['SUPERADMIN', 'ADMIN'].includes(role);
   const canBatchSell = ['SUPERADMIN', 'ADMIN'].includes(role) || (role === 'FIRM' && canManageFirmWork);
   const canConfirmAllocations = role === 'FIRM' && canManageFirmWork;
 
@@ -622,6 +714,30 @@ function FlightDetailContent() {
       ticket.assignedFirmId,
     ].filter(Boolean).join(' ').toLowerCase().includes(text);
   });
+  const remainingTotalsMap: Map<string, { count: number; total: number }> = tickets
+    .filter((ticket: any) => ['AVAILABLE', 'ASSIGNED'].includes(String(ticket.status || '').toUpperCase()) && !ticket.soldPrice)
+    .reduce((map: Map<string, { count: number; total: number }>, ticket: any) => {
+      const currency = String(ticket.currency || '').trim().toUpperCase() || tr('No currency', 'Valyutasiz');
+      const price = Number(ticket.price || 0);
+      const current = map.get(currency) || { count: 0, total: 0 };
+      current.count += 1;
+      current.total += Number.isFinite(price) ? price : 0;
+      map.set(currency, current);
+      return map;
+    }, new Map<string, { count: number; total: number }>());
+  const remainingTotalsByCurrency: Array<{ currency: string; count: number; total: number }> = [];
+  remainingTotalsMap.forEach((value, currency) => {
+    remainingTotalsByCurrency.push({ currency, ...value });
+  });
+  const mixedAllocationTotalQuantity = allocationRows.reduce((sum, row) => {
+    const quantity = Number.parseInt(String(row.quantity || '').trim(), 10);
+    return sum + (Number.isFinite(quantity) && quantity > 0 ? quantity : 0);
+  }, 0);
+  const mixedAllocationTotalAmount = allocationRows.reduce((sum, row) => {
+    const quantity = Number.parseInt(String(row.quantity || '').trim(), 10);
+    const price = Number(String(row.price || '').trim());
+    return sum + (Number.isFinite(quantity) && quantity > 0 && Number.isFinite(price) && price > 0 ? quantity * price : 0);
+  }, 0);
 
   return (
     <div className="space-y-8">
@@ -640,12 +756,31 @@ function FlightDetailContent() {
         </span>
       </div>
 
-      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-6">
+        <div className="bg-surface-2 border border-border rounded-lg p-5">
+          <div className="flex items-center gap-2 text-primary mb-2">
+            <Tag size={16} />
+            <span className="text-sm font-medium">
+              {tr('Remaining ticket value', 'Qolgan chiptalar summasi')}
+            </span>
+          </div>
+          <div className="space-y-1">
+            {remainingTotalsByCurrency.length > 0 ? remainingTotalsByCurrency.map((row) => (
+              <div key={row.currency} className="flex items-baseline justify-between gap-2">
+                <span className="text-sm text-muted">{row.count}x</span>
+                <span className="text-lg font-bold">{row.total.toFixed(2)} {row.currency}</span>
+              </div>
+            )) : (
+              <div className="text-lg font-bold">0.00</div>
+            )}
+          </div>
+        </div>
+
         <div className="bg-surface-2 border border-border rounded-lg p-5">
           <div className="flex items-center gap-2 text-yellow-600 mb-2">
             <Clock size={16} />
             <span className="text-sm font-medium">
-              {tr('Total Debt (Payable, UZS)', 'Jami qarz (To‘lanishi kerak, UZS)')}
+              {tr('Total Debt (Payable)', 'Jami qarz (To‘lanishi kerak)')}
             </span>
           </div>
           <div className="text-3xl font-bold">{Number(summary.total_allocated || 0).toFixed(2)}</div>
@@ -655,7 +790,7 @@ function FlightDetailContent() {
           <div className="flex items-center gap-2 text-green-600 mb-2">
             <Activity size={16} />
             <span className="text-sm font-medium">
-              {tr('Total Revenue (Sales, UZS)', 'Jami daromad (Sotuv, UZS)')}
+              {tr('Total Revenue (Sales)', 'Jami daromad (Sotuv)')}
             </span>
           </div>
           <div className="text-3xl font-bold">{Number(summary.total_sales || 0).toFixed(2)}</div>
@@ -664,7 +799,7 @@ function FlightDetailContent() {
         <div className="bg-surface-2 border border-border rounded-lg p-5">
           <div className="flex items-center gap-2 text-primary mb-2">
             <CheckCircle size={16} />
-            <span className="text-sm font-medium">{tr('Total Payments (UZS)', 'Jami to\'lovlar (UZS)')}</span>
+            <span className="text-sm font-medium">{tr('Total Payments', 'Jami to\'lovlar')}</span>
           </div>
           <div className="text-3xl font-bold">{Number(summary.total_payments || 0).toFixed(2)}</div>
         </div>
@@ -672,7 +807,7 @@ function FlightDetailContent() {
         <div className="bg-surface-2 border border-border rounded-lg p-5">
           <div className="flex items-center gap-2 text-muted mb-2">
             <DollarSign size={16} />
-            <span className="text-sm font-medium">{tr('Outstanding Debt (UZS)', 'Qoldiq qarz (UZS)')}</span>
+            <span className="text-sm font-medium">{tr('Outstanding Debt', 'Qoldiq qarz')}</span>
           </div>
           <div className="text-3xl font-bold">
             {Number((summary.total_allocated || 0) - (summary.total_payments || 0)).toFixed(2)}
@@ -683,7 +818,7 @@ function FlightDetailContent() {
           <div className="bg-surface-2 border border-border rounded-lg p-5 lg:col-span-auto">
             <div className="flex items-center gap-2 text-indigo-600 mb-2">
               <span className="text-sm font-medium">
-                {tr('Profit (Revenue - Debt, UZS)', 'Foyda (Daromad - Qarz, UZS)')}
+                {tr('Profit (Revenue - Debt)', 'Foyda (Daromad - Qarz)')}
               </span>
             </div>
             <div className="text-3xl font-bold text-indigo-600">
@@ -780,7 +915,7 @@ function FlightDetailContent() {
                       </div>
                     </td>
                     <td className="p-4 text-right space-x-3">
-                      {canAllocate && ticket.status === 'AVAILABLE' && (
+                      {canAllocate && ['AVAILABLE', 'ASSIGNED'].includes(String(ticket.status).toUpperCase()) && (
                         <button
                           onClick={() => openAllocateModal(ticket.id)}
                           disabled={flightCancelled}
@@ -807,7 +942,7 @@ function FlightDetailContent() {
                           {tr('Mark Sold', 'Sotildi deb belgilash')}
                         </button>
                       )}
-                      {canAllocate && (ticket.status === 'PENDING' || ticket.status === 'ASSIGNED') && (
+                      {canDeallocateTickets && (ticket.status === 'PENDING' || ticket.status === 'ASSIGNED') && (
                         <button
                           onClick={() => openDeallocateConfirm(ticket.id, ticket.status)}
                           className="px-3 py-1 bg-red-600/10 text-red-300 hover:bg-red-600/20 rounded transition border border-red-600/30 font-medium"
@@ -834,7 +969,7 @@ function FlightDetailContent() {
                               </button>
                             )
                       )}
-                      {canAllocate && ticket.status === 'SOLD' && pendingCancelRequestByTicketId.has(ticket.id) && (
+                      {canDeallocateTickets && ticket.status === 'SOLD' && pendingCancelRequestByTicketId.has(ticket.id) && (
                         <button
                           onClick={() => openSaleCancelApproveModal(pendingCancelRequestByTicketId.get(ticket.id))}
                           className="px-3 py-1 bg-red-600/10 text-red-300 hover:bg-red-600/20 rounded transition border border-red-600/30 font-medium"
@@ -899,7 +1034,7 @@ function FlightDetailContent() {
                     </div>
 
                     <div className="mt-4 flex items-center justify-end gap-2 flex-wrap">
-                      {canAllocate && ticket.status === 'AVAILABLE' && (
+                      {canAllocate && ['AVAILABLE', 'ASSIGNED'].includes(String(ticket.status).toUpperCase()) && (
                         <button
                           onClick={() => openAllocateModal(ticket.id)}
                           disabled={flightCancelled}
@@ -926,7 +1061,7 @@ function FlightDetailContent() {
                           {tr('Mark Sold', 'Sotildi deb belgilash')}
                         </button>
                       )}
-                      {canAllocate && (ticket.status === 'PENDING' || ticket.status === 'ASSIGNED') && (
+                      {canDeallocateTickets && (ticket.status === 'PENDING' || ticket.status === 'ASSIGNED') && (
                         <button
                           onClick={() => openDeallocateConfirm(ticket.id, ticket.status)}
                           className="px-3 py-1 bg-red-600/10 text-red-300 hover:bg-red-600/20 rounded transition border border-red-600/30 font-medium"
@@ -953,7 +1088,7 @@ function FlightDetailContent() {
                               </button>
                             )
                       )}
-                      {canAllocate && ticket.status === 'SOLD' && pendingCancelRequestByTicketId.has(ticket.id) && (
+                      {canDeallocateTickets && ticket.status === 'SOLD' && pendingCancelRequestByTicketId.has(ticket.id) && (
                         <button
                           onClick={() => openSaleCancelApproveModal(pendingCancelRequestByTicketId.get(ticket.id))}
                           className="px-3 py-1 bg-red-600/10 text-red-300 hover:bg-red-600/20 rounded transition border border-red-600/30 font-medium"
@@ -973,7 +1108,7 @@ function FlightDetailContent() {
       {/* Allocate Modal */}
       {isAllocateModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-sm p-6">
+          <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto">
             <h3 className="text-xl font-bold text-foreground mb-4">
               {selectedTicketId
                 ? tr('Allocate ticket', 'Chiptani ajratish')
@@ -1016,12 +1151,12 @@ function FlightDetailContent() {
                     type="number"
                     min={1}
                     step={1}
-                    required
+                    required={allocatePricingMode === 'SAME'}
                     className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground outline-none focus:border-primary transition"
                     placeholder="1"
-                    value={allocateQuantity}
+                    value={allocatePricingMode === 'MIXED' ? String(mixedAllocationTotalQuantity || '') : allocateQuantity}
                     onChange={(e) => setAllocateQuantity(e.target.value)}
-                    disabled={allocateBusy}
+                    disabled={allocateBusy || allocatePricingMode === 'MIXED'}
                   />
                   <p className="mt-1 text-xs text-muted">
                     {tr('Creates a pending allocation (firm must confirm).', 'Kutilayotgan ajratma yaratadi (firma tasdiqlashi kerak).')}
@@ -1029,18 +1164,97 @@ function FlightDetailContent() {
                 </div>
               )}
 
-              <div>
-                <label className="block text-sm font-medium text-muted mb-2">{tr('Allocation price (per ticket)', 'Ajratma narxi (har chipta)')}</label>
-                <input
-                  inputMode="decimal"
-                  required
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground outline-none focus:border-primary transition"
-                  placeholder="0"
-                  value={allocatePrice}
-                  onChange={(e) => setAllocatePrice(e.target.value)}
-                  disabled={allocateBusy}
-                />
-              </div>
+              {!selectedTicketId && (
+                <div className="grid grid-cols-2 rounded-md border border-border bg-surface-2 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setAllocatePricingMode('SAME')}
+                    disabled={allocateBusy}
+                    className={`rounded px-3 py-2 text-sm font-semibold ${allocatePricingMode === 'SAME' ? 'bg-primary text-primary-foreground' : 'text-muted hover:text-foreground'}`}
+                  >
+                    {tr('Same price', 'Bir xil narxda')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAllocatePricingMode('MIXED');
+                      setAllocationRows((rows) => rows.map((row, index) => index === 0 ? { quantity: allocateQuantity || row.quantity, price: allocatePrice || row.price } : row));
+                    }}
+                    disabled={allocateBusy}
+                    className={`rounded px-3 py-2 text-sm font-semibold ${allocatePricingMode === 'MIXED' ? 'bg-primary text-primary-foreground' : 'text-muted hover:text-foreground'}`}
+                  >
+                    {tr('Different prices', 'Har xil narxda')}
+                  </button>
+                </div>
+              )}
+
+              {(selectedTicketId || allocatePricingMode === 'SAME') ? (
+                <div>
+                  <label className="block text-sm font-medium text-muted mb-2">{tr('Allocation price (per ticket)', 'Ajratma narxi (har chipta)')}</label>
+                  <input
+                    inputMode="decimal"
+                    required
+                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground outline-none focus:border-primary transition"
+                    placeholder="0"
+                    value={allocatePrice}
+                    onChange={(e) => setAllocatePrice(e.target.value)}
+                    disabled={allocateBusy}
+                  />
+                </div>
+              ) : (
+                <div className="rounded-lg border border-border bg-surface-2 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="text-sm font-medium text-muted">{tr('Price rows', 'Narx qatorlari')}</label>
+                    <button
+                      type="button"
+                      onClick={addAllocationRow}
+                      disabled={allocateBusy}
+                      className="rounded-md border border-border px-3 py-1.5 text-sm font-semibold text-foreground hover:bg-surface disabled:opacity-50"
+                    >
+                      + {tr('Row', 'Qator')}
+                    </button>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {allocationRows.map((row, index) => (
+                      <div key={index} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2">
+                        <input
+                          type="number"
+                          min={1}
+                          step={1}
+                          required
+                          className="bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary transition"
+                          placeholder={tr('Qty', 'Soni')}
+                          value={row.quantity}
+                          onChange={(e) => updateAllocationRow(index, { quantity: e.target.value })}
+                          disabled={allocateBusy}
+                        />
+                        <input
+                          inputMode="decimal"
+                          required
+                          className="bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary transition"
+                          placeholder={tr('Price', 'Narx')}
+                          value={row.price}
+                          onChange={(e) => updateAllocationRow(index, { price: e.target.value })}
+                          disabled={allocateBusy}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeAllocationRow(index)}
+                          disabled={allocateBusy || allocationRows.length <= 1}
+                          className="rounded-md border border-red-500/30 px-3 py-2 text-red-600 hover:bg-red-500/10 disabled:opacity-40"
+                          title={tr('Remove row', 'Qatorni olib tashlash')}
+                        >
+                          x
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-2 text-sm">
+                    <span className="text-muted">{tr('Total rows', 'Qatorlar jami')}: {mixedAllocationTotalQuantity}</span>
+                    <span className="font-semibold text-foreground">{mixedAllocationTotalAmount.toFixed(2)}</span>
+                  </div>
+                </div>
+              )}
               
               <div className="mt-6 flex justify-end gap-3">
                 <button
@@ -1115,6 +1329,20 @@ function FlightDetailContent() {
                     disabled={sellBusy}
                     className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                     placeholder="e.g. EUR"
+                  />
+                </div>
+              )}
+
+              {(sellCurrency === 'OTHER' ? sellOtherCurrency : sellCurrency).trim().toUpperCase() !== 'UZS' && (
+                <div>
+                  <label className="block text-sm font-medium text-muted mb-1">{tr('Rate to UZS', 'UZS kursi')}</label>
+                  <input
+                    inputMode="decimal"
+                    value={sellExchangeRate}
+                    onChange={(e) => setSellExchangeRate(e.target.value)}
+                    disabled={sellBusy}
+                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
+                    placeholder="12600"
                   />
                 </div>
               )}
@@ -1230,6 +1458,22 @@ function FlightDetailContent() {
               {tr('(debt) transaction.', '(qarz) tranzaksiyasini yaratadi.')}
             </p>
 
+            {confirmAllocationCurrency !== 'UZS' && (
+              <div className="mt-4">
+                <label className="block text-sm font-medium text-muted mb-1">
+                  {tr('Rate to UZS', 'UZS kursi')} ({confirmAllocationCurrency})
+                </label>
+                <input
+                  inputMode="decimal"
+                  value={confirmAllocationExchangeRate}
+                  onChange={(e) => setConfirmAllocationExchangeRate(e.target.value)}
+                  disabled={confirmAllocationBusy}
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
+                  placeholder="12600"
+                />
+              </div>
+            )}
+
             <div className="mt-6 flex justify-end gap-3">
               <button
                 type="button"
@@ -1281,6 +1525,22 @@ function FlightDetailContent() {
                 {tr('Uses the earliest pending tickets for this flight.', 'Ushbu reys uchun eng erta kutilayotgan chiptalardan foydalanadi.')}
               </p>
             </div>
+
+            {confirmBatchCurrency !== 'UZS' && (
+              <div className="mt-4">
+                <label className="block text-sm font-medium text-muted mb-1">
+                  {tr('Rate to UZS', 'UZS kursi')} ({confirmBatchCurrency})
+                </label>
+                <input
+                  inputMode="decimal"
+                  value={confirmBatchExchangeRate}
+                  onChange={(e) => setConfirmBatchExchangeRate(e.target.value)}
+                  disabled={confirmBatchBusy}
+                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
+                  placeholder="12600"
+                />
+              </div>
+            )}
 
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -1520,6 +1780,20 @@ function FlightDetailContent() {
                     disabled={sellBatchBusy}
                     className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                     placeholder="e.g. EUR"
+                  />
+                </div>
+              )}
+
+              {(sellBatchCurrency === 'OTHER' ? sellBatchOtherCurrency : sellBatchCurrency).trim().toUpperCase() !== 'UZS' && (
+                <div>
+                  <label className="block text-sm font-medium text-muted mb-1">{tr('Rate to UZS', 'UZS kursi')}</label>
+                  <input
+                    inputMode="decimal"
+                    value={sellBatchExchangeRate}
+                    onChange={(e) => setSellBatchExchangeRate(e.target.value)}
+                    disabled={sellBatchBusy}
+                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
+                    placeholder="12600"
                   />
                 </div>
               )}

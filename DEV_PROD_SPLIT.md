@@ -67,6 +67,8 @@ CORS_ORIGINS=https://dev.b2b.booking.ado-finance.com
 
 ## Deploy Commands
 
+Rule: dev can be ahead of prod, but it should never be behind prod. The production deploy script enforces this by running the matching dev deploy first from the same local source tree.
+
 Deploy dev:
 
 ```bash
@@ -78,6 +80,22 @@ Deploy prod only after following `FINAL_RELEASE_PLAN.md`:
 ```bash
 ./deploy.sh --schema
 ```
+
+That command first runs:
+
+```bash
+./deploy-dev.sh --schema
+```
+
+Then it deploys production. For code-only deploys, `./deploy.sh` first runs code-only `./deploy-dev.sh`.
+
+Emergency-only bypass:
+
+```bash
+./deploy.sh --skip-dev-sync
+```
+
+Use the bypass only when dev infrastructure is unavailable and production must be patched immediately.
 
 For code-only redeploys:
 

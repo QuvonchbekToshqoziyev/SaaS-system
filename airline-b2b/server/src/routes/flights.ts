@@ -11,7 +11,7 @@ router.get('/:id', isAuthenticated, getFlightById);
 
 // Firm accounts create flights and manage their own ticket inventory.
 router.post('/', isAuthenticated, hasRole(['FIRM']), createFlight);
-router.put('/:id', isAuthenticated, hasRole(['SUPERADMIN']), updateFlight);
+router.put('/:id', isAuthenticated, hasRole(['SUPERADMIN', 'FIRM']), updateFlight);
 router.delete('/:id', isAuthenticated, hasRole(['SUPERADMIN']), deleteFlight);
 
 export default router;

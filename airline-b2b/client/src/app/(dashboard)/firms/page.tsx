@@ -52,6 +52,12 @@ type FirmDraft = {
   currency: string;
   kind: string;
   status: string;
+  balanceAdjustmentAmount: string;
+  balanceAdjustmentCurrency: string;
+  balanceAdjustmentDirection: 'DEBT' | 'CREDIT';
+  balanceAdjustmentCounterpartyFirmId: string;
+  balanceAdjustmentNote: string;
+  balanceAdjustmentExchangeRate: string;
 };
 
 type AirlineOption = {
@@ -86,6 +92,11 @@ export default function FirmsPage() {
   const [contactFullName, setContactFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [subscriptionDays, setSubscriptionDays] = useState('30');
+  const [priorBalanceAmount, setPriorBalanceAmount] = useState('');
+  const [priorBalanceCurrency, setPriorBalanceCurrency] = useState('UZS');
+  const [priorBalanceDirection, setPriorBalanceDirection] = useState<'DEBT' | 'CREDIT'>('DEBT');
+  const [priorBalanceCounterpartyFirmId, setPriorBalanceCounterpartyFirmId] = useState('');
+  const [priorBalanceExchangeRate, setPriorBalanceExchangeRate] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [savingCreditFirmId, setSavingCreditFirmId] = useState<string | null>(null);
   const [deletingFirmId, setDeletingFirmId] = useState<string | null>(null);
@@ -158,6 +169,16 @@ export default function FirmsPage() {
       toast.error(tr('Enter subscription duration in days', 'Obuna muddatini kunlarda kiriting'));
       return;
     }
+    if (priorBalanceAmount.trim()) {
+      if (!Number.isFinite(Number(priorBalanceAmount)) || Number(priorBalanceAmount) <= 0) {
+        toast.error(tr('Enter a valid prior balance', 'To\'g\'ri boshlang\'ich qarz summasini kiriting'));
+        return;
+      }
+      if (priorBalanceCurrency.trim().toUpperCase() !== 'UZS' && (!priorBalanceExchangeRate.trim() || Number(priorBalanceExchangeRate) <= 0)) {
+        toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
+        return;
+      }
+    }
 
     setSubmitting(true);
     try {
@@ -169,6 +190,11 @@ export default function FirmsPage() {
           phone: phone.trim(),
           subscriptionEndsAt,
           currency: 'USD',
+          priorBalanceAmount: priorBalanceAmount.trim() || undefined,
+          priorBalanceCurrency: priorBalanceCurrency.trim().toUpperCase() || undefined,
+          priorBalanceDirection,
+          priorBalanceCounterpartyFirmId: priorBalanceCounterpartyFirmId || undefined,
+          priorBalanceExchangeRate: priorBalanceCurrency.trim().toUpperCase() !== 'UZS' ? priorBalanceExchangeRate.trim() : undefined,
         });
 
         setCreatedFirmId(res.data.id);
@@ -178,6 +204,8 @@ export default function FirmsPage() {
         setContactFullName('');
         setPhone('');
         setSubscriptionDays('30');
+        setPriorBalanceAmount('');
+        setPriorBalanceExchangeRate('');
         toast.success(isFirmUser
           ? tr('Partner firm added.', 'Partner firma qo\'shildi.')
           : tr('Firm added.', 'Firma qo\'shildi.'));
@@ -193,6 +221,11 @@ export default function FirmsPage() {
           fullName: contactFullName.trim(),
           phone: phone.trim(),
           subscriptionDays: Number(subscriptionDays),
+          priorBalanceAmount: priorBalanceAmount.trim() || undefined,
+          priorBalanceCurrency: priorBalanceCurrency.trim().toUpperCase() || undefined,
+          priorBalanceDirection,
+          priorBalanceCounterpartyFirmId: priorBalanceCounterpartyFirmId || undefined,
+          priorBalanceExchangeRate: priorBalanceCurrency.trim().toUpperCase() !== 'UZS' ? priorBalanceExchangeRate.trim() : undefined,
         });
 
       const { inviteId, token, firmId, expiresAt, link, accountCreated } = res.data;
@@ -250,6 +283,8 @@ export default function FirmsPage() {
       setContactFullName('');
       setPhone('');
       setSubscriptionDays('30');
+      setPriorBalanceAmount('');
+      setPriorBalanceExchangeRate('');
       toast.success(accountCreated
         ? tr('Firm and login account created.', 'Firma va login akkaunt yaratildi.')
         : tr('Firm created. Invite link generated.', 'Firma yaratildi. Taklif havolasi yaratildi.'));
@@ -288,6 +323,12 @@ export default function FirmsPage() {
     currency: String(firm.currency || 'USD'),
     kind: String(firm.kind || 'AGENCY'),
     status: String(firm.status || 'ACTIVE'),
+    balanceAdjustmentAmount: '',
+    balanceAdjustmentCurrency: String(firm.currency || 'UZS'),
+    balanceAdjustmentDirection: 'DEBT',
+    balanceAdjustmentCounterpartyFirmId: '',
+    balanceAdjustmentNote: '',
+    balanceAdjustmentExchangeRate: '',
   };
 
   const setFirmDraft = (firm: FirmRow, patch: Partial<FirmDraft>) => {
@@ -304,6 +345,16 @@ export default function FirmsPage() {
       toast.error(tr('Firm name is required', 'Firma nomi kerak'));
       return;
     }
+    if (row.balanceAdjustmentAmount.trim()) {
+      if (!Number.isFinite(Number(row.balanceAdjustmentAmount)) || Number(row.balanceAdjustmentAmount) <= 0) {
+        toast.error(tr('Enter a valid balance adjustment', 'To\'g\'ri balans tuzatish summasini kiriting'));
+        return;
+      }
+      if (row.balanceAdjustmentCurrency.trim().toUpperCase() !== 'UZS' && (!row.balanceAdjustmentExchangeRate.trim() || Number(row.balanceAdjustmentExchangeRate) <= 0)) {
+        toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
+        return;
+      }
+    }
     try {
       setSavingCreditFirmId(firm.id);
       await api.patch(`/firms/${firm.id}`, {
@@ -315,6 +366,12 @@ export default function FirmsPage() {
         currency: row.currency.trim().toUpperCase() || 'USD',
         kind: row.kind,
         status: row.status,
+        balanceAdjustmentAmount: row.balanceAdjustmentAmount.trim() || undefined,
+        balanceAdjustmentCurrency: row.balanceAdjustmentCurrency.trim().toUpperCase() || undefined,
+        balanceAdjustmentDirection: row.balanceAdjustmentDirection,
+        balanceAdjustmentCounterpartyFirmId: row.balanceAdjustmentCounterpartyFirmId || undefined,
+        balanceAdjustmentNote: row.balanceAdjustmentNote.trim() || undefined,
+        balanceAdjustmentExchangeRate: row.balanceAdjustmentCurrency.trim().toUpperCase() !== 'UZS' ? row.balanceAdjustmentExchangeRate.trim() : undefined,
       });
       toast.success(tr('Firm updated', 'Firma yangilandi'));
       setFirmDrafts((drafts) => {
@@ -514,6 +571,42 @@ export default function FirmsPage() {
             />
           </div>
 
+          <div className="rounded-lg border border-border bg-surface-2 p-3">
+            <div className="text-sm font-semibold text-foreground">{tr('Prior balance', 'Boshlang\'ich qarz')}</div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="compact-label">{tr('Amount', 'Summa')}</label>
+                <input inputMode="decimal" value={priorBalanceAmount} onChange={(e) => setPriorBalanceAmount(e.target.value)} className="compact-control" placeholder="0" />
+              </div>
+              <div>
+                <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
+                <input maxLength={3} value={priorBalanceCurrency} onChange={(e) => setPriorBalanceCurrency(e.target.value.toUpperCase())} className="compact-control uppercase" />
+              </div>
+              <div>
+                <label className="compact-label">{tr('Direction', 'Yo\'nalish')}</label>
+                <select value={priorBalanceDirection} onChange={(e) => setPriorBalanceDirection(e.target.value as 'DEBT' | 'CREDIT')} className="compact-control">
+                  <option value="DEBT">{tr('New firm owes', 'Yangi firma qarzdor')}</option>
+                  <option value="CREDIT">{tr('New firm is owed', 'Yangi firmadan qarzdor')}</option>
+                </select>
+              </div>
+              <div>
+                <label className="compact-label">{tr('Counterparty', 'Qarshi firma')}</label>
+                <select value={priorBalanceCounterpartyFirmId} onChange={(e) => setPriorBalanceCounterpartyFirmId(e.target.value)} className="compact-control">
+                  <option value="">{isFirmUser ? tr('My firm', 'Mening firmam') : tr('System / none', 'System / yo\'q')}</option>
+                  {(firms || []).map((firm) => (
+                    <option key={firm.id} value={firm.id}>{firm.name}</option>
+                  ))}
+                </select>
+              </div>
+              {priorBalanceCurrency.trim().toUpperCase() !== 'UZS' && (
+                <div>
+                  <label className="compact-label">{tr('Rate to UZS', 'UZS kursi')}</label>
+                  <input inputMode="decimal" value={priorBalanceExchangeRate} onChange={(e) => setPriorBalanceExchangeRate(e.target.value)} className="compact-control" placeholder="12600" />
+                </div>
+              )}
+            </div>
+          </div>
+
           <button
             type="submit"
             disabled={submitting}
@@ -700,6 +793,29 @@ export default function FirmsPage() {
                     ) : subscriptionLabel(firm.subscriptionEndsAt)}
                   </td>
                   <td>
+                    {isSuperAdmin && (
+                      <div className="mb-2 grid min-w-[260px] gap-1 rounded border border-border bg-surface-2 p-2">
+                        <div className="text-[11px] font-bold uppercase text-muted">{tr('Balance adjustment', 'Balans tuzatish')}</div>
+                        <div className="grid grid-cols-[1fr_70px] gap-1">
+                          <input inputMode="decimal" value={draft.balanceAdjustmentAmount} onChange={(e) => setFirmDraft(firm, { balanceAdjustmentAmount: e.target.value })} className="compact-control" placeholder={tr('Amount', 'Summa')} />
+                          <input maxLength={3} value={draft.balanceAdjustmentCurrency} onChange={(e) => setFirmDraft(firm, { balanceAdjustmentCurrency: e.target.value.toUpperCase() })} className="compact-control uppercase" />
+                        </div>
+                        <select value={draft.balanceAdjustmentDirection} onChange={(e) => setFirmDraft(firm, { balanceAdjustmentDirection: e.target.value as 'DEBT' | 'CREDIT' })} className="compact-control">
+                          <option value="DEBT">{tr('Firm owes', 'Firma qarzdor')}</option>
+                          <option value="CREDIT">{tr('Firm is owed', 'Firmadan qarzdor')}</option>
+                        </select>
+                        <select value={draft.balanceAdjustmentCounterpartyFirmId} onChange={(e) => setFirmDraft(firm, { balanceAdjustmentCounterpartyFirmId: e.target.value })} className="compact-control">
+                          <option value="">{tr('Counterparty optional', 'Qarshi firma ixtiyoriy')}</option>
+                          {(firms || []).filter((item) => item.id !== firm.id).map((item) => (
+                            <option key={item.id} value={item.id}>{item.name}</option>
+                          ))}
+                        </select>
+                        {draft.balanceAdjustmentCurrency.trim().toUpperCase() !== 'UZS' && (
+                          <input inputMode="decimal" value={draft.balanceAdjustmentExchangeRate} onChange={(e) => setFirmDraft(firm, { balanceAdjustmentExchangeRate: e.target.value })} className="compact-control" placeholder={tr('Rate to UZS', 'UZS kursi')} />
+                        )}
+                        <input value={draft.balanceAdjustmentNote} onChange={(e) => setFirmDraft(firm, { balanceAdjustmentNote: e.target.value })} className="compact-control" placeholder={tr('Note', 'Izoh')} />
+                      </div>
+                    )}
                     <div className="flex flex-wrap gap-2">
                       {isSuperAdmin && (
                         <button

@@ -69,6 +69,7 @@ export async function listCurrencyRatesService(input: {
   dateTo?: unknown;
   baseCurrency?: unknown;
   targetCurrency?: unknown;
+  authUser?: AuthUser;
 }) {
   const parsedDate = parseDateOnly(input.date);
   const parsedFrom = parseDateOnly(input.dateFrom);
@@ -98,6 +99,10 @@ export async function listCurrencyRatesService(input: {
       ...(end ? { lt: end } : {}),
     };
   }
+  const role = normalizeRole(input.authUser?.role);
+  if (role === 'FIRM') {
+    where.source = { in: ['manual', ...(input.authUser?.firmId ? [`firm:${String(input.authUser.firmId)}`] : [])] };
+  }
 
   return prisma.currencyRate.findMany({
     where,
@@ -107,7 +112,7 @@ export async function listCurrencyRatesService(input: {
 
 export async function createCurrencyRateService(authUser: AuthUser, input: Record<string, unknown>) {
   const role = normalizeRole(authUser.role);
-  if (!['SUPERADMIN', 'ADMIN'].includes(role)) {
+  if (!['SUPERADMIN', 'ADMIN', 'FIRM'].includes(role)) {
     throw new ServiceError('Forbidden', 403);
   }
 
@@ -115,13 +120,16 @@ export async function createCurrencyRateService(authUser: AuthUser, input: Recor
   const target = normalizeCurrency(input.targetCurrency);
   const rate = parseDecimal(input.rate);
   const day = parseDateOnly(input.date);
-  const source = typeof input.source === 'string' && input.source.trim() ? input.source.trim() : 'manual';
+  const source = role === 'FIRM'
+    ? `firm:${authUser.firmId ? String(authUser.firmId) : ''}`
+    : typeof input.source === 'string' && input.source.trim() ? input.source.trim() : 'manual';
 
   if (!/^[A-Z]{3}$/.test(base)) throw new ServiceError('Invalid baseCurrency');
   if (base !== BASE_CURRENCY) throw new ServiceError(`baseCurrency must be ${BASE_CURRENCY}`);
   if (!/^[A-Z]{3}$/.test(target)) throw new ServiceError('Invalid targetCurrency');
   if (!rate || !rate.gt(0)) throw new ServiceError('rate must be > 0');
   if (!day) throw new ServiceError('date is required (YYYY-MM-DD)');
+  if (role === 'FIRM' && !authUser.firmId) throw new ServiceError('Firm account is missing firmId');
 
   return prisma.currencyRate.create({
     data: {
@@ -132,4 +140,42 @@ export async function createCurrencyRateService(authUser: AuthUser, input: Recor
       recordedAt: startOfDayUtc(day),
     },
   });
+}
+
+export async function resolveExchangeRateToUzs(
+  authUser: AuthUser,
+  input: { currency: string; date?: Date; overrideRate?: unknown },
+): Promise<Prisma.Decimal> {
+  const currency = normalizeCurrency(input.currency);
+  if (!currency || currency === BASE_CURRENCY) return new Prisma.Decimal(1);
+
+  const override = parseDecimal(input.overrideRate);
+  if (override) {
+    if (!override.gt(0)) throw new ServiceError('exchangeRate must be > 0');
+    return override.toDecimalPlaces(6);
+  }
+
+  const day = startOfDayUtc(input.date || new Date());
+  const nextDay = nextDayUtc(day);
+  const role = normalizeRole(authUser.role);
+  const sources = [
+    ...(role === 'FIRM' && authUser.firmId ? [`firm:${String(authUser.firmId)}`] : []),
+    'manual',
+  ];
+
+  const rate = await prisma.currencyRate.findFirst({
+    where: {
+      baseCurrency: BASE_CURRENCY,
+      targetCurrency: currency,
+      recordedAt: { gte: day, lt: nextDay },
+      source: { in: sources },
+    },
+    orderBy: [
+      { source: 'asc' },
+      { recordedAt: 'desc' },
+    ],
+  });
+
+  if (!rate) throw new ServiceError(`Exchange rate to UZS is required for ${currency}`);
+  return new Prisma.Decimal(String(rate.rate)).toDecimalPlaces(6);
 }
