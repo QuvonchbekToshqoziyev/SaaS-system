@@ -13,30 +13,58 @@ concurrency:
 jobs:
   deploy-backend:
     runs-on: ubuntu-latest
+    env:
+      SERVER_IP: ${{ secrets.SERVER_IP || '206.189.130.168' }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSHPASS: ${{ secrets.SSHPASS || secrets.SERVER_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install SSH Key
+      - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H "$SERVER_IP" >> ~/.ssh/known_hosts
+          if [ -n "$SSH_PRIVATE_KEY" ]; then
+            echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
+            echo "SSH_AUTH_MODE=key" >> "$GITHUB_ENV"
+          elif [ -n "$SSHPASS" ]; then
+            sudo apt-get update
+            sudo apt-get install -y sshpass
+            echo "SSH_AUTH_MODE=password" >> "$GITHUB_ENV"
+          else
+            echo "Missing SSH_PRIVATE_KEY or SSHPASS/SERVER_PASSWORD secret" >&2
+            exit 1
+          fi
 
       - name: Sync backend and shared to server
         run: |
-          rsync -avz --delete \
+          if [ "$SSH_AUTH_MODE" = "password" ]; then
+            RSYNC=(sshpass -e rsync -e "ssh -o StrictHostKeyChecking=no -o PubkeyAuthentication=no -o PreferredAuthentications=password")
+          else
+            RSYNC=(rsync)
+          fi
+          "${RSYNC[@]}" -avz --delete \
             --exclude="node_modules" --exclude="dist" --exclude=".env" --exclude="error-registry*.json" \
-            ./airline-b2b/server/ root@${{ secrets.SERVER_IP }}:/root/apps/ado-b2b/airline-b2b/server/
-          rsync -avz --delete \
-            ./airline-b2b/shared/ root@${{ secrets.SERVER_IP }}:/root/apps/ado-b2b/airline-b2b/shared/
+            ./airline-b2b/server/ root@"$SERVER_IP":/root/apps/ado-b2b/airline-b2b/server/
+          "${RSYNC[@]}" -avz --delete \
+            ./airline-b2b/shared/ root@"$SERVER_IP":/root/apps/ado-b2b/airline-b2b/shared/
 
       - name: Rebuild and restart backend
         run: |
-          ssh root@${{ secrets.SERVER_IP }} "cd /root/apps/ado-b2b/airline-b2b/server && pm2 stop airline-b2b-server || true && rm -rf node_modules dist && npm ci && npx prisma generate && npx prisma db push && npm run build && pm2 restart airline-b2b-server --update-env"
+          if [ "$SSH_AUTH_MODE" = "password" ]; then
+            SSH=(sshpass -e ssh -o StrictHostKeyChecking=no -o PubkeyAuthentication=no -o PreferredAuthentications=password)
+          else
+            SSH=(ssh)
+          fi
+          "${SSH[@]}" root@"$SERVER_IP" "cd /root/apps/ado-b2b/airline-b2b/server && pm2 stop airline-b2b-server || true && rm -rf node_modules dist && npm ci && npx prisma generate && npx prisma db push && npm run build && pm2 restart airline-b2b-server --update-env"
 
   deploy-frontend:
     runs-on: ubuntu-latest
+    env:
+      SERVER_IP: ${{ secrets.SERVER_IP || '206.189.130.168' }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSHPASS: ${{ secrets.SSHPASS || secrets.SERVER_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -52,13 +80,27 @@ jobs:
           npm ci
           npm run build
 
-      - name: Install SSH Key
+      - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H "$SERVER_IP" >> ~/.ssh/known_hosts
+          if [ -n "$SSH_PRIVATE_KEY" ]; then
+            echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
+            echo "SSH_AUTH_MODE=key" >> "$GITHUB_ENV"
+          elif [ -n "$SSHPASS" ]; then
+            sudo apt-get update
+            sudo apt-get install -y sshpass
+            echo "SSH_AUTH_MODE=password" >> "$GITHUB_ENV"
+          else
+            echo "Missing SSH_PRIVATE_KEY or SSHPASS/SERVER_PASSWORD secret" >&2
+            exit 1
+          fi
 
       - name: Deploy static export
         run: |
-          rsync -avz --delete ./airline-b2b/client/out/ root@${{ secrets.SERVER_IP }}:/var/www/b2b.booking.ado-finance.com/html/
+          if [ "$SSH_AUTH_MODE" = "password" ]; then
+            sshpass -e rsync -e "ssh -o StrictHostKeyChecking=no -o PubkeyAuthentication=no -o PreferredAuthentications=password" -avz --delete ./airline-b2b/client/out/ root@"$SERVER_IP":/var/www/b2b.booking.ado-finance.com/html/
+          else
+            rsync -avz --delete ./airline-b2b/client/out/ root@"$SERVER_IP":/var/www/b2b.booking.ado-finance.com/html/
+          fi
