@@ -137,14 +137,14 @@ export default function DashboardCalendar({
           setSelectedDateKey(`${monthKey}-01`);
         }
       } catch (err: any) {
-        toast.error(err?.response?.data?.error || 'Failed to load calendar');
+        toast.error(err?.response?.data?.error || tr('Failed to load calendar', 'Kalendarni yuklab bo\'lmadi'));
       } finally {
         setLoading(false);
       }
     };
 
     fetchCalendar();
-  }, [monthKey, reloadKey, open]);
+  }, [monthKey, reloadKey, open, tr]);
 
   const grouped = useMemo(() => {
     const flightsByDate = new Map<string, CalendarFlight[]>();
@@ -194,7 +194,7 @@ export default function DashboardCalendar({
         <div>
           <h3 className="text-xl font-semibold text-foreground">{title}</h3>
           <p className="mt-1 text-sm text-muted">
-            Flights (by departure), transactions/payments (by recorded date), and exchange rates.
+            {tr('Flights (by departure), transactions/payments (by recorded date), and exchange rates.', 'Reyslar (jo\'nash sanasi), tranzaksiyalar/to\'lovlar (qayd etilgan sana) va valyuta kurslari.')}
           </p>
         </div>
 
@@ -206,7 +206,7 @@ export default function DashboardCalendar({
                 onClick={() => setMonthDate((m) => startOfMonth(addMonths(m, -1)))}
                 className="px-3 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition border border-border"
               >
-                Prev
+                {tr('Previous', 'Oldingi')}
               </button>
               <div className="px-3 py-2 bg-surface text-foreground rounded-lg font-medium border border-border">
                 {format(monthDate, 'MMMM yyyy')}
@@ -216,7 +216,7 @@ export default function DashboardCalendar({
                 onClick={() => setMonthDate((m) => startOfMonth(addMonths(m, 1)))}
                 className="px-3 py-2 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition border border-border"
               >
-                Next
+                {tr('Next', 'Keyingi')}
               </button>
             </div>
           ) : null}
@@ -234,11 +234,11 @@ export default function DashboardCalendar({
 
       {open ? (
         loading ? (
-          <div className="text-muted">Loading…</div>
+          <div className="text-muted">{tr('Loading…', 'Yuklanmoqda…')}</div>
         ) : (
           <>
             <div className="grid grid-cols-7 gap-2 text-xs text-muted">
-              {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => (
+              {(tr('Mon,Tue,Wed,Thu,Fri,Sat,Sun', 'Du,Se,Chor,Pay,Ju,Shan,Yak')).split(',').map((d) => (
                 <div key={d} className="px-2 py-1">{d}</div>
               ))}
             </div>
@@ -272,12 +272,12 @@ export default function DashboardCalendar({
                     </div>
 
                     <div className="mt-2 space-y-1 text-xs text-muted">
-                      {flights.length > 0 && <div>Flights: {flights.length}</div>}
-                      {txs.length > 0 && <div>Transactions: {txs.length}</div>}
-                      {pays.length > 0 && <div>Payments: {pays.length}</div>}
-                      {rates.length > 0 && <div>Rates: {rates.length}</div>}
+                      {flights.length > 0 && <div>{tr('Flights', 'Reyslar')}: {flights.length}</div>}
+                      {txs.length > 0 && <div>{tr('Transactions', 'Tranzaksiyalar')}: {txs.length}</div>}
+                      {pays.length > 0 && <div>{tr('Payments', 'To\'lovlar')}: {pays.length}</div>}
+                      {rates.length > 0 && <div>{tr('Rates', 'Kurslar')}: {rates.length}</div>}
                       {flights.length === 0 && txs.length === 0 && rates.length === 0 && (
-                        <div className="text-muted">No activity</div>
+                        <div className="text-muted">{tr('No activity', 'Faollik yo\'q')}</div>
                       )}
                     </div>
                   </button>
@@ -289,13 +289,13 @@ export default function DashboardCalendar({
               <div className="flex items-center justify-between gap-3">
                 <h4 className="text-lg font-semibold text-foreground">{selectedDateKey}</h4>
                 <div className="text-sm text-muted">
-                  {selectedFlights.length} flights · {selectedTransactions.length} transactions · {selectedRates.length} rates
+                  {selectedFlights.length} {tr('flights', 'reys')} · {selectedTransactions.length} {tr('transactions', 'tranzaksiya')} · {selectedRates.length} {tr('rates', 'kurs')}
                 </div>
               </div>
 
               <div className="mt-3 grid grid-cols-1 lg:grid-cols-3 gap-4">
                 <div className="bg-surface border border-border rounded-lg p-3">
-                  <div className="text-sm font-semibold text-foreground">Flights</div>
+                  <div className="text-sm font-semibold text-foreground">{tr('Flights', 'Reyslar')}</div>
                   <div className="mt-2 space-y-2">
                     {selectedFlights.map((f) => (
                       <div key={f.id} className="text-sm text-foreground">
@@ -306,13 +306,13 @@ export default function DashboardCalendar({
                       </div>
                     ))}
                     {selectedFlights.length === 0 && (
-                      <div className="text-sm text-muted">No flights</div>
+                      <div className="text-sm text-muted">{tr('No flights', 'Reyslar yo\'q')}</div>
                     )}
                   </div>
                 </div>
 
                 <div className="bg-surface border border-border rounded-lg p-3">
-                  <div className="text-sm font-semibold text-foreground">Transactions</div>
+                  <div className="text-sm font-semibold text-foreground">{tr('Transactions', 'Tranzaksiyalar')}</div>
                   <div className="mt-2 space-y-2">
                     {selectedTransactions.map((t) => (
                       <div key={t.id} className="text-sm text-foreground">
@@ -327,13 +327,13 @@ export default function DashboardCalendar({
                       </div>
                     ))}
                     {selectedTransactions.length === 0 && (
-                      <div className="text-sm text-muted">No transactions</div>
+                      <div className="text-sm text-muted">{tr('No transactions', 'Tranzaksiyalar yo\'q')}</div>
                     )}
                   </div>
                 </div>
 
                 <div className="bg-surface border border-border rounded-lg p-3">
-                  <div className="text-sm font-semibold text-foreground">Exchange rates</div>
+                  <div className="text-sm font-semibold text-foreground">{tr('Exchange rates', 'Valyuta kurslari')}</div>
                   <div className="mt-2 space-y-2">
                     {selectedRates.map((r) => (
                       <div key={r.id} className="text-sm text-foreground">
@@ -351,7 +351,7 @@ export default function DashboardCalendar({
                       </div>
                     ))}
                     {selectedRates.length === 0 && (
-                      <div className="text-sm text-muted">No rates</div>
+                      <div className="text-sm text-muted">{tr('No rates', 'Kurslar yo\'q')}</div>
                     )}
                   </div>
                 </div>
@@ -359,7 +359,7 @@ export default function DashboardCalendar({
 
               {selectedPayments.length > 0 && (
                 <div className="mt-4 text-xs text-muted">
-                  Payments in this day: {selectedPayments.length}
+                  {tr('Payments on this day', 'Shu kundagi to\'lovlar')}: {selectedPayments.length}
                 </div>
               )}
             </div>

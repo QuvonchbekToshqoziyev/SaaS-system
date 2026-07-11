@@ -191,6 +191,7 @@ export const processPayment = async (req: Request, res: Response) => {
         currency,
         date: paymentDate,
         overrideRate: rawExchangeRate,
+        rateFirmId: firmId,
       });
       const baseAmount = amount.mul(exchangeRate).toDecimalPlaces(4);
 

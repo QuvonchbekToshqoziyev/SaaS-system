@@ -46,6 +46,11 @@ function normalizePaymentMethod(method: unknown): string {
   return m;
 }
 
+const activeFlightRelation: Prisma.FlightWhereInput = {
+  deletedAt: null,
+  OR: [{ status: null }, { status: { notIn: ['DELETED', 'CANCELLED'] } }],
+};
+
 function buildCreatedAtFilter(dateFrom?: Date, dateTo?: Date): Prisma.DateTimeFilter | undefined {
   if (!dateFrom && !dateTo) return undefined;
   const filter: Prisma.DateTimeFilter = {};
@@ -103,6 +108,7 @@ export const getFlightReport = async (req: Request, res: Response) => {
   const txWhere: Prisma.TransactionWhereInput = {};
   if (resolvedFlightId) txWhere.flightId = resolvedFlightId;
   if (firmScopeId) txWhere.firmId = firmScopeId;
+  txWhere.OR = [{ flightId: null }, { flight: activeFlightRelation }];
 
   const [txByType, ticketCountsByStatus, txByFirmAndType, ticketCountsByFirmAndStatus, flight] = await Promise.all([
     prisma.transaction.groupBy({
@@ -917,6 +923,7 @@ export const getCalendarReport = async (req: Request, res: Response) => {
     prisma.flight.findMany({
       where: {
         departure: { gte: parsed.start, lt: parsed.end },
+        ...activeFlightRelation,
       },
       orderBy: { departure: 'asc' },
       select: {
@@ -984,7 +991,7 @@ export const getDashboardReport = async (req: Request, res: Response) => {
       const [pendingGroups, dueGroups] = await Promise.all([
         prisma.ticket.groupBy({
           by: ['flightId'],
-          where: { assignedFirmId: firmScopeId, status: 'PENDING' },
+          where: { assignedFirmId: firmScopeId, status: 'PENDING', flight: activeFlightRelation },
           _count: { _all: true },
         }),
         prisma.transaction.groupBy({
@@ -1057,7 +1064,7 @@ export const getDashboardReport = async (req: Request, res: Response) => {
     const [pendingGroups, dueGroups] = await Promise.all([
       prisma.ticket.groupBy({
         by: ['assignedFirmId', 'flightId'],
-        where: { status: 'PENDING', assignedFirmId: { not: null } },
+        where: { status: 'PENDING', assignedFirmId: { not: null }, flight: activeFlightRelation },
         _count: { _all: true },
       }),
       prisma.transaction.groupBy({

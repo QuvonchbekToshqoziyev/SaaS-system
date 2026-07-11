@@ -3,6 +3,7 @@ import {
   closeKassaService,
   createKassaDeskService,
   createPaymentCardService,
+  deletePaymentCardService,
   getKassaDayService,
   getKassaHistoryService,
   listKassaDesksService,
@@ -191,6 +192,25 @@ export const updatePaymentCard = async (req: Request, res: Response) => {
       after: result,
     });
     return res.json(result);
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
+export const deletePaymentCard = async (req: Request, res: Response) => {
+  try {
+    const result = await deletePaymentCardService(getAuthUser(req), String(req.params.id || ''), {
+      reason: req.body?.reason,
+    });
+    await writeAuditLog(req, {
+      action: 'DELETE',
+      entityType: 'paymentCard',
+      entityId: result.id,
+      entityLabel: result.ownerName,
+      summary: `Deleted payment card ${result.ownerName}`,
+      before: result,
+    });
+    return res.json({ success: true, card: result });
   } catch (err) {
     return sendError(res, err);
   }

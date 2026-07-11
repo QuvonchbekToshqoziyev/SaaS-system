@@ -45,7 +45,8 @@ function normalizeFirmRole(role: unknown): User['firmRole'] {
   const r = String(role || '').toUpperCase();
   if (r === 'KASSIR' || r === 'KASSA' || r === 'KASSA_OPERATOR' || r === 'CASHIER') return 'KASSIR';
   if (r === 'MANAGER') return 'MANAGER';
-  return 'FIRM_ADMIN';
+  if (r === 'FIRM_ADMIN') return 'FIRM_ADMIN';
+  return 'MANAGER';
 }
 
 function normalizeUser(raw: unknown): User | null {

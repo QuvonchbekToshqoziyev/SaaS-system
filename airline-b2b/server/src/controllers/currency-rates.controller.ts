@@ -25,6 +25,8 @@ export const listCurrencyRates = async (req: Request, res: Response) => {
       dateTo: req.query.dateTo,
       baseCurrency: req.query.baseCurrency,
       targetCurrency: req.query.targetCurrency,
+      firmId: req.query.firmId,
+      effective: req.query.effective,
       authUser: getAuthUser(req),
     });
     return res.json(rates);

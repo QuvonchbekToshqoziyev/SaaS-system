@@ -11,12 +11,13 @@ export function normalizeFirmUserRole(value: unknown): FirmUserRole {
     return FirmUserRole.KASSIR;
   }
   if (role === FirmUserRole.MANAGER) return FirmUserRole.MANAGER;
-  return FirmUserRole.FIRM_ADMIN;
+  if (role === FirmUserRole.FIRM_ADMIN) return FirmUserRole.FIRM_ADMIN;
+  return FirmUserRole.MANAGER;
 }
 
 export function isFirmAdminLike(authUser: FirmRoleAuthUser): boolean {
   const platformRole = String(authUser.role || '').toUpperCase();
-  if (platformRole === 'SUPERADMIN' || platformRole === 'ADMIN') return true;
+  if (platformRole === 'SUPERADMIN') return true;
   if (platformRole !== 'FIRM') return false;
   return normalizeFirmUserRole(authUser.firmRole) === FirmUserRole.FIRM_ADMIN;
 }

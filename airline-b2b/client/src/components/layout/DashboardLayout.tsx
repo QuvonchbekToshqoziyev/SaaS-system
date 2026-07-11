@@ -3,7 +3,7 @@
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { usePathname, useRouter } from 'next/navigation';
-import { Plane, PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, Wallet, PackageOpen, Users, ShieldCheck, MessageCircle, History, Bell, CheckCheck, Menu, MoreHorizontal, X } from 'lucide-react';
+import { Plane, PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, Wallet, PackageOpen, BriefcaseBusiness, Users, ShieldCheck, MessageCircle, History, Bell, CheckCheck, Menu, MoreHorizontal, X } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
@@ -28,6 +28,7 @@ type NavKey =
   | 'navFirms'
   | 'navFlights'
   | 'navTours'
+  | 'navServices'
   | 'navTransactions'
   | 'navKassa'
   | 'navEmployees'
@@ -153,6 +154,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     ...(isFirmManager ? [] : [{ key: 'navFirms' as const, href: '/firms', icon: UserCircle }]),
     { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
     { key: 'navTours' as const, href: '/tours', icon: PackageOpen },
+    { key: 'navServices' as const, href: '/services', icon: BriefcaseBusiness },
     { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
     { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
     ...(isFirmManager ? [] : [{ key: 'navEmployees' as const, href: '/employees', icon: Users }]),
@@ -169,6 +171,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { key: 'navFirms', href: '/firms', icon: UserCircle },
     { key: 'navFlights', href: '/flights', icon: PlaneTakeoff },
     { key: 'navTours', href: '/tours', icon: PackageOpen },
+    { key: 'navServices', href: '/services', icon: BriefcaseBusiness },
     { key: 'navTransactions', href: '/transactions', icon: ArrowRightLeft },
     { key: 'navKassa', href: '/kassa', icon: Wallet },
     { key: 'navEmployees', href: '/employees', icon: Users },
@@ -189,14 +192,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         ? [{ label: 'Kassa Access', links: firmNavLinks }]
         : [
             { label: 'Overview', links: firmNavLinks.filter((link) => ['/firm', '/reports'].includes(link.href)) },
-            { label: 'Operations', links: firmNavLinks.filter((link) => ['/firms', '/flights', '/tours', '/employees'].includes(link.href)) },
+            { label: 'Operations', links: firmNavLinks.filter((link) => ['/firms', '/flights', '/tours', '/services', '/employees'].includes(link.href)) },
             { label: 'Money', links: firmNavLinks.filter((link) => ['/transactions', '/kassa'].includes(link.href)) },
             { label: 'Workspace', links: firmNavLinks.filter((link) => ['/chat', '/settings'].includes(link.href)) },
           ]
     : [
         { label: normalizedRole === 'superadmin' ? 'Command Center' : 'Overview', links: adminNavLinks.filter((link) => ['/admin', '/reports'].includes(link.href)) },
         { label: 'Organizations', links: adminNavLinks.filter((link) => ['/admins', '/airlines', '/firms', '/employees'].includes(link.href)) },
-        { label: 'Operations', links: adminNavLinks.filter((link) => ['/flights', '/tours'].includes(link.href)) },
+        { label: 'Operations', links: adminNavLinks.filter((link) => ['/flights', '/tours', '/services'].includes(link.href)) },
         { label: 'Finance', links: adminNavLinks.filter((link) => ['/transactions', '/kassa'].includes(link.href)) },
         { label: 'Oversight', links: adminNavLinks.filter((link) => ['/audit-log', '/chat', '/settings'].includes(link.href)) },
       ];

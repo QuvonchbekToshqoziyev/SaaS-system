@@ -13,6 +13,7 @@ type TranslationKey =
   | 'navFirms'
   | 'navFlights'
   | 'navTours'
+  | 'navServices'
   | 'navTransactions'
   | 'navKassa'
   | 'navEmployees'
@@ -34,11 +35,12 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     navDashboard: 'Dashboard',
     navAdminDashboard: 'Admin Dashboard',
     navAdmins: 'Admins',
-    navAuditLog: 'Audit Log',
+    navAuditLog: 'Audit jurnali',
     navAirlines: 'Airlines',
     navFirms: 'Firms',
     navFlights: 'Flights',
     navTours: 'Tours',
+    navServices: 'Services',
     navTransactions: 'Transactions',
     navKassa: 'Kassa',
     navEmployees: 'Employees',
@@ -64,14 +66,15 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     navFirms: 'Firmalar',
     navFlights: 'Reyslar',
     navTours: 'Turlar',
+    navServices: 'Xizmatlar',
     navTransactions: 'Tranzaksiyalar',
     navKassa: 'Kassa',
-    navEmployees: 'Hodimlar',
+    navEmployees: 'Xodimlar',
     navChat: 'Chat',
     navReports: 'Hisobotlar',
     navSettings: 'Sozlamalar',
     sectionAgencyPortal: 'Agentlik',
-    sectionAdminConsole: 'Admin konsol',
+    sectionAdminConsole: 'Admin boshqaruvi',
     pageFallbackTitle: 'Bosh sahifa',
     themeLight: 'Yorug‘ rejim',
     themeDark: 'Qorong‘i rejim',
@@ -84,8 +87,8 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
 
 function normalizeLanguage(value: unknown): Language {
   const raw = String(value || '').trim().toLowerCase();
-  if (raw === 'uz' || raw.startsWith('uz-')) return 'uz';
-  return 'en';
+  if (raw === 'en' || raw.startsWith('en-')) return 'en';
+  return 'uz';
 }
 
 function applyDocumentLanguage(lang: Language) {
@@ -109,11 +112,11 @@ const LanguageContext = createContext<LanguageContextType | undefined>(undefined
 
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
   const [language, setLanguageState] = useState<Language>(() => {
-    if (typeof window === 'undefined') return 'en';
+    if (typeof window === 'undefined') return 'uz';
     try {
       return normalizeLanguage(localStorage.getItem('jetstream-lang'));
     } catch {
-      return 'en';
+      return 'uz';
     }
   });
 

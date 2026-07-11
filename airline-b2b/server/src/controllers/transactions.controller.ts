@@ -11,6 +11,7 @@ type AuthUser = {
   userId?: string;
   role?: string;
   firmId?: string | null;
+  firmRole?: string | null;
 };
 
 function getAuthUser(req: Request): AuthUser {
@@ -160,6 +161,65 @@ export const getTransactionById = async (req: Request, res: Response) => {
   res.json(tx);
 };
 
+async function getOwnedDailyCashTransaction(req: Request, id: string) {
+  const authUser = getAuthUser(req);
+  const row = await prisma.transaction.findUnique({ where: { id } });
+  if (!row) throw new Error('Transaction not found');
+  if (row.type !== 'ADJUSTMENT' || !['KASSA_IN', 'KASSA_OUT'].includes(String(row.direction || ''))) {
+    throw new Error('Only manually entered cash income/expense can be changed');
+  }
+  const isCreator = Boolean(authUser.userId) && row.createdByUserId === String(authUser.userId);
+  const isOwnFirmAdmin = normalizeRole(authUser.role) === 'FIRM'
+    && String(authUser.firmRole || '').toUpperCase() === 'FIRM_ADMIN'
+    && Boolean(authUser.firmId)
+    && row.firmId === String(authUser.firmId);
+  if (!isCreator && !isOwnFirmAdmin) {
+    throw new Error('Only the creator or the firm admin can correct this transaction');
+  }
+  const metadata = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+    ? row.metadata as Record<string, unknown>
+    : {};
+  const businessDay = String(metadata.date || row.createdAt.toISOString().slice(0, 10));
+  const today = new Date().toISOString().slice(0, 10);
+  if (businessDay !== today) throw new Error('Only today\'s transactions can be changed');
+  return { row, metadata, isCreator };
+}
+
+export const updateOwnDailyCashTransaction = async (req: Request, res: Response) => {
+  try {
+    const { row, metadata, isCreator } = await getOwnedDailyCashTransaction(req, String(req.params.id || ''));
+    const note = String(req.body?.note || '').trim().slice(0, 500);
+    const correctionReason = String(req.body?.correctionReason || '').trim().slice(0, 500);
+    if (!isCreator && !correctionReason) return res.status(400).json({ error: 'Correction reason is required' });
+    const originalAmount = req.body?.amount == null ? row.originalAmount : Number(req.body.amount);
+    if (!Number.isFinite(Number(originalAmount)) || Number(originalAmount) <= 0) {
+      return res.status(400).json({ error: 'Amount must be greater than zero' });
+    }
+    const baseAmount = Number(originalAmount) * Number(row.exchangeRate);
+    const updated = await prisma.transaction.update({
+      where: { id: row.id },
+      data: { originalAmount, baseAmount, metadata: { ...metadata, note, ...(correctionReason ? { correctionReason } : {}) } },
+    });
+    await writeAuditLog(req, { action: 'UPDATE', entityType: 'transaction', entityId: row.id, summary: correctionReason ? `Firm admin correction: ${correctionReason}` : 'Updated own daily cash transaction', before: row, after: updated });
+    return res.json(updated);
+  } catch (err: any) {
+    return res.status(err?.message === 'Transaction not found' ? 404 : 400).json({ error: err?.message || 'Failed to update transaction' });
+  }
+};
+
+export const deleteOwnDailyCashTransaction = async (req: Request, res: Response) => {
+  try {
+    const { row, isCreator } = await getOwnedDailyCashTransaction(req, String(req.params.id || ''));
+    const correctionReason = String(req.body?.correctionReason || req.body?.reason || '').trim().slice(0, 500);
+    if (!isCreator && !correctionReason) return res.status(400).json({ error: 'Correction reason is required' });
+    await prisma.transaction.delete({ where: { id: row.id } });
+    await writeAuditLog(req, { action: 'DELETE', entityType: 'transaction', entityId: row.id, summary: correctionReason ? `Firm admin correction: ${correctionReason}` : 'Deleted own daily cash transaction', before: row });
+    return res.json({ ok: true });
+  } catch (err: any) {
+    return res.status(err?.message === 'Transaction not found' ? 404 : 400).json({ error: err?.message || 'Failed to delete transaction' });
+  }
+};
+
 export const createDirectedTransaction = async (req: Request, res: Response) => {
   const authUser = getAuthUser(req);
   const role = normalizeRole(authUser.role);
@@ -224,6 +284,7 @@ export const createDirectedTransaction = async (req: Request, res: Response) => 
       currency,
       date: new Date(),
       overrideRate: rawExchangeRate,
+      rateFirmId: role === 'FIRM' ? authUser.firmId : payerFirmId,
     });
     const baseAmount = amount.mul(exchangeRate).toDecimalPlaces(4);
     const created = await prisma.transaction.create({
@@ -347,6 +408,7 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
       currency,
       date: businessDate || new Date(),
       overrideRate: rawExchangeRate,
+      rateFirmId: firmId,
     });
     const baseAmount = amount.mul(exchangeRate).toDecimalPlaces(4);
     const created = await prisma.transaction.create({

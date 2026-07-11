@@ -7,6 +7,7 @@ export type AuthUser = {
   userId?: string;
   role?: Role | string;
   firmId?: string | null;
+  firmRole?: string | null;
 };
 
 export class ServiceError extends Error {
@@ -69,6 +70,8 @@ export async function listCurrencyRatesService(input: {
   dateTo?: unknown;
   baseCurrency?: unknown;
   targetCurrency?: unknown;
+  firmId?: unknown;
+  effective?: unknown;
   authUser?: AuthUser;
 }) {
   const parsedDate = parseDateOnly(input.date);
@@ -101,7 +104,24 @@ export async function listCurrencyRatesService(input: {
   }
   const role = normalizeRole(input.authUser?.role);
   if (role === 'FIRM') {
-    where.source = { in: ['manual', ...(input.authUser?.firmId ? [`firm:${String(input.authUser.firmId)}`] : [])] };
+    where.firmId = input.authUser?.firmId ? String(input.authUser.firmId) : '__missing_firm__';
+  } else if (typeof input.firmId === 'string' && input.firmId.trim()) {
+    where.firmId = input.firmId.trim();
+    if (role === 'ADMIN') {
+      const access = await prisma.userFirmAccess.findUnique({
+        where: { userId_firmId: { userId: String(input.authUser?.userId || ''), firmId: input.firmId.trim() } },
+      });
+      if (!access) throw new ServiceError('Forbidden', 403);
+    }
+  }
+
+  if (String(input.effective || '').toLowerCase() === 'true' && where.firmId && (parsedDate || parsedTo)) {
+    const cutoff = nextDayUtc(parsedDate || parsedTo!);
+    const latest = await prisma.currencyRate.findFirst({
+      where: { ...where, recordedAt: { lt: cutoff } },
+      orderBy: { recordedAt: 'desc' },
+    });
+    return latest ? [latest] : [];
   }
 
   return prisma.currencyRate.findMany({
@@ -117,37 +137,52 @@ export async function createCurrencyRateService(authUser: AuthUser, input: Recor
   }
 
   const base = normalizeCurrency(input.baseCurrency || BASE_CURRENCY);
-  const target = normalizeCurrency(input.targetCurrency);
+  const target = normalizeCurrency(input.targetCurrency || 'USD');
   const rate = parseDecimal(input.rate);
   const day = parseDateOnly(input.date);
-  const source = role === 'FIRM'
-    ? `firm:${authUser.firmId ? String(authUser.firmId) : ''}`
-    : typeof input.source === 'string' && input.source.trim() ? input.source.trim() : 'manual';
+  const firmId = role === 'FIRM'
+    ? String(authUser.firmId || '')
+    : typeof input.firmId === 'string' ? input.firmId.trim() : '';
 
   if (!/^[A-Z]{3}$/.test(base)) throw new ServiceError('Invalid baseCurrency');
   if (base !== BASE_CURRENCY) throw new ServiceError(`baseCurrency must be ${BASE_CURRENCY}`);
-  if (!/^[A-Z]{3}$/.test(target)) throw new ServiceError('Invalid targetCurrency');
+  if (target !== 'USD') throw new ServiceError('Only USD and UZS are supported');
   if (!rate || !rate.gt(0)) throw new ServiceError('rate must be > 0');
   if (!day) throw new ServiceError('date is required (YYYY-MM-DD)');
-  if (role === 'FIRM' && !authUser.firmId) throw new ServiceError('Firm account is missing firmId');
+  if (!firmId) throw new ServiceError('firmId is required');
+  if (role === 'FIRM' && normalizeRole(authUser.firmRole) !== 'FIRM_ADMIN') {
+    throw new ServiceError('Only firm admins can set daily exchange rates', 403);
+  }
+  if (role === 'ADMIN') {
+    const access = await prisma.userFirmAccess.findUnique({ where: { userId_firmId: { userId: String(authUser.userId || ''), firmId } } });
+    if (!access) throw new ServiceError('Forbidden', 403);
+  }
 
-  return prisma.currencyRate.create({
-    data: {
+  const firm = await prisma.firm.findUnique({ where: { id: firmId }, select: { id: true } });
+  if (!firm) throw new ServiceError('Firm not found', 404);
+
+  return prisma.currencyRate.upsert({
+    where: { firmId_targetCurrency_recordedAt: { firmId, targetCurrency: target, recordedAt: startOfDayUtc(day) } },
+    create: {
+      firmId,
       baseCurrency: base,
       targetCurrency: target,
       rate: rate.toDecimalPlaces(6),
-      source,
+      source: `firm:${firmId}`,
       recordedAt: startOfDayUtc(day),
+      createdByUserId: authUser.userId ? String(authUser.userId) : undefined,
     },
+    update: { rate: rate.toDecimalPlaces(6), createdByUserId: authUser.userId ? String(authUser.userId) : undefined },
   });
 }
 
 export async function resolveExchangeRateToUzs(
   authUser: AuthUser,
-  input: { currency: string; date?: Date; overrideRate?: unknown },
+  input: { currency: string; date?: Date; overrideRate?: unknown; rateFirmId?: string | null },
 ): Promise<Prisma.Decimal> {
   const currency = normalizeCurrency(input.currency);
   if (!currency || currency === BASE_CURRENCY) return new Prisma.Decimal(1);
+  if (currency !== 'USD') throw new ServiceError('Only USD and UZS are supported');
 
   const override = parseDecimal(input.overrideRate);
   if (override) {
@@ -155,27 +190,20 @@ export async function resolveExchangeRateToUzs(
     return override.toDecimalPlaces(6);
   }
 
-  const day = startOfDayUtc(input.date || new Date());
-  const nextDay = nextDayUtc(day);
-  const role = normalizeRole(authUser.role);
-  const sources = [
-    ...(role === 'FIRM' && authUser.firmId ? [`firm:${String(authUser.firmId)}`] : []),
-    'manual',
-  ];
+  const nextDay = nextDayUtc(startOfDayUtc(input.date || new Date()));
+  const firmId = String(input.rateFirmId || authUser.firmId || '').trim();
+  if (!firmId) throw new ServiceError('Firm exchange rate is required for USD');
 
   const rate = await prisma.currencyRate.findFirst({
     where: {
+      firmId,
       baseCurrency: BASE_CURRENCY,
       targetCurrency: currency,
-      recordedAt: { gte: day, lt: nextDay },
-      source: { in: sources },
+      recordedAt: { lt: nextDay },
     },
-    orderBy: [
-      { source: 'asc' },
-      { recordedAt: 'desc' },
-    ],
+    orderBy: { recordedAt: 'desc' },
   });
 
-  if (!rate) throw new ServiceError(`Exchange rate to UZS is required for ${currency}`);
+  if (!rate) throw new ServiceError('Firm admin must set a USD/UZS exchange rate first');
   return new Prisma.Decimal(String(rate.rate)).toDecimalPlaces(6);
 }

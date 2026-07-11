@@ -121,6 +121,7 @@ export default function TransactionsPage() {
   const [cashAmount, setCashAmount] = useState<string>('');
   const [cashDate, setCashDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
   const [cashNote, setCashNote] = useState<string>('');
+  const [cashFlightId, setCashFlightId] = useState<string>('');
   const [cashKassaDeskId, setCashKassaDeskId] = useState<string>('');
   const [recordingCash, setRecordingCash] = useState(false);
 
@@ -137,6 +138,47 @@ export default function TransactionsPage() {
   const selectedPayCard = useMemo(() => paymentCards.find((card) => card.id === payCardId), [paymentCards, payCardId]);
   const selectedPayFirm = useMemo(() => firmOptions.find((firm) => firm.id === payFirmId), [firmOptions, payFirmId]);
   const selectedCashFirm = useMemo(() => firmOptions.find((firm) => firm.id === cashFirmId), [firmOptions, cashFirmId]);
+
+  const canChangeOwnDailyCash = (t: any) => {
+    const creatorId = String(t.createdByUserId || '');
+    const currentUserId = String((user as any)?.id || (user as any)?.userId || '');
+    const metaDate = t.metadata && typeof t.metadata === 'object' ? String(t.metadata.date || '') : '';
+    const businessDate = metaDate || String(t.createdAt || '').slice(0, 10);
+    return t.type === 'ADJUSTMENT'
+      && ['KASSA_IN', 'KASSA_OUT'].includes(String(t.direction || ''))
+      && creatorId === currentUserId
+      && businessDate === format(new Date(), 'yyyy-MM-dd');
+  };
+
+  const editOwnDailyCash = async (t: any) => {
+    const amount = window.prompt(tr('Edit amount', 'Summani tahrirlash'), String(t.originalAmount || ''));
+    if (amount === null) return;
+    if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) {
+      toast.error(tr('Amount must be greater than zero', 'Summa noldan katta bo\'lishi kerak'));
+      return;
+    }
+    const oldNote = t.metadata && typeof t.metadata === 'object' ? String(t.metadata.note || '') : '';
+    const note = window.prompt(tr('Edit note', 'Izohni tahrirlash'), oldNote);
+    if (note === null) return;
+    try {
+      await api.patch(`/transactions/${t.id}/daily-cash`, { amount: Number(amount), note });
+      toast.success(tr('Transaction updated', 'Tranzaksiya tahrirlandi'));
+      setReloadKey((k) => k + 1);
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || tr('Failed to update transaction', 'Tranzaksiyani tahrirlab bo\'lmadi'));
+    }
+  };
+
+  const deleteOwnDailyCash = async (t: any) => {
+    if (!window.confirm(tr('Delete this transaction?', 'Ushbu tranzaksiyani o\'chirasizmi?'))) return;
+    try {
+      await api.delete(`/transactions/${t.id}/daily-cash`);
+      toast.success(tr('Transaction deleted', 'Tranzaksiya o\'chirildi'));
+      setReloadKey((k) => k + 1);
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || tr('Failed to delete transaction', 'Tranzaksiyani o\'chirib bo\'lmadi'));
+    }
+  };
 
   const setPaymentCurrencyCode = (currency: string) => {
     const next = String(currency || '').trim().toUpperCase();
@@ -395,11 +437,13 @@ export default function TransactionsPage() {
         amount,
         currency: selectedCashFirm?.currency || 'UZS',
         note: cashNote.trim() || undefined,
+        flightId: cashFlightId || undefined,
         kassaDeskId: cashKassaDeskId || undefined,
       });
       toast.success(cashFlow === 'IN' ? tr('Cash income recorded', 'Kirim qayd etildi') : tr('Cash expense recorded', 'Chiqim qayd etildi'));
       setCashAmount('');
       setCashNote('');
+      setCashFlightId('');
       setPage(1);
       setReloadKey((k) => k + 1);
     } catch (err: any) {
@@ -852,6 +896,16 @@ export default function TransactionsPage() {
               </select>
             </div>
             <div>
+              <label htmlFor="cashFlight" className="compact-label">{tr('Flight (optional)', 'Reys (ixtiyoriy)')}</label>
+              <select id="cashFlight" value={cashFlightId} onChange={(e) => setCashFlightId(e.target.value)} className="compact-control">
+                <option value="">{tr('No flight', 'Reyssiz')}</option>
+                {flightOptions.map((flight) => {
+                  const id = flight.id || flight.flight_id;
+                  return id ? <option key={id} value={id}>{flight.flightNumber || id}</option> : null;
+                })}
+              </select>
+            </div>
+            <div>
               <label htmlFor="cashDate" className="compact-label">{tr('Date', 'Sana')}</label>
               <input id="cashDate" type="date" value={cashDate} onChange={(e) => setCashDate(e.target.value)} className="compact-control" required />
             </div>
@@ -1064,6 +1118,7 @@ export default function TransactionsPage() {
                       })()}
                     </td>
                     <td>
+                      <div className="flex gap-1">
                       <button
                         type="button"
                         onClick={() => router.push(`/transactions/detail?id=${t.id}`)}
@@ -1071,6 +1126,11 @@ export default function TransactionsPage() {
                       >
                         {tr('View', "Ko'rish")}
                       </button>
+                      {canChangeOwnDailyCash(t) && <>
+                        <button type="button" onClick={() => editOwnDailyCash(t)} className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold">{tr('Edit', 'Tahrir')}</button>
+                        <button type="button" onClick={() => deleteOwnDailyCash(t)} className="border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs font-semibold text-red-600">{tr('Delete', "O'chirish")}</button>
+                      </>}
+                      </div>
                     </td>
                   </tr>
                 );

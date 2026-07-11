@@ -297,10 +297,6 @@ function FlightDetailContent() {
       toast.error('Sale currency must be a 3-letter code (e.g. UZS)');
       return;
     }
-    if (currencyCode !== 'UZS' && (!sellExchangeRate.trim() || Number(sellExchangeRate) <= 0)) {
-      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
-      return;
-    }
 
     const purchaserName = sellPurchaserName.trim();
     const purchaserIdNumber = sellPurchaserIdNumber.trim();
@@ -403,10 +399,6 @@ function FlightDetailContent() {
       toast.error('Sale currency must be a 3-letter code (e.g. UZS)');
       return;
     }
-    if (currencyCode !== 'UZS' && (!sellBatchExchangeRate.trim() || Number(sellBatchExchangeRate) <= 0)) {
-      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
-      return;
-    }
 
     const purchaserName = sellBatchPurchaserName.trim();
     const purchaserIdNumber = sellBatchPurchaserIdNumber.trim();
@@ -481,10 +473,6 @@ function FlightDetailContent() {
 
   const confirmAllocation = async () => {
     if (!confirmAllocationTicketId || confirmAllocationBusy) return;
-    if (confirmAllocationCurrency !== 'UZS' && (!confirmAllocationExchangeRate.trim() || Number(confirmAllocationExchangeRate) <= 0)) {
-      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
-      return;
-    }
     setConfirmAllocationBusy(true);
     try {
       await api.post('/tickets/confirm', {
@@ -521,10 +509,6 @@ function FlightDetailContent() {
     }
     if (!Number.isFinite(qty) || qty <= 0) {
       toast.error('Enter a valid quantity');
-      return;
-    }
-    if (confirmBatchCurrency !== 'UZS' && (!confirmBatchExchangeRate.trim() || Number(confirmBatchExchangeRate) <= 0)) {
-      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
       return;
     }
 

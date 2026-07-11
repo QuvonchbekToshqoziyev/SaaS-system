@@ -143,6 +143,10 @@ function buildTxWhere(scope: Awaited<ReturnType<typeof resolveScope>>, period: {
     ...(scope.branchId ? { kassaDeskId: scope.branchId } : {}),
     ...(scope.flightId ? { flightId: scope.flightId } : {}),
     ...(scope.currency ? { currency: scope.currency } : {}),
+    OR: [
+      { flightId: null },
+      { flight: { deletedAt: null, OR: [{ status: null }, { status: { notIn: ['DELETED', 'CANCELLED'] } }] } },
+    ],
   };
 }
 
@@ -356,8 +360,8 @@ function buildCashFlow(summary: ReturnType<typeof summarizeTransactions>, openin
 async function buildFlightProfitability(transactions: TxRow[], scope: Awaited<ReturnType<typeof resolveScope>>) {
   const txFlightIds = transactions.map((tx) => tx.flightId).filter((id): id is string => Boolean(id));
   const flightWhere: Prisma.FlightWhereInput = {
-    status: { not: 'DELETED' },
     deletedAt: null,
+    OR: [{ status: null }, { status: { notIn: ['DELETED', 'CANCELLED'] } }],
     ...(scope.flightId ? { id: scope.flightId } : txFlightIds.length ? { id: { in: Array.from(new Set(txFlightIds)) } } : {}),
   };
   const flights = await prisma.flight.findMany({

@@ -43,9 +43,9 @@ function normalizeCurrencyCode(value: unknown): string {
 function activeFlightWhere(): Prisma.FlightWhereInput {
   return {
     deletedAt: null,
-    OR: [
-      { status: null },
-      { status: { not: 'DELETED' } },
+    AND: [
+      { OR: [{ status: null }, { status: { not: 'DELETED' } }] },
+      { OR: [{ status: null }, { status: { not: 'CANCELLED' } }] },
     ],
   };
 }
@@ -420,7 +420,7 @@ export const updateFlight = async (req: Request, res: Response) => {
   }
 };
 
-// DELETE /flights/:id - Cancel a flight (soft delete)
+// DELETE /flights/:id - Soft delete a flight
 export const deleteFlight = async (req: Request, res: Response) => {
   const id = req.params.id as string;
   try {
@@ -429,10 +429,14 @@ export const deleteFlight = async (req: Request, res: Response) => {
       return sendApiError(res, new AppError(ERROR_CODES.FLIGHT_NOT_FOUND));
     }
 
-    if (flight.status !== 'CANCELLED') {
+    if (flight.status !== 'DELETED') {
       await prisma.flight.update({
         where: { id },
-        data: { status: 'CANCELLED' },
+        data: {
+          status: 'DELETED',
+          deletedAt: new Date(),
+          deletedByUserId: String((req as any).user?.userId || '') || undefined,
+        },
       });
     }
 

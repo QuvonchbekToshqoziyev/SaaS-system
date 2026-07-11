@@ -1,0 +1,10 @@
+import { Router } from 'express';
+import { authMiddleware } from '../middleware/auth';
+import { assignService, createService, listServices, updateServiceStatus } from '../controllers/services.controller';
+const router = Router();
+router.use(authMiddleware);
+router.get('/', listServices);
+router.post('/', createService);
+router.post('/:id/assign', assignService);
+router.patch('/assignments/:id/status', updateServiceStatus);
+export default router;

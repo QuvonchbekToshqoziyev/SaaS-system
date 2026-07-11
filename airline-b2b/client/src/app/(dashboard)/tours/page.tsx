@@ -188,10 +188,6 @@ export default function ToursPage() {
       return;
     }
     const currency = String(pkg.currency || 'UZS').trim().toUpperCase();
-    if (currency !== 'UZS' && (!row.exchangeRate.trim() || Number(row.exchangeRate) <= 0)) {
-      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
-      return;
-    }
     try {
       setBusyId(pkg.id);
       await api.post(`/tour-packages/${pkg.id}/sell`, {

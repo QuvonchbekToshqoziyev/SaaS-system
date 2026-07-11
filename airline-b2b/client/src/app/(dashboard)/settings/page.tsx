@@ -98,14 +98,14 @@ export default function SettingsPage() {
     if (!user) return;
     const loadRates = async () => {
       try {
-        const res = await api.get('/currency-rates', { params: { date: rateDate } });
+        const res = await api.get('/currency-rates', { params: { date: rateDate, firmId: selectedFirmId || undefined, effective: true, targetCurrency: 'USD' } });
         setCurrencyRates(Array.isArray(res.data) ? res.data : []);
       } catch {
         setCurrencyRates([]);
       }
     };
     loadRates();
-  }, [rateDate, user]);
+  }, [rateDate, selectedFirmId, user]);
 
   useEffect(() => {
     let cancelled = false;
@@ -229,11 +229,7 @@ export default function SettingsPage() {
   };
 
   const saveDailyRate = async () => {
-    const currency = rateCurrency.trim().toUpperCase();
-    if (!/^[A-Z]{3}$/.test(currency) || currency === 'UZS') {
-      toast.error(tr('Choose a non-UZS currency code', 'UZSdan boshqa valyuta kodini tanlang'));
-      return;
-    }
+    const currency = 'USD';
     if (!rateValue.trim() || Number(rateValue) <= 0) {
       toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
       return;
@@ -245,10 +241,11 @@ export default function SettingsPage() {
         targetCurrency: currency,
         rate: rateValue.trim(),
         date: rateDate,
+        firmId: selectedFirmId || undefined,
       });
       toast.success(tr('Exchange rate saved', 'Valyuta kursi saqlandi'));
       setRateValue('');
-      const res = await api.get('/currency-rates', { params: { date: rateDate } });
+      const res = await api.get('/currency-rates', { params: { date: rateDate, firmId: selectedFirmId || undefined, effective: true, targetCurrency: 'USD' } });
       setCurrencyRates(Array.isArray(res.data) ? res.data : []);
     } catch (error: any) {
       toast.error(error?.response?.data?.error || tr('Failed to save exchange rate', 'Valyuta kursini saqlab bo\'lmadi'));
@@ -536,11 +533,11 @@ export default function SettingsPage() {
           </div>
           <div>
             <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
-            <input value={rateCurrency} maxLength={3} onChange={(e) => setRateCurrency(e.target.value.toUpperCase())} className="compact-control uppercase" />
+            <input value="USD" readOnly className="compact-control uppercase" />
           </div>
           <div>
             <label className="compact-label">{tr('Rate to UZS', 'UZS kursi')}</label>
-            <input inputMode="decimal" value={rateValue} onChange={(e) => setRateValue(e.target.value)} className="compact-control" placeholder="12600" />
+            <input inputMode="decimal" value={rateValue} onChange={(e) => setRateValue(e.target.value)} className="compact-control" placeholder={currencyRates[0] ? Number(currencyRates[0].rate).toLocaleString('en-US') : '12600'} />
           </div>
           <button
             type="button"
@@ -556,7 +553,7 @@ export default function SettingsPage() {
             <span className="text-sm text-muted">{tr('No rates saved for this date.', 'Bu sana uchun kurs saqlanmagan.')}</span>
           ) : currencyRates.map((rate) => (
             <span key={rate.id} className="rounded-md border border-border bg-surface-2 px-3 py-2 text-sm font-mono">
-              {rate.targetCurrency}: {Number(rate.rate).toLocaleString('en-US')} UZS
+              {rate.targetCurrency}: {Number(rate.rate).toLocaleString('en-US')} UZS · {new Date(rate.recordedAt).toISOString().slice(0, 10)}
             </span>
           ))}
         </div>

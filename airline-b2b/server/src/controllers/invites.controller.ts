@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../db';
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
-import { Prisma, Role } from '@prisma/client';
+import { FirmUserRole, Prisma, Role } from '@prisma/client';
 import jwt from 'jsonwebtoken';
 import { canAccessFirm } from '../utils/access';
 import { isFirmAdminLike, normalizeFirmUserRole } from '../utils/firm-user-roles';
@@ -114,7 +114,7 @@ export const createInvite = async (req: Request, res: Response) => {
 
   const upperRole = typeof role === 'string' ? role.toUpperCase() : '';
   const roleValue: Role = ALLOWED_ROLES.has(upperRole as Role) ? (upperRole as Role) : Role.FIRM;
-  const firmRole = roleValue === Role.FIRM ? normalizeFirmUserRole(req.body?.firmRole) : normalizeFirmUserRole('FIRM_ADMIN');
+  let firmRole = roleValue === Role.FIRM ? normalizeFirmUserRole(req.body?.firmRole) : FirmUserRole.MANAGER;
   const normalizedFullName = typeof fullName === 'string' ? fullName.trim() : '';
   const normalizedPhone = typeof phone === 'string' ? phone.trim() : '';
   const durationDays = Number(subscriptionDays || 0);
@@ -136,6 +136,10 @@ export const createInvite = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Firm account is missing firmId' });
     }
     resolvedFirmId = String(authUser.firmId);
+  }
+
+  if (roleValue === Role.FIRM && firmRole === FirmUserRole.FIRM_ADMIN && actorRole !== 'SUPERADMIN') {
+    return res.status(403).json({ error: 'Only superadmin can assign the firm admin role' });
   }
 
   if (actorRole !== 'SUPERADMIN' && roleValue !== Role.FIRM) {
@@ -171,6 +175,7 @@ export const createInvite = async (req: Request, res: Response) => {
       },
     });
     resolvedFirmId = newFirm.id;
+    firmRole = FirmUserRole.FIRM_ADMIN;
     if (priorBalance) {
       const counterparty = priorBalance.counterpartyFirmId
         ? await prisma.firm.findUnique({ where: { id: priorBalance.counterpartyFirmId }, select: { id: true, name: true } })
@@ -214,6 +219,19 @@ export const createInvite = async (req: Request, res: Response) => {
       });
     }
   } else if (resolvedFirmId && roleValue === Role.FIRM) {
+    if (firmRole === FirmUserRole.FIRM_ADMIN) {
+      const [existingFirmAdmin, pendingFirmAdminInvite] = await Promise.all([
+        prisma.user.findFirst({
+          where: { firmId: resolvedFirmId, role: Role.FIRM, firmRole: FirmUserRole.FIRM_ADMIN, status: { not: 'DELETED' }, deletedAt: null },
+          select: { id: true },
+        }),
+        prisma.invitation.findFirst({
+          where: { firmId: resolvedFirmId, role: Role.FIRM, firmRole: FirmUserRole.FIRM_ADMIN, usedAt: null, deletedAt: null, expiresAt: { gt: new Date() } },
+          select: { id: true },
+        }),
+      ]);
+      if (existingFirmAdmin || pendingFirmAdminInvite) return res.status(409).json({ error: 'This firm already has a firm admin' });
+    }
     await prisma.firm.update({
       where: { id: resolvedFirmId },
       data: {

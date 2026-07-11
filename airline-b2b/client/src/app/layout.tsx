@@ -44,14 +44,14 @@ export default function RootLayout({
   const langInitScript = `(() => {
   try {
     const stored = localStorage.getItem('jetstream-lang');
-    const lang = stored === 'uz' ? 'uz' : 'en';
+    const lang = stored === 'en' ? 'en' : 'uz';
     document.documentElement.lang = lang;
     document.documentElement.dataset.lang = lang;
   } catch {}
 })();`;
 
   return (
-    <html lang="en" suppressHydrationWarning data-theme="dark">
+    <html lang="uz" suppressHydrationWarning data-theme="dark">
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <script dangerouslySetInnerHTML={{ __html: langInitScript }} />

@@ -177,6 +177,7 @@ export default function KassaPage() {
   const [cashOtherCurrency, setCashOtherCurrency] = useState('');
   const [cashExchangeRate, setCashExchangeRate] = useState('');
   const [cashNote, setCashNote] = useState('');
+  const [cashFlightId, setCashFlightId] = useState('');
   const [cashKassaDeskId, setCashKassaDeskId] = useState('');
   const [recordingCash, setRecordingCash] = useState(false);
   const [cardOwnerName, setCardOwnerName] = useState('');
@@ -193,6 +194,7 @@ export default function KassaPage() {
     status: 'ACTIVE',
   });
   const [savingCard, setSavingCard] = useState(false);
+  const [deletingCardId, setDeletingCardId] = useState('');
   const [deskName, setDeskName] = useState('');
   const [deskCode, setDeskCode] = useState('');
   const [deskFirmId, setDeskFirmId] = useState('');
@@ -461,10 +463,6 @@ export default function KassaPage() {
       toast.error(tr('Invalid currency code', 'Noto\'g\'ri valyuta kodi'));
       return;
     }
-    if (currency !== 'UZS' && (!cashExchangeRate.trim() || Number(cashExchangeRate) <= 0)) {
-      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
-      return;
-    }
     const body = {
         flow: cashFlow,
         method: cashMethod,
@@ -472,6 +470,7 @@ export default function KassaPage() {
         businessDate: selectedDate,
         firmId,
         counterpartyFirmId: cashCounterpartyFirmId || undefined,
+        flightId: cashFlightId || undefined,
         kassaDeskId: cashKassaDeskId || undefined,
         amount,
         currency,
@@ -493,12 +492,49 @@ export default function KassaPage() {
       setCashAmount('');
       setCashNote('');
       setCashCounterpartyFirmId('');
+      setCashFlightId('');
       setCashExchangeRate('');
       setReloadKey((k) => k + 1);
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to record cash movement', 'Kassa harakatini qayd etib bo\'lmadi'));
     } finally {
       setRecordingCash(false);
+    }
+  };
+
+  const canChangeDailyCash = (tx: any) => {
+    const actorId = String((user as any)?.id || (user as any)?.userId || '');
+    const txDate = String(tx.metadata?.date || tx.createdAt || '').slice(0, 10);
+    return tx.type === 'ADJUSTMENT' && ['KASSA_IN', 'KASSA_OUT'].includes(String(tx.direction || ''))
+      && String(tx.createdByUserId || '') === actorId && txDate === format(new Date(), 'yyyy-MM-dd');
+  };
+
+  const editDailyCash = async (tx: any) => {
+    const amount = window.prompt(tr('Edit amount', 'Summani tahrirlash'), String(tx.originalAmount || ''));
+    if (amount === null) return;
+    if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) {
+      toast.error(tr('Amount must be greater than zero', 'Summa noldan katta bo\'lishi kerak'));
+      return;
+    }
+    const note = window.prompt(tr('Edit note', 'Izohni tahrirlash'), String(tx.metadata?.note || ''));
+    if (note === null) return;
+    try {
+      await api.patch(`/transactions/${tx.id}/daily-cash`, { amount: Number(amount), note });
+      toast.success(tr('Transaction updated', 'Tranzaksiya tahrirlandi'));
+      setReloadKey((key) => key + 1);
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || tr('Failed to update transaction', 'Tranzaksiyani tahrirlab bo\'lmadi'));
+    }
+  };
+
+  const deleteDailyCash = async (tx: any) => {
+    if (!window.confirm(tr('Delete this transaction?', 'Ushbu tranzaksiyani o\'chirasizmi?'))) return;
+    try {
+      await api.delete(`/transactions/${tx.id}/daily-cash`);
+      toast.success(tr('Transaction deleted', 'Tranzaksiya o\'chirildi'));
+      setReloadKey((key) => key + 1);
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || tr('Failed to delete transaction', 'Tranzaksiyani o\'chirib bo\'lmadi'));
     }
   };
 
@@ -525,10 +561,6 @@ export default function KassaPage() {
     }
     if (payDeskOptions.length > 0 && !payKassaDeskId) {
       toast.error(tr('Select a kassa desk', 'Kassani tanlang'));
-      return;
-    }
-    if (currency !== 'UZS' && (!payExchangeRate.trim() || Number(payExchangeRate) <= 0)) {
-      toast.error(tr('Enter exchange rate to UZS', 'UZS kursini kiriting'));
       return;
     }
 
@@ -655,6 +687,24 @@ export default function KassaPage() {
       toast.error(err?.response?.data?.error || tr('Failed to update card', 'Kartani yangilab bo\'lmadi'));
     } finally {
       setSavingCard(false);
+    }
+  };
+
+  const deleteCard = async (card: PaymentCard) => {
+    if (deletingCardId) return;
+    const ok = window.confirm(tr('Delete this card? Existing transactions will remain in reports.', 'Ushbu kartani o\'chirasizmi? Mavjud tranzaksiyalar hisobotlarda qoladi.'));
+    if (!ok) return;
+    try {
+      setDeletingCardId(card.id);
+      await api.delete(`/kassa/cards/${card.id}`);
+      toast.success(tr('Card deleted', 'Karta o\'chirildi'));
+      if (editingCardId === card.id) setEditingCardId('');
+      setReloadKey((k) => k + 1);
+      await refreshCards();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || tr('Failed to delete card', 'Kartani o\'chirib bo\'lmadi'));
+    } finally {
+      setDeletingCardId('');
     }
   };
 
@@ -813,6 +863,16 @@ export default function KassaPage() {
           storageKey="kassa-open-card"
         >
           <form onSubmit={handleOpenKassa} className="compact-toolbar max-w-2xl">
+            <div>
+              <label className="compact-label">{tr('Flight (optional)', 'Reys (ixtiyoriy)')}</label>
+              <select value={cashFlightId} onChange={(e) => setCashFlightId(e.target.value)} className="compact-control">
+                <option value="">{tr('No flight', 'Reyssiz')}</option>
+                {flightOptions.map((flight) => {
+                  const id = flight.id || flight.flight_id;
+                  return id ? <option key={id} value={id}>{flight.flightNumber || id}</option> : null;
+                })}
+              </select>
+            </div>
             <div>
               <label className="compact-label">
                 {tr('Opening cash balance (UZS)', 'Boshlang\'ich naqd balans (UZS)')}
@@ -990,9 +1050,14 @@ export default function KassaPage() {
                             </button>
                           </div>
                         ) : (
-                          <button type="button" onClick={() => startEditCard(card)} className="px-3 py-2 bg-surface-2 border border-border rounded-lg text-xs font-semibold uppercase hover:bg-surface">
-                            {tr('Edit', 'Tahrir')}
-                          </button>
+                          <div className="inline-flex items-center gap-2">
+                            <button type="button" onClick={() => startEditCard(card)} className="px-3 py-2 bg-surface-2 border border-border rounded-lg text-xs font-semibold uppercase hover:bg-surface">
+                              {tr('Edit', 'Tahrir')}
+                            </button>
+                            <button type="button" onClick={() => deleteCard(card)} disabled={deletingCardId === card.id} className="px-3 py-2 bg-red-500/10 border border-red-500/30 text-red-600 rounded-lg text-xs font-semibold uppercase hover:bg-red-500/15 disabled:opacity-50">
+                              {deletingCardId === card.id ? tr('Deleting', 'O\'chirilmoqda') : tr('Delete', 'O\'chirish')}
+                            </button>
+                          </div>
                         )}
                       </td>
                     )}
@@ -1253,6 +1318,7 @@ export default function KassaPage() {
                   <th>{tr('Kassa', 'Kassa')}</th>
                   <th>{tr('Method', 'Usul')}</th>
                   <th className="text-right">{tr('Amount', 'Summa')}</th>
+                  <th>{tr('Action', 'Amal')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1266,6 +1332,10 @@ export default function KassaPage() {
                     <td>{tx.kassaDesk?.name || tx.kassaDeskId || '—'}</td>
                     <td className="uppercase text-xs">{tx.paymentMethod || '—'}</td>
                     <td className="text-right font-mono">{tx.originalAmount} {tx.currency}</td>
+                    <td>{canChangeDailyCash(tx) ? <div className="flex gap-1">
+                      <button type="button" onClick={() => editDailyCash(tx)} className="border border-border px-2 py-1 text-xs">{tr('Edit', 'Tahrir')}</button>
+                      <button type="button" onClick={() => deleteDailyCash(tx)} className="border border-red-500/30 px-2 py-1 text-xs text-red-600">{tr('Delete', "O'chirish")}</button>
+                    </div> : '—'}</td>
                   </tr>
                 ))}
               </tbody>

@@ -149,7 +149,7 @@ async function ensureDefaultConversations(authUser: AuthUser) {
           firmId: firm.id,
         },
       });
-      if (canReadSupportTicket(authUser)) {
+      if (role === 'FIRM' || canReadSupportTicket(authUser)) {
         await prisma.chatParticipant.upsert({
           where: { conversationId_userId: { conversationId: support.id, userId } },
           update: {},
@@ -225,7 +225,7 @@ async function conversationAccessWhere(authUser: AuthUser): Promise<Prisma.ChatC
     OR: [
       { type: { in: [ChatType.PERSONAL, ChatType.BRANCH, ChatType.AI] }, participants: { some: { userId } } },
       ...(canReadCompanyChannel(authUser) ? [{ type: ChatType.COMPANY }] : []),
-      ...(canReadSupportTicket(authUser) && authUser.firmId ? [{ type: ChatType.SUPPORT, firmId: String(authUser.firmId) }] : []),
+      ...(authUser.firmId ? [{ type: ChatType.SUPPORT, firmId: String(authUser.firmId) }] : []),
     ],
   };
 }
@@ -335,9 +335,6 @@ export const createConversation = async (req: Request, res: Response) => {
   if (type === ChatType.SUPPORT && !firmId) return res.status(400).json({ error: 'Firm is required for support requests' });
   if (firmId && !(await canAccessFirm(authUser, firmId)) && !isSuperAdmin(authUser)) {
     return res.status(403).json({ error: 'Forbidden' });
-  }
-  if (type === ChatType.SUPPORT && !canReadSupportTicket(authUser)) {
-    return res.status(403).json({ error: 'Only firm admins and ADO support can open support tickets' });
   }
   if (type === ChatType.BRANCH && !isAdmin(authUser)) {
     return res.status(403).json({ error: 'Branch group chats are managed automatically' });

@@ -512,6 +512,7 @@ export async function getKassaDayService(authUser: AuthUser, rawDate: unknown, i
       paymentCardId: tx.paymentCardId,
       paymentCard: tx.paymentCard,
       direction: tx.direction,
+      createdByUserId: tx.createdByUserId,
       metadata: tx.metadata,
       createdAt: tx.createdAt.toISOString(),
     })),
@@ -634,6 +635,45 @@ export async function updatePaymentCardService(
   const updated = await prisma.paymentCard.update({
     where: { id },
     data,
+    include: { firm: { select: { id: true, name: true } } },
+  });
+
+  return serializePaymentCard(updated);
+}
+
+export async function deletePaymentCardService(authUser: AuthUser, id: string, input: { reason?: unknown } = {}) {
+  const role = normalizeRole(authUser.role);
+  const actorUserId = authUser.userId ? String(authUser.userId) : '';
+  if (!actorUserId) {
+    throw new ServiceError('Unauthorized', 401);
+  }
+
+  const existing = await prisma.paymentCard.findUnique({
+    where: { id },
+    select: { id: true, ownerName: true, firmId: true, createdByUserId: true, deletedAt: true },
+  });
+  if (!existing || existing.deletedAt) {
+    throw new ServiceError('Payment card not found', 404);
+  }
+
+  const isCreator = existing.createdByUserId === actorUserId;
+  const isOwnFirmAdmin = isFirmAdmin(authUser) && Boolean(authUser.firmId) && existing.firmId === authUser.firmId;
+  if (!isPlatformAdmin(authUser) && !isCreator && !isOwnFirmAdmin) {
+    throw new ServiceError('Forbidden', 403);
+  }
+  if (role === 'FIRM' && !isCreator && !isOwnFirmAdmin) {
+    throw new ServiceError('Forbidden', 403);
+  }
+
+  const reason = typeof input.reason === 'string' && input.reason.trim() ? input.reason.trim().slice(0, 500) : null;
+  const updated = await prisma.paymentCard.update({
+    where: { id },
+    data: {
+      status: 'DELETED',
+      deletedAt: new Date(),
+      deletedByUserId: actorUserId,
+      deleteReason: reason,
+    },
     include: { firm: { select: { id: true, name: true } } },
   });
 

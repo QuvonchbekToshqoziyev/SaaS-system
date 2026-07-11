@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../db';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import { Prisma, Role } from '@prisma/client';
+import { FirmUserRole, Prisma, Role } from '@prisma/client';
 import { writeAuditLog } from '../utils/audit';
 import { normalizeFirmUserRole } from '../utils/firm-user-roles';
 
@@ -100,9 +100,16 @@ export const login = async (req: Request, res: Response) => {
       status: { not: 'DELETED' },
       deletedAt: null,
     },
-    include: { firm: { select: { kind: true } } },
+    include: { firm: { select: { kind: true, subscriptionEndsAt: true } } },
   });
   if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+
+  if (user.role === Role.FIRM && user.firm?.subscriptionEndsAt && user.firm.subscriptionEndsAt <= new Date()) {
+    return res.status(403).json({
+      code: 'SUBSCRIPTION_EXPIRED',
+      error: 'Obuna muddati tugagan. Obunani uzaytirish uchun biz bilan bog\'laning.',
+    });
+  }
   
   const valid = await bcrypt.compare(password, user.password);
   if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
@@ -405,6 +412,25 @@ export const updateUser = async (req: Request, res: Response) => {
         if (!firm) return res.status(404).json({ error: 'Firm not found' });
       }
       data.firm = firmId ? { connect: { id: firmId } } : { disconnect: true };
+    }
+
+    const nextFirmId = req.body?.firmId !== undefined
+      ? (typeof req.body.firmId === 'string' && req.body.firmId.trim() ? req.body.firmId.trim() : null)
+      : existing.firmId;
+    const nextFirmRole = nextRole === Role.FIRM ? normalizeFirmUserRole(req.body?.firmRole ?? existing.firmRole) : null;
+    if (nextRole === Role.FIRM && nextFirmRole === FirmUserRole.FIRM_ADMIN && nextFirmId) {
+      const existingFirmAdmin = await prisma.user.findFirst({
+        where: {
+          id: { not: userId },
+          firmId: nextFirmId,
+          role: Role.FIRM,
+          firmRole: FirmUserRole.FIRM_ADMIN,
+          status: { not: 'DELETED' },
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+      if (existingFirmAdmin) return res.status(409).json({ error: 'This firm already has a firm admin' });
     }
 
     await prisma.$transaction(async (tx) => {
