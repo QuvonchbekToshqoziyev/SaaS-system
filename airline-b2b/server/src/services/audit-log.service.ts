@@ -12,6 +12,7 @@ export async function listAuditLogsService(input: {
   search?: unknown;
   action?: unknown;
   entityType?: unknown;
+  since?: unknown;
 }) {
   const page = Math.max(1, parsePositiveInt(input.page, 1));
   const limit = Math.min(100, Math.max(1, parsePositiveInt(input.limit, 30)));
@@ -19,10 +20,14 @@ export async function listAuditLogsService(input: {
   const search = String(input.search || '').trim();
   const action = String(input.action || '').trim();
   const entityType = String(input.entityType || '').trim();
+  const sinceRaw = String(input.since || '').trim();
+  const since = sinceRaw ? new Date(sinceRaw) : null;
+  if (since && Number.isNaN(since.getTime())) throw new Error('Invalid since date');
 
   const where: Prisma.AuditLogWhereInput = {
     ...(action ? { action } : {}),
     ...(entityType ? { entityType } : {}),
+    ...(since ? { createdAt: { gte: since } } : {}),
     ...(search
       ? {
           OR: [

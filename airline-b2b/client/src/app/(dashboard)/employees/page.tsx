@@ -8,6 +8,7 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import type { AxiosError } from 'axios';
+import ExportActions from '@/components/ui/ExportActions';
 
 type FirmOption = { id: string; name: string };
 type Employee = {
@@ -59,6 +60,7 @@ export default function EmployeesPage() {
   const isFirmAdmin = isFirmUser && firmRole === 'FIRM_ADMIN';
   const canAccess = role === 'SUPERADMIN' || role === 'ADMIN' || role === 'FIRM';
   const canManageEmployees = role === 'SUPERADMIN' || role === 'ADMIN' || isFirmAdmin;
+  const canCreateEmployeeLogin = isSuperAdmin || isFirmAdmin;
   const canLoadFirms = role === 'SUPERADMIN' || role === 'ADMIN';
   const employeeRoleOptions = [
     { value: 'MANAGER', label: tr('Manager', 'Menejer') },
@@ -67,9 +69,7 @@ export default function EmployeesPage() {
     { value: 'OTHER', label: tr('Other', 'Boshqa') },
   ];
 
-  const [draft, setDraft] = useState({ name: '', role: 'MANAGER', customRole: '', salary: '', currency: 'UZS', firmId: '' });
-  const [accountDraft, setAccountDraft] = useState({ email: '', password: '', fullName: '', phone: '', firmRole: 'MANAGER' });
-  const [creatingAccount, setCreatingAccount] = useState(false);
+  const [draft, setDraft] = useState({ name: '', role: 'MANAGER', customRole: '', salary: '', currency: 'UZS', firmId: '', email: '', password: '' });
   const [saving, setSaving] = useState(false);
   const [savingEmployeeId, setSavingEmployeeId] = useState<string | null>(null);
   const [employeeDrafts, setEmployeeDrafts] = useState<Record<string, EmployeeDraft>>({});
@@ -78,19 +78,19 @@ export default function EmployeesPage() {
   const [resettingUserId, setResettingUserId] = useState<string | null>(null);
 
   const { data: firms = [] } = useQuery<FirmOption[]>({
-    queryKey: ['firms'],
+    queryKey: ['firms', user?.id || user?.email || role],
     queryFn: async () => (await api.get('/firms')).data,
     enabled: canLoadFirms,
   });
 
   const { data: employees = [], isLoading } = useQuery<Employee[]>({
-    queryKey: ['employees'],
+    queryKey: ['employees', user?.id || user?.email || role],
     queryFn: async () => (await api.get('/employees')).data,
     enabled: canAccess,
   });
 
   const { data: users = [] } = useQuery<UserRow[]>({
-    queryKey: ['auth-users'],
+    queryKey: ['auth-users', user?.id || user?.email || role],
     queryFn: async () => (await api.get('/auth/users')).data,
     enabled: isSuperAdmin,
   });
@@ -123,6 +123,15 @@ export default function EmployeesPage() {
       toast.error(tr('Select a firm', 'Firmani tanlang'));
       return;
     }
+    const wantsLogin = canCreateEmployeeLogin && Boolean(draft.email.trim() || draft.password || draft.role === 'KASSIR');
+    if (wantsLogin && !draft.email.trim()) {
+      toast.error(tr('Email is required for login access', 'Login uchun email kerak'));
+      return;
+    }
+    if (wantsLogin && draft.password.length < 6) {
+      toast.error(tr('Password must be at least 6 characters', 'Parol kamida 6 ta belgidan iborat bo\'lishi kerak'));
+      return;
+    }
 
     try {
       setSaving(true);
@@ -132,9 +141,11 @@ export default function EmployeesPage() {
         salary: draft.salary.trim(),
         currency: draft.currency.trim().toUpperCase() || 'UZS',
         firmId: targetFirmId || undefined,
+        email: wantsLogin ? draft.email.trim() : undefined,
+        password: wantsLogin ? draft.password : undefined,
       });
-      toast.success(tr('Employee saved', 'Hodim saqlandi'));
-      setDraft({ name: '', role: 'MANAGER', customRole: '', salary: '', currency: 'UZS', firmId: '' });
+      toast.success(wantsLogin ? tr('Employee and login created', 'Hodim va login yaratildi') : tr('Employee saved', 'Hodim saqlandi'));
+      setDraft({ name: '', role: 'MANAGER', customRole: '', salary: '', currency: 'UZS', firmId: '', email: '', password: '' });
       queryClient.invalidateQueries({ queryKey: ['employees'] });
     } catch (err: unknown) {
       toast.error(apiErrorMessage(err) || tr('Failed to save employee', 'Hodimni saqlab bo\'lmadi'));
@@ -250,84 +261,24 @@ export default function EmployeesPage() {
     }
   };
 
-  const createStaffAccount = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!isFirmAdmin || creatingAccount) return;
-    if (!accountDraft.email.trim() || !accountDraft.fullName.trim()) {
-      toast.error(tr('Email and full name are required', 'Email va to\'liq ism kerak'));
-      return;
-    }
-    if (accountDraft.password.length < 6) {
-      toast.error(tr('Password must be at least 6 characters', 'Parol kamida 6 ta belgidan iborat bo\'lishi kerak'));
-      return;
-    }
-    try {
-      setCreatingAccount(true);
-      await api.post('/invites', {
-        email: accountDraft.email.trim(),
-        password: accountDraft.password,
-        fullName: accountDraft.fullName.trim(),
-        phone: accountDraft.phone.trim() || undefined,
-        role: 'FIRM',
-        firmRole: accountDraft.firmRole,
-      });
-      toast.success(tr('Staff login created', 'Hodim login akkaunti yaratildi'));
-      setAccountDraft({ email: '', password: '', fullName: '', phone: '', firmRole: 'MANAGER' });
-    } catch (err: unknown) {
-      toast.error(apiErrorMessage(err) || tr('Failed to create staff login', 'Hodim loginini yaratib bo\'lmadi'));
-    } finally {
-      setCreatingAccount(false);
-    }
-  };
-
   const money = (value: unknown) => new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Number(value || 0));
   const roleLabel = (value: string) => employeeRoleOptions.find((option) => option.value === value)?.label || value;
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-3xl font-bold text-foreground">{tr('Employees', 'Hodimlar')}</h2>
-        <p className="mt-1 text-sm text-muted">
-          {tr(
-            'Track staff roles, salaries, and status. Employees do not need website accounts unless they also need login access.',
-            'Hodimlarning roli, maoshi va statusini yuriting. Hodimlarga sayt akkaunti faqat login kerak bo\'lsa ochiladi.'
-          )}
-        </p>
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h2 className="text-3xl font-bold text-foreground">{tr('Employees', 'Hodimlar')}</h2>
+          <p className="mt-1 text-sm text-muted">
+            {tr('Track staff roles, salaries, and status. Login credentials can be created together with a new employee.', 'Hodimlarning roli, maoshi va statusini yuriting. Yangi hodim bilan birga login ma\'lumotlarini ham yarating.')}
+          </p>
+        </div>
+        <ExportActions filename="ado-hodimlar" sheet={{
+          name: 'Hodimlar',
+          columns: [{ header: 'Ism', key: 'name' }, { header: 'Rol', key: 'role' }, { header: 'Firma', key: 'firm' }, { header: 'Maosh', key: 'salary' }, { header: 'Valyuta', key: 'currency' }, { header: 'Status', key: 'status' }],
+          rows: employees.map((employee) => ({ name: employee.name, role: employee.role, firm: employee.firm?.name || '', salary: Number(employee.salary || 0), currency: employee.currency, status: employee.status })),
+        }} />
       </div>
-
-      {isFirmAdmin && (
-        <form onSubmit={createStaffAccount} className="glass-panel compact-toolbar p-4">
-          <div>
-            <label className="compact-label">{tr('Login role', 'Login roli')}</label>
-            <select value={accountDraft.firmRole} onChange={(e) => setAccountDraft({ ...accountDraft, firmRole: e.target.value })} className="compact-control">
-              <option value="MANAGER">{tr('Manager - tickets and tours', 'Menejer - bilet va turlar')}</option>
-              <option value="KASSIR">{tr('Kassir - kassa only', 'Kassir - faqat kassa')}</option>
-            </select>
-          </div>
-          <div>
-            <label className="compact-label">{tr('Full name', 'To\'liq ism')}</label>
-            <input value={accountDraft.fullName} onChange={(e) => setAccountDraft({ ...accountDraft, fullName: e.target.value })} className="compact-control" />
-          </div>
-          <div>
-            <label className="compact-label">Email</label>
-            <input type="email" value={accountDraft.email} onChange={(e) => setAccountDraft({ ...accountDraft, email: e.target.value })} className="compact-control" />
-          </div>
-          <div>
-            <label className="compact-label">{tr('Phone', 'Telefon')}</label>
-            <input value={accountDraft.phone} onChange={(e) => setAccountDraft({ ...accountDraft, phone: e.target.value })} className="compact-control" />
-          </div>
-          <div>
-            <label className="compact-label">{tr('Initial password', 'Boshlang\'ich parol')}</label>
-            <input type="password" value={accountDraft.password} onChange={(e) => setAccountDraft({ ...accountDraft, password: e.target.value })} className="compact-control" />
-          </div>
-          <div className="flex items-end">
-            <button type="submit" disabled={creatingAccount} className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold uppercase tracking-wide text-ink hover:bg-primary/90 disabled:opacity-50">
-              <Plus size={16} />
-              {creatingAccount ? tr('Creating...', 'Yaratilmoqda...') : tr('Create login', 'Login yaratish')}
-            </button>
-          </div>
-        </form>
-      )}
 
       {canManageEmployees && (
       <form onSubmit={createEmployee} className="glass-panel compact-toolbar p-4">
@@ -335,6 +286,18 @@ export default function EmployeesPage() {
           <label className="compact-label">{tr('Name', 'Ism')}</label>
           <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} className="compact-control" />
         </div>
+        {canCreateEmployeeLogin && (
+          <>
+            <div>
+              <label className="compact-label">{tr('Login email', 'Login email')}</label>
+              <input type="email" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} className="compact-control" required={draft.role === 'KASSIR'} />
+            </div>
+            <div>
+              <label className="compact-label">{tr('Initial password', 'Boshlang\'ich parol')}</label>
+              <input type="password" minLength={6} value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} className="compact-control" required={draft.role === 'KASSIR'} />
+            </div>
+          </>
+        )}
         <div>
           <label className="compact-label">{tr('Role', 'Rol')}</label>
           <select value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value })} className="compact-control">

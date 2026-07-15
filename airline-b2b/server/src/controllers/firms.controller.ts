@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma } from '@prisma/client';
 import { isPayableDebtType, payableAndPaymentTypeFilter } from '../utils/transaction-types';
-import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
+import { canAccessFirm, canViewRelatedFirm, getRelatedFirmIds } from '../utils/access';
 import { writeAuditLog } from '../utils/audit';
 import { canManageFirmWork } from '../utils/firm-user-roles';
 import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
@@ -200,7 +200,7 @@ function parseOptionalDate(value: unknown): Date | undefined {
 
 export const listFirms = async (req: Request, res: Response) => {
   const authUser = getAuthUser(req);
-  const scopedFirmIds = await getAccessibleFirmIds(authUser);
+  const scopedFirmIds = await getRelatedFirmIds(authUser);
 
   const firms = await prisma.firm.findMany({
     where: {
@@ -245,7 +245,7 @@ export const getFirmById = async (req: Request, res: Response) => {
 
   if (!id) return res.status(400).json({ error: 'Firm id is required' });
 
-  if (!(await canAccessFirm(authUser, id))) {
+  if (!(await canViewRelatedFirm(authUser, id))) {
     return res.status(403).json({ error: 'Forbidden' });
   }
 

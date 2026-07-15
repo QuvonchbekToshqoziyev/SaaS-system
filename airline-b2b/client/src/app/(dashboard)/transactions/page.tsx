@@ -10,6 +10,8 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import CollapsibleCard from '@/components/ui/CollapsibleCard';
+import ExportActions from '@/components/ui/ExportActions';
+import { normalizeDateParam, normalizeTxTypeParam, TRANSACTIONS_PREFS_KEY, type TransactionsPrefs } from '@/features/transactions/query';
 
 type FirmOption = {
   id: string;
@@ -39,33 +41,6 @@ type KassaDeskOption = {
   firm?: { id: string; name: string | null } | null;
 };
 
-type TransactionsPrefs = {
-  view?: 'list' | 'boxes';
-  filterType?: string;
-  filterFirmId?: string;
-  filterKassaDeskId?: string;
-  filterFlightId?: string;
-  filterCurrency?: string;
-  dateFrom?: string;
-  dateTo?: string;
-};
-
-const TRANSACTIONS_PREFS_KEY = 'jetstream-transactions-prefs';
-
-function normalizeTxTypeParam(value: string): string {
-  const v = String(value || '').trim().toLowerCase();
-  if (v === 'sale' || v === 'payable' || v === 'payment' || v === 'adjustment') return v;
-  return '';
-}
-
-function normalizeDateParam(value: string): string {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
-  return match?.[1] || '';
-}
-
 export default function TransactionsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -74,8 +49,16 @@ export default function TransactionsPage() {
 
   const role = String(user?.role || '').toUpperCase();
   const canFilterFirm = role === 'ADMIN' || role === 'SUPERADMIN';
+  const canCreateTransaction = canFilterFirm || (role === 'FIRM' && String(user?.firmRole || '').toUpperCase() === 'FIRM_ADMIN');
+  const canManageAccounts = role === 'FIRM' && String(user?.firmRole || '').toUpperCase() === 'FIRM_ADMIN';
+  const canDeleteTransaction = (transaction: any) => role === 'SUPERADMIN'
+    || (role === 'FIRM' && String(user?.firmRole || '').toUpperCase() === 'FIRM_ADMIN' && String(transaction.firmId || '') === String(user?.firmId || ''));
 
   const [transactions, setTransactions] = useState<any[]>([]);
+  const [accounts, setAccounts] = useState<any[]>([]);
+  const [accountDraft, setAccountDraft] = useState({ name: '', type: 'BANK', currency: 'UZS', openingBalance: '0' });
+  const [accountTx, setAccountTx] = useState({ accountId: '', flow: 'IN', amount: '', category: 'OTHER', counterpartyName: '', note: '', exchangeRate: '' });
+  const [savingAccount, setSavingAccount] = useState(false);
   const [loading, setLoading] = useState(true);
   const [transactionsView, setTransactionsView] = useState<'list' | 'boxes'>('list');
   const [quickSearch, setQuickSearch] = useState('');
@@ -84,6 +67,11 @@ export default function TransactionsPage() {
   const [filterKassaDeskId, setFilterKassaDeskId] = useState<string>('');
   const [filterFlightId, setFilterFlightId] = useState<string>('');
   const [filterCurrency, setFilterCurrency] = useState<string>('');
+  const [filterSourceMode, setFilterSourceMode] = useState<string>('');
+  const [filterStatus, setFilterStatus] = useState<string>('');
+  const [filterPaymentMethod, setFilterPaymentMethod] = useState<string>('');
+  const [filterPaymentCardId, setFilterPaymentCardId] = useState<string>('');
+  const [filterAllocationId, setFilterAllocationId] = useState<string>('');
   const [dateFrom, setDateFrom] = useState<string>('');
   const [dateTo, setDateTo] = useState<string>('');
 
@@ -103,13 +91,42 @@ export default function TransactionsPage() {
 
   const [reloadKey, setReloadKey] = useState(0);
 
+  useEffect(() => {
+    if (!user) return;
+    api.get('/accounts').then((res) => setAccounts(Array.isArray(res.data) ? res.data : [])).catch(() => setAccounts([]));
+  }, [user, reloadKey]);
+
+  const createAccount = async (event: FormEvent) => {
+    event.preventDefault();
+    try {
+      setSavingAccount(true);
+      await api.post('/accounts', { ...accountDraft, openingBalance: Number(accountDraft.openingBalance || 0) });
+      setAccountDraft({ name: '', type: 'BANK', currency: 'UZS', openingBalance: '0' });
+      setReloadKey((key) => key + 1);
+      toast.success(tr('Account created', 'Hisob yaratildi'));
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Failed to create account', 'Hisobni yaratib bo\'lmadi'));
+    } finally { setSavingAccount(false); }
+  };
+
+  const createAccountTransaction = async (event: FormEvent) => {
+    event.preventDefault();
+    try {
+      await api.post('/transactions/account', { ...accountTx, amount: Number(accountTx.amount), exchangeRate: accountTx.exchangeRate || undefined });
+      setAccountTx({ accountId: '', flow: 'IN', amount: '', category: 'OTHER', counterpartyName: '', note: '', exchangeRate: '' });
+      setReloadKey((key) => key + 1);
+      toast.success(tr('Account transaction recorded', 'Hisob tranzaksiyasi qayd etildi'));
+    } catch (error: any) { toast.error(error?.response?.data?.error || tr('Failed to record transaction', 'Tranzaksiyani qayd etib bo\'lmadi')); }
+  };
+
   // Record Payment
   const [payFirmId, setPayFirmId] = useState<string>('');
   const [payFlightId, setPayFlightId] = useState<string>('');
   const [payAmount, setPayAmount] = useState<string>('');
   const [payCurrency, setPayCurrency] = useState<'USD' | 'UZS' | 'OTHER'>('UZS');
   const [payOtherCurrency, setPayOtherCurrency] = useState<string>('');
-  const [payMethod, setPayMethod] = useState<'cash' | 'card'>('cash');
+  const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'bank'>('cash');
+  const [payAllocationId, setPayAllocationId] = useState<string>('');
   const [payCashDate, setPayCashDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
   const [payCardId, setPayCardId] = useState<string>('');
   const [payCardReference, setPayCardReference] = useState<string>('');
@@ -118,6 +135,7 @@ export default function TransactionsPage() {
   const [recordingPayment, setRecordingPayment] = useState(false);
   const [cashFlow, setCashFlow] = useState<'IN' | 'OUT'>('IN');
   const [cashFirmId, setCashFirmId] = useState<string>('');
+  const [cashCounterpartyFirmId, setCashCounterpartyFirmId] = useState<string>('');
   const [cashAmount, setCashAmount] = useState<string>('');
   const [cashDate, setCashDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
   const [cashNote, setCashNote] = useState<string>('');
@@ -160,8 +178,10 @@ export default function TransactionsPage() {
     const oldNote = t.metadata && typeof t.metadata === 'object' ? String(t.metadata.note || '') : '';
     const note = window.prompt(tr('Edit note', 'Izohni tahrirlash'), oldNote);
     if (note === null) return;
+    const correctionReason = window.prompt(tr('Why is this correction needed?', 'Tuzatish sababi nima?'));
+    if (!correctionReason?.trim()) return;
     try {
-      await api.patch(`/transactions/${t.id}/daily-cash`, { amount: Number(amount), note });
+      await api.patch(`/transactions/${t.id}/daily-cash`, { amount: Number(amount), note, correctionReason: correctionReason.trim() });
       toast.success(tr('Transaction updated', 'Tranzaksiya tahrirlandi'));
       setReloadKey((k) => k + 1);
     } catch (err: any) {
@@ -170,13 +190,28 @@ export default function TransactionsPage() {
   };
 
   const deleteOwnDailyCash = async (t: any) => {
+    const reason = window.prompt(tr('Why should this entry be removed?', 'Yozuvni o‘chirish sababi nima?'));
+    if (!reason?.trim()) return;
     if (!window.confirm(tr('Delete this transaction?', 'Ushbu tranzaksiyani o\'chirasizmi?'))) return;
     try {
-      await api.delete(`/transactions/${t.id}/daily-cash`);
+      await api.delete(`/transactions/${t.id}/daily-cash`, { data: { reason: reason.trim() } });
       toast.success(tr('Transaction deleted', 'Tranzaksiya o\'chirildi'));
       setReloadKey((k) => k + 1);
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to delete transaction', 'Tranzaksiyani o\'chirib bo\'lmadi'));
+    }
+  };
+
+  const deleteTransaction = async (transaction: any) => {
+    const reason = window.prompt(tr('Why should this transaction be deleted?', 'Tranzaksiya nima sababdan o\'chiriladi?'));
+    if (!reason?.trim()) return;
+    if (!window.confirm(tr('Delete this transaction permanently?', 'Ushbu tranzaksiya butunlay o\'chirilsinmi?'))) return;
+    try {
+      await api.delete(`/transactions/${transaction.id}`, { data: { reason: reason.trim() } });
+      toast.success(tr('Transaction deleted', 'Tranzaksiya o\'chirildi'));
+      setReloadKey((key) => key + 1);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Failed to delete transaction', 'Tranzaksiyani o\'chirib bo\'lmadi'));
     }
   };
 
@@ -350,7 +385,7 @@ export default function TransactionsPage() {
       return;
     }
 
-    if (method !== 'cash' && method !== 'card') {
+    if (!['cash', 'card', 'bank'].includes(method)) {
       toast.error(tr('Select a payment method', "To'lov usulini tanlang"));
       return;
     }
@@ -391,12 +426,14 @@ export default function TransactionsPage() {
       if (method === 'card') body.paymentCardId = payCardId;
       if (canFilterFirm) body.firmId = payFirmId;
       if (flightId) body.flightId = flightId;
+      if (payAllocationId.trim()) body.allocationId = payAllocationId.trim();
       if (payKassaDeskId) body.kassaDeskId = payKassaDeskId;
 
       await api.post('/payments', body);
       toast.success(tr('Payment recorded', "To'lov qayd etildi"));
 
       setPayAmount('');
+      setPayAllocationId('');
       setPayCardId('');
       setPayCardReference('');
       setPayReference('');
@@ -434,6 +471,7 @@ export default function TransactionsPage() {
         flow: cashFlow,
         businessDate: cashDate,
         firmId: cashFirmId,
+        counterpartyFirmId: cashCounterpartyFirmId || undefined,
         amount,
         currency: selectedCashFirm?.currency || 'UZS',
         note: cashNote.trim() || undefined,
@@ -444,6 +482,7 @@ export default function TransactionsPage() {
       setCashAmount('');
       setCashNote('');
       setCashFlightId('');
+      setCashCounterpartyFirmId('');
       setPage(1);
       setReloadKey((k) => k + 1);
     } catch (err: any) {
@@ -464,6 +503,11 @@ export default function TransactionsPage() {
         if (filterKassaDeskId) query.append('kassaDeskId', filterKassaDeskId);
         if (filterFlightId) query.append('flightId', filterFlightId);
         if (filterCurrency.trim()) query.append('currency', filterCurrency.trim().toUpperCase());
+        if (filterSourceMode) query.append('sourceMode', filterSourceMode);
+        if (filterStatus) query.append('status', filterStatus);
+        if (filterPaymentMethod) query.append('paymentMethod', filterPaymentMethod);
+        if (filterPaymentCardId) query.append('paymentCardId', filterPaymentCardId);
+        if (filterAllocationId.trim()) query.append('allocationId', filterAllocationId.trim());
         if (dateFrom) query.append('dateFrom', dateFrom);
         if (dateTo) query.append('dateTo', dateTo);
         query.append('page', String(page));
@@ -490,14 +534,14 @@ export default function TransactionsPage() {
       }
     };
     fetchTransactions();
-  }, [prefsReady, filterType, filterFirmId, filterKassaDeskId, filterFlightId, filterCurrency, dateFrom, dateTo, page, limit, canFilterFirm, reloadKey, tr]);
+  }, [prefsReady, filterType, filterFirmId, filterKassaDeskId, filterFlightId, filterCurrency, filterSourceMode, filterStatus, filterPaymentMethod, filterPaymentCardId, filterAllocationId, dateFrom, dateTo, page, limit, canFilterFirm, reloadKey, tr]);
 
   useEffect(() => {
     const loadOptions = async () => {
       try {
         const [flightsRes, firmsRes, desksRes, cardsRes] = await Promise.all([
           api.get('/flights'),
-          canFilterFirm ? api.get('/firms') : Promise.resolve({ data: [] }),
+          canCreateTransaction ? api.get('/firms') : Promise.resolve({ data: [] }),
           api.get('/kassa/desks'),
           api.get('/kassa/cards'),
         ]);
@@ -519,7 +563,7 @@ export default function TransactionsPage() {
     };
 
     loadOptions();
-  }, [canFilterFirm]);
+  }, [canCreateTransaction]);
 
   const getTransactionTypeLabel = (type?: string, direction?: string) => {
     const normalized = String(type || '').trim().toUpperCase();
@@ -558,6 +602,7 @@ export default function TransactionsPage() {
     filterKassaDeskId ||
     filterFlightId ||
     filterCurrency.trim() ||
+    filterSourceMode || filterStatus || filterPaymentMethod || filterPaymentCardId || filterAllocationId.trim() ||
     dateFrom ||
     dateTo,
   );
@@ -568,6 +613,11 @@ export default function TransactionsPage() {
     setFilterKassaDeskId('');
     setFilterFlightId('');
     setFilterCurrency('');
+    setFilterSourceMode('');
+    setFilterStatus('');
+    setFilterPaymentMethod('');
+    setFilterPaymentCardId('');
+    setFilterAllocationId('');
     setDateFrom('');
     setDateTo('');
     setPage(1);
@@ -583,6 +633,13 @@ export default function TransactionsPage() {
     if (type === 'PAYABLE' || type === 'ALLOCATION') return -amount;
     if (type === 'REFUND' || type === 'ADJUSTMENT') return amount;
     return 0;
+  };
+
+  const getNativeBalanceDelta = (tx: any) => {
+    const baseDelta = getBalanceDelta(tx);
+    const baseAmount = Number(tx?.baseAmount || tx?.base_amount || 0);
+    const originalAmount = Number(tx?.originalAmount || tx?.original_amount || 0);
+    return baseAmount ? (baseDelta / baseAmount) * originalAmount : 0;
   };
 
   const searchText = quickSearch.trim().toLowerCase();
@@ -625,24 +682,56 @@ export default function TransactionsPage() {
     return rows.map((tx) => ({ tx, runningBalance: runningById.get(String(tx.id)) || 0 }));
   }, [searchText, transactions]);
 
-  const pageTotals = visibleTransactions.reduce(
+  const pageTotals = visibleTransactions.reduce<Record<string, { debit: number; credit: number; balance: number }>>(
     (acc, row) => {
-      const delta = getBalanceDelta(row.tx);
-      if (delta < 0) acc.debit += Math.abs(delta);
-      if (delta > 0) acc.credit += delta;
-      acc.balance = row.runningBalance;
+      const currency = String(row.tx.currency || 'UZS').toUpperCase();
+      const totals = acc[currency] || { debit: 0, credit: 0, balance: 0 };
+      const delta = getNativeBalanceDelta(row.tx);
+      if (delta < 0) totals.debit += Math.abs(delta);
+      if (delta > 0) totals.credit += delta;
+      totals.balance += delta;
+      acc[currency] = totals;
       return acc;
     },
-    { debit: 0, credit: 0, balance: 0 },
+    {},
   );
+  const formatNativeTotals = (field: 'debit' | 'credit' | 'balance') =>
+    ['UZS', 'USD'].map((currency) => `${(pageTotals[currency]?.[field] || 0).toLocaleString()} ${currency}`).join(' · ');
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <h2 className="text-2xl font-bold text-foreground">{tr('Transactions', 'Tranzaksiyalar')}</h2>
+        <ExportActions filename="ado-tranzaksiyalar" sheet={{
+          name: 'Tranzaksiyalar',
+          columns: [{ header: 'Sana', key: 'date' }, { header: 'Turi', key: 'type' }, { header: 'Firma', key: 'firm' }, { header: 'Summa', key: 'amount' }, { header: 'Valyuta', key: 'currency' }, { header: 'Yo‘nalish', key: 'direction' }, { header: 'To‘lov usuli', key: 'method' }, { header: 'Kim kiritdi', key: 'creator' }, { header: 'Izoh', key: 'note' }],
+          rows: transactions.map((transaction) => ({ date: String(transaction.createdAt || '').slice(0, 10), type: transaction.type || '', firm: transaction.firm?.name || '', amount: Number(transaction.originalAmount || 0), currency: transaction.currency || '', direction: transaction.direction || '', method: transaction.paymentMethod || '', creator: transaction.createdBy?.fullName || transaction.createdBy?.email || '', note: transaction.metadata?.note || transaction.metadata?.description || '' })),
+        }} />
       </div>
 
-      {canFilterFirm && (
+      <CollapsibleCard title={tr('Firm accounts', 'Firma hisoblari')} description={tr('Cash desks, shared cards, bank and owner accounts with separate balances.', 'Kassalar, umumiy kartalar, bank va ta\'sischi hisoblari alohida qoldiq bilan.')} defaultOpen storageKey="firm-financial-accounts">
+        {canManageAccounts && <form onSubmit={createAccount} className="compact-toolbar mb-4">
+          <input className="compact-control" placeholder={tr('Account name', 'Hisob nomi')} value={accountDraft.name} onChange={(e) => setAccountDraft({ ...accountDraft, name: e.target.value })} required />
+          <select className="compact-control" value={accountDraft.type} onChange={(e) => setAccountDraft({ ...accountDraft, type: e.target.value })}><option value="BANK">{tr('Bank', 'Bank')}</option><option value="OWNER">{tr('Owner capital', 'Ta\'sischi')}</option><option value="OTHER">{tr('Other', 'Boshqa')}</option></select>
+          <select className="compact-control" value={accountDraft.currency} onChange={(e) => setAccountDraft({ ...accountDraft, currency: e.target.value })}><option>UZS</option><option>USD</option></select>
+          <input className="compact-control" type="number" step="0.01" value={accountDraft.openingBalance} onChange={(e) => setAccountDraft({ ...accountDraft, openingBalance: e.target.value })} />
+          <button disabled={savingAccount} className="rounded bg-primary px-4 py-2 font-semibold text-primary-foreground disabled:opacity-50">{tr('Create account', 'Hisob yaratish')}</button>
+        </form>}
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{accounts.map((account) => <div key={account.id} className="rounded-md border border-border bg-surface-2 p-3"><div className="text-xs font-semibold uppercase text-muted">{account.type}</div><div className="font-semibold">{account.name}</div><div className="mt-2 font-mono text-lg">{Number(account.balance || 0).toLocaleString()} {account.currency}</div></div>)}</div>
+        {canManageAccounts && <form onSubmit={createAccountTransaction} className="compact-toolbar mt-4 border-t border-border pt-4">
+          <select className="compact-control" value={accountTx.accountId} onChange={(e) => setAccountTx({ ...accountTx, accountId: e.target.value })} required><option value="">{tr('Select account', 'Hisobni tanlang')}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} ({account.currency})</option>)}</select>
+          <select className="compact-control" value={accountTx.flow} onChange={(e) => setAccountTx({ ...accountTx, flow: e.target.value })}><option value="IN">{tr('Money in', 'Kirim')}</option><option value="OUT">{tr('Money out', 'Chiqim')}</option></select>
+          <input className="compact-control" placeholder={accountTx.flow === 'IN' ? tr('From whom?', 'Kimdan?') : tr('To whom?', 'Kimga?')} value={accountTx.counterpartyName} onChange={(e) => setAccountTx({ ...accountTx, counterpartyName: e.target.value })} required />
+          <select className="compact-control" value={accountTx.category} onChange={(e) => setAccountTx({ ...accountTx, category: e.target.value })}><option value="OTHER">{tr('Other', 'Boshqa')}</option><option value="OWNER_INVESTMENT">{tr('Owner investment', 'Ta\'sischi mablag\'i')}</option><option value="LOAN">{tr('Loan', 'Qarz mablag\'i')}</option><option value="BANK">{tr('Bank operation', 'Bank operatsiyasi')}</option></select>
+          <input className="compact-control" type="number" min="0.01" step="0.01" placeholder={tr('Amount', 'Summa')} value={accountTx.amount} onChange={(e) => setAccountTx({ ...accountTx, amount: e.target.value })} required />
+          {accounts.find((account) => account.id === accountTx.accountId)?.currency === 'USD' && <input className="compact-control" inputMode="decimal" placeholder={tr('Firm rate (optional)', 'Firma kursi (ixtiyoriy)')} value={accountTx.exchangeRate} onChange={(e) => setAccountTx({ ...accountTx, exchangeRate: e.target.value })} />}
+          <input className="compact-control" placeholder={tr('Note', 'Izoh')} value={accountTx.note} onChange={(e) => setAccountTx({ ...accountTx, note: e.target.value })} />
+          <div className="text-xs font-semibold text-muted">{accountTx.flow === 'IN' ? `${accountTx.counterpartyName || 'Kimdan'} → ${accounts.find((a) => a.id === accountTx.accountId)?.name || 'Hisob'}` : `${accounts.find((a) => a.id === accountTx.accountId)?.name || 'Hisob'} → ${accountTx.counterpartyName || 'Kimga'}`}</div>
+          <button className="rounded bg-primary px-4 py-2 font-semibold text-primary-foreground">{tr('Record', 'Qayd etish')}</button>
+        </form>}
+      </CollapsibleCard>
+
+      {canCreateTransaction && (
         <CollapsibleCard
           title={tr('Record payment', "To'lovni qayd etish")}
           description={
@@ -658,6 +747,7 @@ export default function TransactionsPage() {
           className="shadow sm:rounded-lg"
         >
           <form onSubmit={submitPayment} className="compact-toolbar">
+          <div className="rounded border border-border bg-surface-2 px-3 py-2 text-sm font-semibold">{tr('From', 'Kimdan')}: {selectedPayFirm?.name || tr('Your firm', 'Sizning firmangiz')} → {tr('To', 'Kimga')}: {tr('Admin / airline', 'Admin / aviakompaniya')}</div>
           {canFilterFirm && (
             <div>
               <label htmlFor="payFirm" className="compact-label">{tr('Firm', 'Firma')}</label>
@@ -749,7 +839,7 @@ export default function TransactionsPage() {
               id="payMethod"
               value={payMethod}
               onChange={(e) => {
-                const next = e.target.value as 'cash' | 'card';
+                const next = e.target.value as 'cash' | 'card' | 'bank';
                 setPayMethod(next);
                 if (next === 'card' && selectedPayCard?.currency) setPaymentCurrencyCode(selectedPayCard.currency);
               }}
@@ -758,6 +848,7 @@ export default function TransactionsPage() {
             >
               <option value="cash">{tr('Cash', 'Naqd')}</option>
               <option value="card">{tr('Card', 'Karta')}</option>
+              <option value="bank">{tr('Bank transfer', 'Bank o‘tkazmasi')}</option>
             </select>
           </div>
 
@@ -770,6 +861,11 @@ export default function TransactionsPage() {
               placeholder={tr('Receipt / note', 'Kvitansiya / izoh')}
               className="compact-control"
             />
+          </div>
+
+          <div>
+            <label htmlFor="payAllocationId" className="compact-label">{tr('Allocation ID (optional)', 'Ajratma ID (ixtiyoriy)')}</label>
+            <input id="payAllocationId" value={payAllocationId} onChange={(e) => setPayAllocationId(e.target.value)} placeholder={tr('Links payment to debt', 'To‘lovni qarzga bog‘laydi')} className="compact-control" />
           </div>
 
           <div>
@@ -856,7 +952,7 @@ export default function TransactionsPage() {
         </CollapsibleCard>
       )}
 
-      {canFilterFirm && (
+      {canCreateTransaction && (
         <CollapsibleCard
           title={tr('Cash income / expense', 'Kassa kirim / chiqim')}
           description={tr('Create a manual cash-in or cash-out transaction.', 'Qo\'lda kassa kirim yoki chiqim tranzaksiyasini yarating.')}
@@ -872,13 +968,20 @@ export default function TransactionsPage() {
                 <option value="OUT">{tr('Expense', 'Chiqim')}</option>
               </select>
             </div>
-            <div>
+            {canFilterFirm && <div>
               <label htmlFor="cashFirm" className="compact-label">{tr('Firm', 'Firma')}</label>
               <select id="cashFirm" value={cashFirmId} onChange={(e) => setCashFirmId(e.target.value)} className="compact-control" required>
                 <option value="">{tr('Select', 'Tanlang')}</option>
                 {firmOptions.map((f) => (
                   <option key={f.id} value={f.id}>{f.name}{f.currency ? ` (${f.currency})` : ''}</option>
                 ))}
+              </select>
+            </div>}
+            <div>
+              <label htmlFor="cashCounterparty" className="compact-label">{cashFlow === 'IN' ? tr('From whom?', 'Kimdan?') : tr('To whom?', 'Kimga?')}</label>
+              <select id="cashCounterparty" value={cashCounterpartyFirmId} onChange={(e) => setCashCounterpartyFirmId(e.target.value)} className="compact-control">
+                <option value="">{tr('Other / not specified', 'Boshqa / ko\'rsatilmagan')}</option>
+                {firmOptions.filter((f) => f.id !== (cashFirmId || user?.firmId)).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
               </select>
             </div>
             <div>
@@ -1042,6 +1145,11 @@ export default function TransactionsPage() {
               className="compact-control"
             />
           </div>
+          <div><label className="compact-label">{tr('Source', 'Manba')}</label><select className="compact-control" value={filterSourceMode} onChange={(e) => { setFilterSourceMode(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option><option value="AUTO_ALLOCATION">AUTO_ALLOCATION</option><option value="AUTO_TICKET_SALE">AUTO_TICKET_SALE</option><option value="AUTO_TOUR_SALE">AUTO_TOUR_SALE</option><option value="AUTO_DEBT_ADJUSTMENT">AUTO_DEBT_ADJUSTMENT</option><option value="MANUAL_CASH">MANUAL_CASH</option><option value="MANUAL_CARD">MANUAL_CARD</option><option value="MANUAL_BANK">MANUAL_BANK</option><option value="REVERSAL">REVERSAL</option></select></div>
+          <div><label className="compact-label">{tr('Status', 'Holat')}</label><select className="compact-control" value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option><option value="CONFIRMED">CONFIRMED</option><option value="PENDING">PENDING</option><option value="REVERSED">REVERSED</option></select></div>
+          <div><label className="compact-label">{tr('Payment method', 'To‘lov usuli')}</label><select className="compact-control" value={filterPaymentMethod} onChange={(e) => { setFilterPaymentMethod(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option><option value="cash">{tr('Cash', 'Naqd')}</option><option value="card">{tr('Card', 'Karta')}</option><option value="bank">{tr('Bank', 'Bank')}</option></select></div>
+          <div><label className="compact-label">{tr('Payment card', 'To‘lov kartasi')}</label><select className="compact-control" value={filterPaymentCardId} onChange={(e) => { setFilterPaymentCardId(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option>{paymentCards.map((card) => <option key={card.id} value={card.id}>{card.ownerName} · {card.cardNumber}</option>)}</select></div>
+          <div><label className="compact-label">{tr('Allocation ID', 'Ajratma ID')}</label><input className="compact-control" value={filterAllocationId} onChange={(e) => { setFilterAllocationId(e.target.value); setPage(1); }} /></div>
           <div className="flex items-end">
             <button
               type="button"
@@ -1056,17 +1164,15 @@ export default function TransactionsPage() {
         <div className="grid grid-cols-1 border-b border-border bg-surface-2 text-sm md:grid-cols-3">
           <div className="border-b border-border px-3 py-2 md:border-b-0 md:border-r">
             <span className="text-muted">{tr('Debit', 'Chiqim')}: </span>
-            <span className="font-mono font-bold text-red-600">{pageTotals.debit.toFixed(0)} UZS</span>
+            <span className="font-mono font-bold text-red-600">{formatNativeTotals('debit')}</span>
           </div>
           <div className="border-b border-border px-3 py-2 md:border-b-0 md:border-r">
             <span className="text-muted">{tr('Credit', 'Kirim')}: </span>
-            <span className="font-mono font-bold text-green-700">{pageTotals.credit.toFixed(0)} UZS</span>
+            <span className="font-mono font-bold text-green-700">{formatNativeTotals('credit')}</span>
           </div>
           <div className="px-3 py-2">
             <span className="text-muted">{tr('Balance', 'Balans')}: </span>
-            <span className={`font-mono font-bold ${pageTotals.balance < 0 ? 'text-red-600' : 'text-green-700'}`}>
-              {pageTotals.balance.toFixed(0)} UZS
-            </span>
+            <span className="font-mono font-bold text-green-700">{formatNativeTotals('balance')}</span>
           </div>
         </div>
       </div>
@@ -1082,16 +1188,20 @@ export default function TransactionsPage() {
                 {canFilterFirm && <th>{tr('Firm', 'Firma')}</th>}
                 <th>{tr('Kassa desk', 'Kassa')}</th>
                 <th>{tr('Flight', 'Reys')}</th>
+                <th>{tr('Payer → Receiver', 'To‘lovchi → Qabul qiluvchi')}</th>
+                <th>{tr('Source / status', 'Manba / holat')}</th>
+                <th>RT / OW</th>
                 <th className="text-right">{tr('Debit', 'Chiqim')}</th>
                 <th className="text-right">{tr('Credit', 'Kirim')}</th>
                 <th className="text-right">{tr('Balance', 'Balans')}</th>
+                <th>{tr('Created by', 'Kim kiritdi')}</th>
                 <th>{tr('Reference', 'Izoh')}</th>
                 <th>{tr('Action', 'Amal')}</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={canFilterFirm ? 10 : 9} className="text-center">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
+                <tr><td colSpan={canFilterFirm ? 14 : 13} className="text-center">{tr('Loading...', 'Yuklanmoqda...')}</td></tr>
               ) : visibleTransactions.map(({ tx: t, runningBalance }) => {
                 const delta = getBalanceDelta(t);
                 const debit = delta < 0 ? Math.abs(delta) : 0;
@@ -1105,11 +1215,15 @@ export default function TransactionsPage() {
                     {canFilterFirm && <td>{t.firm?.name || t.firmId || t.firm_id}</td>}
                     <td>{t.kassaDesk?.name || t.kassaDeskId || '-'}</td>
                     <td>{t.flight?.flightNumber || t.flightId || t.flight_id || '-'}</td>
+                    <td><div className="text-xs"><strong>{t.payerFirm?.name || t.payerFirmId || '—'}</strong> → <strong>{t.receiverFirm?.name || t.receiverFirmId || '—'}</strong></div></td>
+                    <td><div className="text-xs font-semibold">{t.sourceMode || 'MANUAL'}</div><div className="text-xs text-muted">{t.status || 'CONFIRMED'}{t.reversedTransactionId ? ' · REVERSAL' : ''}</div></td>
+                    <td><div className="text-xs font-semibold">{t.metadata?.productType === 'ONE_WAY' ? `OW · ${t.metadata?.direction || ''}` : t.metadata?.productType === 'ROUND_TRIP' ? 'RT' : '—'}</div>{t.metadata?.segmentCount != null && <div className="text-xs text-muted">{t.metadata?.parentTicketCount || 0} / {t.metadata.segmentCount} {tr('segments', 'segment')}</div>}</td>
                     <td className="text-right font-mono font-semibold text-red-600">{debit ? debit.toFixed(0) : '-'}</td>
                     <td className="text-right font-mono font-semibold text-green-700">{credit ? credit.toFixed(0) : '-'}</td>
                     <td className={`text-right font-mono font-bold ${runningBalance < 0 ? 'text-red-600' : 'text-green-700'}`}>
                       {runningBalance.toFixed(0)}
                     </td>
+                    <td>{t.createdBy?.fullName || t.createdBy?.email || '—'}</td>
                     <td className="text-muted">
                       {(() => {
                       const meta = t.metadata && typeof t.metadata === 'object' ? t.metadata : null;
@@ -1126,10 +1240,10 @@ export default function TransactionsPage() {
                       >
                         {tr('View', "Ko'rish")}
                       </button>
-                      {canChangeOwnDailyCash(t) && <>
+                      {canChangeOwnDailyCash(t) &&
                         <button type="button" onClick={() => editOwnDailyCash(t)} className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold">{tr('Edit', 'Tahrir')}</button>
-                        <button type="button" onClick={() => deleteOwnDailyCash(t)} className="border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs font-semibold text-red-600">{tr('Delete', "O'chirish")}</button>
-                      </>}
+                      }
+                      {canDeleteTransaction(t) && <button type="button" onClick={() => deleteTransaction(t)} className="border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs font-semibold text-red-600">{tr('Delete', "O'chirish")}</button>}
                       </div>
                     </td>
                   </tr>
@@ -1137,7 +1251,7 @@ export default function TransactionsPage() {
               })}
               {!loading && visibleTransactions.length === 0 && (
                 <tr>
-                  <td colSpan={canFilterFirm ? 9 : 8} className="text-center text-muted">
+                  <td colSpan={canFilterFirm ? 14 : 13} className="text-center text-muted">
                     <div className="space-y-2">
                       <div>{tr('No transactions found.', 'Tranzaksiyalar topilmadi.')}</div>
                       {hasActiveFilters ? (
@@ -1225,6 +1339,7 @@ export default function TransactionsPage() {
                           <span className="text-muted">{tr('Method', 'Usul')}</span>
                           <span>{getPaymentMethodLabel(t.paymentMethod || t.payment_method)}</span>
                         </div>
+                        <div className="flex items-center justify-between gap-3"><span className="text-muted">{tr('Created by', 'Kim kiritdi')}</span><span>{t.createdBy?.fullName || t.createdBy?.email || '—'}</span></div>
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-muted">{tr('Reference', 'Izoh')}</span>
                           <span className="text-right truncate max-w-[14rem]">{ref ? String(ref) : '-'}</span>

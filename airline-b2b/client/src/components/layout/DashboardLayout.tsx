@@ -3,11 +3,12 @@
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { usePathname, useRouter } from 'next/navigation';
-import { Plane, PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, Wallet, PackageOpen, BriefcaseBusiness, Users, ShieldCheck, MessageCircle, History, Bell, CheckCheck, Menu, MoreHorizontal, X } from 'lucide-react';
+import { Plane, PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, Wallet, PackageOpen, BriefcaseBusiness, Users, ShieldCheck, MessageCircle, History, Bell, CheckCheck, Menu, MoreHorizontal, X, Activity } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
 import { api } from '@/lib/api';
+import NewOperationLauncher from '@/components/layout/NewOperationLauncher';
 
 type NotificationRow = {
   id: string;
@@ -24,6 +25,7 @@ type NavKey =
   | 'navDashboard'
   | 'navAdmins'
   | 'navAuditLog'
+  | 'navMonitoring'
   | 'navAirlines'
   | 'navFirms'
   | 'navFlights'
@@ -90,6 +92,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       window.clearInterval(id);
     };
   }, [user]);
+
+  useEffect(() => {
+    const overlayOpen = isMobileMenuOpen || isNotificationsOpen || isAccountModalOpen;
+    if (!overlayOpen) return;
+    const closeOverlay = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setIsMobileMenuOpen(false);
+      setIsNotificationsOpen(false);
+      setIsAccountModalOpen(false);
+    };
+    document.addEventListener('keydown', closeOverlay);
+    return () => document.removeEventListener('keydown', closeOverlay);
+  }, [isAccountModalOpen, isMobileMenuOpen, isNotificationsOpen]);
 
   const markNotificationRead = async (id: string) => {
     try {
@@ -167,6 +182,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { key: 'navAdminDashboard', href: '/admin', icon: LayoutDashboard },
     ...(normalizedRole === 'superadmin' ? [{ key: 'navAdmins' as const, href: '/admins', icon: ShieldCheck }] : []),
     ...(normalizedRole === 'superadmin' ? [{ key: 'navAuditLog' as const, href: '/audit-log', icon: History }] : []),
+    ...(normalizedRole === 'superadmin' ? [{ key: 'navMonitoring' as const, href: '/monitoring', icon: Activity }] : []),
     ...(normalizedRole === 'superadmin' ? [{ key: 'navAirlines' as const, href: '/airlines', icon: Plane }] : []),
     { key: 'navFirms', href: '/firms', icon: UserCircle },
     { key: 'navFlights', href: '/flights', icon: PlaneTakeoff },
@@ -201,7 +217,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         { label: 'Organizations', links: adminNavLinks.filter((link) => ['/admins', '/airlines', '/firms', '/employees'].includes(link.href)) },
         { label: 'Operations', links: adminNavLinks.filter((link) => ['/flights', '/tours', '/services'].includes(link.href)) },
         { label: 'Finance', links: adminNavLinks.filter((link) => ['/transactions', '/kassa'].includes(link.href)) },
-        { label: 'Oversight', links: adminNavLinks.filter((link) => ['/audit-log', '/chat', '/settings'].includes(link.href)) },
+        { label: 'Oversight', links: adminNavLinks.filter((link) => ['/audit-log', '/monitoring', '/chat', '/settings'].includes(link.href)) },
       ];
 
   const activeNavLink = navLinks.find((link) => {
@@ -212,6 +228,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   });
 
   const pageTitle = t(activeNavLink?.key ?? navLinks[0].key);
+  const subscriptionDays = user.subscriptionEndsAt ? Math.max(0, Math.ceil((new Date(user.subscriptionEndsAt).getTime() - Date.now()) / 86400000)) : null;
+  const subscriptionCountdown = normalizedRole === 'firm' && subscriptionDays !== null ? (
+    <div className={`rounded-lg border px-3 py-2 text-center ${subscriptionDays <= 7 ? 'border-red-500/40 bg-red-500/10 text-red-600' : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600'}`}>
+      <div className="text-2xl font-black leading-none">{subscriptionDays}</div>
+      <div className="mt-1 text-[11px] font-bold uppercase tracking-wide">{subscriptionDays === 0 ? 'Obuna muddati tugadi' : 'kun qoldi'}</div>
+    </div>
+  ) : null;
   const bottomNavLinks = isFirmKassir ? navLinks : navLinks.filter((link) => ['/admin', '/firm', '/firms', '/flights', '/kassa', '/chat', '/reports'].includes(link.href)).slice(0, 4);
   const bottomMoreLinks = navLinks.filter((link) => !bottomNavLinks.some((item) => item.href === link.href));
 
@@ -263,6 +286,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         {/* User Info / Logout */}
         <div className="p-4 mt-auto border-t border-border shrink-0 flex flex-col gap-3">
+          {subscriptionCountdown}
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-yellow-600 border border-border flex items-center justify-center shadow-inner shrink-0">
               <UserCircle size={22} className="text-muted" />
@@ -339,7 +363,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </h2>
           </div>
           
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <NewOperationLauncher role={normalizedRole} firmRole={firmRole} />
             <div className="relative">
               <button
                 type="button"
@@ -355,17 +380,43 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 )}
               </button>
               {isNotificationsOpen && (
-                <div className="absolute right-0 top-12 z-50 w-[340px] max-w-[calc(100vw-2rem)] border border-border bg-surface shadow-2xl">
-                  <div className="flex items-center justify-between border-b border-border px-3 py-2">
-                    <div className="text-sm font-bold text-foreground">Notifications</div>
-                    <button type="button" onClick={markAllNotificationsRead} className="inline-flex items-center gap-1 text-xs font-semibold text-muted hover:text-foreground">
-                      <CheckCheck size={14} />
-                      Mark all
-                    </button>
+                <>
+                  <button
+                    type="button"
+                    className="fixed inset-0 z-40 bg-black/45 md:bg-transparent"
+                    aria-label="Close notifications"
+                    onClick={() => setIsNotificationsOpen(false)}
+                  />
+                  <section
+                    aria-label="Notifications"
+                    className="fixed inset-x-0 bottom-0 z-50 flex max-h-[min(78dvh,640px)] flex-col rounded-t-2xl border border-border bg-surface shadow-2xl backdrop-blur-xl md:absolute md:inset-x-auto md:bottom-auto md:right-0 md:top-12 md:w-[380px] md:max-w-[calc(100vw-2rem)] md:rounded-xl"
+                  >
+                  <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+                    <div>
+                      <div className="text-base font-bold text-foreground">Notifications</div>
+                      <div className="text-xs text-muted">{unreadCount > 0 ? `${unreadCount} unread` : 'You are all caught up'}</div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {unreadCount > 0 && (
+                        <button type="button" onClick={markAllNotificationsRead} className="inline-flex min-h-10 items-center gap-1 rounded-lg px-2 text-xs font-semibold text-muted hover:bg-surface-2 hover:text-foreground">
+                          <CheckCheck size={15} />
+                          Mark all
+                        </button>
+                      )}
+                      <button type="button" onClick={() => setIsNotificationsOpen(false)} className="grid h-10 w-10 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground" aria-label="Close notifications">
+                        <X size={18} />
+                      </button>
+                    </div>
                   </div>
-                  <div className="max-h-[420px] overflow-y-auto scroller-minimal">
+                  <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain scroller-minimal">
                     {notifications.length === 0 ? (
-                      <div className="px-3 py-6 text-center text-sm text-muted">No notifications</div>
+                      <div className="grid min-h-40 place-items-center px-6 py-10 text-center">
+                        <div>
+                          <Bell size={28} className="mx-auto mb-3 text-muted" />
+                          <div className="text-sm font-semibold text-foreground">No notifications</div>
+                          <div className="mt-1 text-xs text-muted">New activity will appear here.</div>
+                        </div>
+                      </div>
                     ) : notifications.map((item) => {
                       const unread = !item.readAt;
                       return (
@@ -373,12 +424,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                           key={item.id}
                           type="button"
                           onClick={() => markNotificationRead(item.id)}
-                          className={`block w-full border-b border-border px-3 py-3 text-left hover:bg-surface-2 ${unread ? 'bg-primary/10' : 'bg-surface'}`}
+                          className={`block min-h-[76px] w-full border-b border-border px-4 py-3 text-left transition hover:bg-surface-2 ${unread ? 'bg-primary/10' : 'bg-transparent'}`}
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0">
-                              <div className="truncate text-sm font-semibold text-foreground">{item.title}</div>
-                              <div className="mt-1 line-clamp-2 text-xs text-muted">{item.body}</div>
+                              <div className="text-sm font-semibold leading-5 text-foreground">{item.title}</div>
+                              <div className="mt-1 line-clamp-3 text-xs leading-5 text-muted md:line-clamp-2">{item.body}</div>
                               <div className="mt-2 text-[11px] text-muted">
                                 {item.firm?.name ? `${item.firm.name} · ` : ''}{new Date(item.createdAt).toLocaleString()}
                               </div>
@@ -389,10 +440,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                       );
                     })}
                   </div>
-                </div>
+                  </section>
+                </>
               )}
             </div>
-            <ThemeLanguageSwitcher />
+            <div className="hidden sm:block"><ThemeLanguageSwitcher /></div>
 
             <button
               type="button"
@@ -405,7 +457,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
         </header>
 
-        <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-flow-col auto-cols-fr border-t border-border bg-surface/95 px-1 pb-[calc(env(safe-area-inset-bottom)+0.25rem)] pt-1 backdrop-blur md:hidden">
+        <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-flow-col auto-cols-fr border-t border-border bg-surface/95 px-1 pb-[max(env(safe-area-inset-bottom),0.25rem)] pt-1 backdrop-blur-xl md:hidden">
           {bottomNavLinks.map((link) => {
             const isActive = pathname === link.href || (link.href !== '/firm' && link.href !== '/admin' && pathname.startsWith(link.href));
             return (
@@ -413,8 +465,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 key={link.href}
                 href={link.href}
                 onClick={() => setIsMobileMenuOpen(false)}
-                className={`flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-md px-1 text-[11px] font-semibold ${
-                  isActive ? 'bg-surface-2 text-foreground' : 'text-muted'
+                className={`flex min-h-14 flex-col items-center justify-center gap-1 rounded-lg px-1 text-[10px] font-semibold ${
+                  isActive ? 'bg-primary/10 text-primary' : 'text-muted'
                 }`}
               >
                 <link.icon size={18} />
@@ -426,7 +478,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <button
               type="button"
               onClick={() => setIsMobileMenuOpen(true)}
-              className="flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-md px-1 text-[11px] font-semibold text-muted"
+              className="flex min-h-14 flex-col items-center justify-center gap-1 rounded-lg px-1 text-[10px] font-semibold text-muted"
             >
               <MoreHorizontal size={18} />
               <span>More</span>
@@ -435,7 +487,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </nav>
 
         {/* Scrollable Page Content */}
-        <main className="flex-1 overflow-y-auto scroller-minimal p-3 pb-24 md:p-5 relative">
+        <main className="relative flex-1 overflow-y-auto overscroll-contain p-3 pb-24 scroller-minimal sm:p-4 sm:pb-24 md:p-5">
           <div className="max-w-[1600px] mx-auto w-full relative z-10 min-h-full">
             {children}
           </div>
@@ -514,6 +566,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <p className="text-xs text-muted uppercase tracking-wider font-semibold mb-1">Email</p>
               <p className="font-mono text-sm text-foreground overflow-hidden text-ellipsis">{user.email}</p>
             </div>
+            {subscriptionCountdown && <div className="mb-6">{subscriptionCountdown}</div>}
 
             <div className="flex flex-col gap-3">
               <button

@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { Lock, LogIn, Save, ShieldCheck } from 'lucide-react';
+import { Bell, ChevronRight, CircleUserRound, Download, ExternalLink, FileSpreadsheet, KeyRound, Lock, LogIn, MoonStar, Save, Send, Settings2, ShieldCheck, WalletCards } from 'lucide-react';
 import { defaultLoginPageContent, normalizeLoginPageContent, resolveLocalizedText, type LoginPageContent } from '@/lib/login-content';
+import { downloadCsv, downloadXlsx, uzbekTemplates } from '@/lib/data-export';
 
 type LocalizedFieldKey =
   | 'brandName'
@@ -21,6 +22,38 @@ type LocalizedFieldKey =
   | 'submitLabel'
   | 'submittingLabel'
   | 'footerNote';
+
+type TelegramStatus = {
+  configured: boolean;
+  connected: boolean;
+  username?: string | null;
+  enabled: boolean;
+  linkedAt?: string | null;
+};
+
+type SettingsSectionProps = {
+  title: string;
+  description: string;
+  icon: typeof Settings2;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+};
+
+function SettingsSection({ title, description, icon: Icon, open, onToggle, children }: SettingsSectionProps) {
+  return (
+    <section className={`overflow-hidden rounded-xl border bg-surface transition ${open ? 'border-primary/40 shadow-[0_12px_35px_-24px_rgba(34,197,94,0.65)]' : 'border-border hover:border-primary/25 hover:bg-surface-2/50'}`}>
+      <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-4 px-4 py-4 text-left sm:px-5">
+        <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl transition ${open ? 'bg-primary text-ink' : 'bg-surface-2 text-muted'}`}><Icon size={21} /></span>
+        <span className="min-w-0 flex-1"><span className="block text-base font-bold text-foreground">{title}</span><span className="mt-0.5 block text-sm text-muted">{description}</span></span>
+        <ChevronRight size={20} className={`shrink-0 text-muted transition-transform ${open ? 'rotate-90 text-primary' : ''}`} />
+      </button>
+      <div className={`grid transition-[grid-template-rows,opacity] duration-300 ${open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`} aria-hidden={!open}>
+        <div className="min-h-0 overflow-hidden"><div className="border-t border-border bg-surface-2/25 p-4 sm:p-5">{children}</div></div>
+      </div>
+    </section>
+  );
+}
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -48,6 +81,10 @@ export default function SettingsPage() {
   const [loginContent, setLoginContent] = useState<LoginPageContent>(defaultLoginPageContent);
   const [loadingLoginContent, setLoadingLoginContent] = useState(true);
   const [savingLoginContent, setSavingLoginContent] = useState(false);
+  const [telegram, setTelegram] = useState<TelegramStatus | null>(null);
+  const [telegramBusy, setTelegramBusy] = useState(false);
+  const [activeSection, setActiveSection] = useState<string | null>(null);
+  const toggleSection = (section: string) => setActiveSection((current) => current === section ? null : section);
 
   const role = String(user?.role || '').toUpperCase();
   const canEditAnyFirm = role === 'SUPERADMIN';
@@ -133,6 +170,65 @@ export default function SettingsPage() {
       cancelled = true;
     };
   }, [canEditLoginContent]);
+
+  const loadTelegramStatus = async () => {
+    try {
+      const response = await api.get('/telegram/status');
+      setTelegram(response.data);
+    } catch {
+      setTelegram(null);
+    }
+  };
+
+  useEffect(() => {
+    if (user) void loadTelegramStatus();
+  }, [user]);
+
+  const connectTelegram = async () => {
+    try {
+      setTelegramBusy(true);
+      const response = await api.post('/telegram/link');
+      if (response.data?.botUrl) {
+        window.open(response.data.botUrl, '_blank', 'noopener,noreferrer');
+        toast.success(tr('Open Telegram and press Start', 'Telegramni ochib, Start tugmasini bosing'));
+      } else {
+        await navigator.clipboard.writeText(`/start ${response.data.code}`);
+        toast.success(tr('Link command copied. Send it to the company bot.', 'Ulash buyrug‘i nusxalandi. Uni kompaniya botiga yuboring.'));
+      }
+      window.setTimeout(() => void loadTelegramStatus(), 4000);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Could not create Telegram link', 'Telegram ulanishini yaratib bo‘lmadi'));
+    } finally {
+      setTelegramBusy(false);
+    }
+  };
+
+  const toggleTelegram = async () => {
+    if (!telegram) return;
+    try {
+      setTelegramBusy(true);
+      const enabled = !telegram.enabled;
+      await api.patch('/telegram/preferences', { enabled });
+      setTelegram({ ...telegram, enabled });
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Could not update Telegram', 'Telegram sozlamasini yangilab bo‘lmadi'));
+    } finally {
+      setTelegramBusy(false);
+    }
+  };
+
+  const disconnectTelegram = async () => {
+    try {
+      setTelegramBusy(true);
+      await api.delete('/telegram/connection');
+      await loadTelegramStatus();
+      toast.success(tr('Telegram disconnected', 'Telegram uzildi'));
+    } catch {
+      toast.error(tr('Could not disconnect Telegram', 'Telegramni uzib bo‘lmadi'));
+    } finally {
+      setTelegramBusy(false);
+    }
+  };
 
   const applyTheme = (next: 'dark' | 'light') => {
     setTheme(next);
@@ -263,8 +359,40 @@ export default function SettingsPage() {
         </p>
       </div>
 
+      <SettingsSection title={tr('Data templates', 'Ma’lumot shablonlari')} description={tr('Download ready-to-fill Excel and CSV templates.', 'Tayyor Excel va CSV shablonlarini yuklab oling.')} icon={FileSpreadsheet} open={activeSection === 'templates'} onToggle={() => toggleSection('templates')}>
+      <section className="p-1">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h3 className="text-lg font-bold text-foreground">{tr('Uzbek data templates', 'O‘zbekcha ma’lumot shablonlari')}</h3>
+            <p className="mt-1 text-sm text-muted">
+              {tr('Download ready-to-fill templates for firms, employees, transactions, and tours.', 'Firma, hodim, tranzaksiya va turlar uchun tayyor shablonlarni yuklab oling.')}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void downloadXlsx('ado-malumot-shablonlari', uzbekTemplates)}
+            className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-ink hover:bg-primary/90"
+          >
+            <Download size={17} /> {tr('All templates (Excel)', 'Barcha shablonlar (Excel)')}
+          </button>
+        </div>
+        <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          {uzbekTemplates.map((template) => (
+            <button
+              key={template.name}
+              type="button"
+              onClick={() => downloadCsv(`ado-${template.name.toLowerCase().replace(/\s+/g, '-')}-shablon`, template.columns, template.rows)}
+              className="inline-flex items-center justify-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-sm font-medium text-foreground hover:bg-surface-2"
+            >
+              <Download size={15} /> {template.name} CSV
+            </button>
+          ))}
+        </div>
+      </section>
+      </SettingsSection>
+
       {canEditLoginContent && (
-        <>
+        <SettingsSection title={tr('Login page content', 'Kirish sahifasi matnlari')} description={tr('Preview and edit the public login page.', 'Ommaviy kirish sahifasini ko‘ring va tahrirlang.')} icon={LogIn} open={activeSection === 'login'} onToggle={() => toggleSection('login')}>
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(420px,0.85fr)]">
           <div className="glass-panel overflow-hidden p-0">
             <div className="grid min-h-[560px] lg:grid-cols-[1.1fr_0.9fr]">
@@ -430,10 +558,11 @@ export default function SettingsPage() {
             </div>
           </div>
         </div>
-        </>
+        </SettingsSection>
       )}
 
-      <div className="glass-panel p-6">
+      <SettingsSection title={tr('Appearance', 'Ko‘rinish')} description={tr('Choose the dashboard color theme.', 'Dashboard rang mavzusini tanlang.')} icon={MoonStar} open={activeSection === 'theme'} onToggle={() => toggleSection('theme')}>
+      <div className="p-1">
         <h3 className="text-lg font-semibold text-foreground">{tr('Theme', 'Mavzu')}</h3>
         <p className="mt-2 text-sm text-muted">
           {tr('Choose how the dashboard looks.', 'Dashboard ko\'rinishini tanlang.')}
@@ -463,8 +592,10 @@ export default function SettingsPage() {
           </button>
         </div>
       </div>
+      </SettingsSection>
 
-      <div className="glass-panel p-6">
+      <SettingsSection title={tr('Account information', 'Hisob ma’lumotlari')} description={tr('View your email, role and subscription.', 'Email, rol va obuna ma’lumotlarini ko‘ring.')} icon={CircleUserRound} open={activeSection === 'account'} onToggle={() => toggleSection('account')}>
+      <div className="p-1">
         <h3 className="text-lg font-semibold text-foreground">{tr('Account', 'Hisob')}</h3>
         <p className="mt-2 text-sm text-foreground">
           <span className="text-muted">{tr('Email', 'Email')}:</span> {user?.email}
@@ -478,8 +609,48 @@ export default function SettingsPage() {
           </p>
         )}
       </div>
+      </SettingsSection>
 
-      <div className="glass-panel p-6">
+      <SettingsSection title="Telegram" description={tr('Connect notifications to the company bot.', 'Bildirishnomalarni kompaniya botiga ulang.')} icon={Send} open={activeSection === 'telegram'} onToggle={() => toggleSection('telegram')}>
+      <div className="p-1">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[#229ED9]/15 text-[#229ED9]"><Send size={21} /></div>
+            <div>
+              <h3 className="text-lg font-semibold text-foreground">Telegram</h3>
+              <p className="mt-1 text-sm text-muted">{tr('Receive your ADO notifications in the company bot.', 'ADO bildirishnomalarini kompaniya botida oling.')}</p>
+              {telegram?.connected && (
+                <p className="mt-2 text-sm text-foreground">
+                  {telegram.username ? `@${telegram.username}` : tr('Telegram connected', 'Telegram ulangan')}
+                  <span className={`ml-2 rounded-full px-2 py-0.5 text-xs font-semibold ${telegram.enabled ? 'bg-emerald-500/15 text-emerald-500' : 'bg-surface-2 text-muted'}`}>
+                    {telegram.enabled ? tr('Active', 'Faol') : tr('Paused', 'To‘xtatilgan')}
+                  </span>
+                </p>
+              )}
+            </div>
+          </div>
+          {!telegram?.connected ? (
+            <button type="button" onClick={connectTelegram} disabled={telegramBusy || telegram?.configured === false} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#229ED9] px-4 text-sm font-bold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">
+              <ExternalLink size={17} />
+              {telegramBusy ? tr('Opening...', 'Ochilmoqda...') : tr('Connect Telegram', 'Telegramni ulash')}
+            </button>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={toggleTelegram} disabled={telegramBusy} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 text-sm font-semibold text-foreground disabled:opacity-50">
+                <Bell size={16} />{telegram.enabled ? tr('Pause', 'To‘xtatish') : tr('Enable', 'Yoqish')}
+              </button>
+              <button type="button" onClick={disconnectTelegram} disabled={telegramBusy} className="min-h-10 rounded-lg border border-red-500/25 px-3 text-sm font-semibold text-red-500 disabled:opacity-50">
+                {tr('Disconnect', 'Uzish')}
+              </button>
+            </div>
+          )}
+        </div>
+        {telegram?.configured === false && <p className="mt-3 text-sm text-amber-500">{tr('Telegram bot is not configured on this server yet.', 'Bu serverda Telegram bot hali sozlanmagan.')}</p>}
+      </div>
+      </SettingsSection>
+
+      <SettingsSection title={tr('Firm defaults', 'Firma asosiy sozlamalari')} description={tr('Select the firm and its default currency.', 'Firma va uning asosiy valyutasini tanlang.')} icon={Settings2} open={activeSection === 'firm'} onToggle={() => toggleSection('firm')}>
+      <div className="p-1">
         <h3 className="text-lg font-semibold text-foreground">{tr('Firm defaults', 'Firma default sozlamalari')}</h3>
         <p className="mt-2 text-sm text-muted">
           {tr('Reports and new financial entries use this currency unless another currency is selected.', 'Hisobotlar va yangi moliyaviy yozuvlar boshqa valyuta tanlanmasa shu valyutadan foydalanadi.')}
@@ -520,8 +691,10 @@ export default function SettingsPage() {
           </p>
         )}
       </div>
+      </SettingsSection>
 
-      <div className="glass-panel p-6">
+      <SettingsSection title={tr('Exchange rates', 'Valyuta kurslari')} description={tr('Set the daily USD to UZS rate.', 'Kunlik USD–UZS kursini kiriting.')} icon={WalletCards} open={activeSection === 'rates'} onToggle={() => toggleSection('rates')}>
+      <div className="p-1">
         <h3 className="text-lg font-semibold text-foreground">{tr('Daily exchange rates', 'Kunlik valyuta kurslari')}</h3>
         <p className="mt-2 text-sm text-muted">
           {tr('Non-UZS payments and kassa transactions use this rate by default; each entry can still override it.', 'UZSdan boshqa to\'lov va kassa tranzaksiyalari default shu kursdan foydalanadi; har bir yozuvda alohida o\'zgartirish mumkin.')}
@@ -558,8 +731,10 @@ export default function SettingsPage() {
           ))}
         </div>
       </div>
+      </SettingsSection>
 
-      <div className="glass-panel p-6">
+      <SettingsSection title={tr('Security', 'Xavfsizlik')} description={tr('Change your account password.', 'Hisob parolini almashtiring.')} icon={KeyRound} open={activeSection === 'password'} onToggle={() => toggleSection('password')}>
+      <div className="p-1">
         <h3 className="text-lg font-semibold text-foreground mb-4">{tr('Change password', 'Parolni almashtirish')}</h3>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -608,6 +783,7 @@ export default function SettingsPage() {
           </button>
         </form>
       </div>
+      </SettingsSection>
     </div>
   );
 }

@@ -1,11 +1,13 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
-import { Prisma, Role } from '@prisma/client';
+import { FinancialAccountType, Prisma, Role } from '@prisma/client';
 import { assertKassaOpenForDate, startOfDayUtc } from '../utils/kassa';
 import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
 import { assertActiveKassaDesk, assertKassaDeskForFirmSelection } from '../utils/kassa-desk-policy';
 import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
 import { canOperateKassa } from '../utils/kassa-permissions';
+import { assertKassirDeskAccess } from '../utils/kassa-desk-access';
+import { ensureFinancialAccount } from '../utils/financial-accounts';
 
 type AuthUser = {
   userId?: string;
@@ -72,7 +74,7 @@ async function assertKassaDeskForFirm(kassaDesk: Awaited<ReturnType<typeof resol
   assertKassaDeskForFirmSelection(kassaDesk, firmId, activeDeskCount);
 }
 
-const PAYMENT_METHODS = new Set(['cash', 'card']);
+const PAYMENT_METHODS = new Set(['cash', 'card', 'bank']);
 
 export const processPayment = async (req: Request, res: Response) => {
   const authUser = getAuthUser(req);
@@ -81,6 +83,7 @@ export const processPayment = async (req: Request, res: Response) => {
 
   const rawFirmId = (req.body as any)?.firmId;
   const rawFlightId = (req.body as any)?.flightId;
+  const rawAllocationId = (req.body as any)?.allocationId;
   const rawAmount = (req.body as any)?.amount;
   const rawCurrency = (req.body as any)?.currency;
   const rawMethod = (req.body as any)?.method;
@@ -96,6 +99,7 @@ export const processPayment = async (req: Request, res: Response) => {
 
   let firmId = typeof rawFirmId === 'string' ? rawFirmId.trim() : '';
   const flightId = typeof rawFlightId === 'string' ? rawFlightId.trim() : '';
+  const allocationId = typeof rawAllocationId === 'string' ? rawAllocationId.trim() : '';
   let operatorFirmId = '';
   let firmCanOperateKassa = false;
 
@@ -128,9 +132,12 @@ export const processPayment = async (req: Request, res: Response) => {
 
   let kassaDesk: Awaited<ReturnType<typeof resolveKassaDesk>> = null;
   try {
-    kassaDesk = await resolveKassaDesk(authUser, rawKassaDeskId);
-    const deskFirmId = role === 'FIRM' && firmCanOperateKassa ? operatorFirmId : firmId;
-    await assertKassaDeskForFirm(kassaDesk, deskFirmId);
+    if (method !== 'bank') {
+      kassaDesk = await resolveKassaDesk(authUser, rawKassaDeskId);
+      await assertKassirDeskAccess(authUser, kassaDesk?.id);
+      const deskFirmId = role === 'FIRM' && firmCanOperateKassa ? operatorFirmId : firmId;
+      await assertKassaDeskForFirm(kassaDesk, deskFirmId);
+    }
   } catch (err: any) {
     return res.status(400).json({ error: err.message || 'Invalid kassa desk' });
   }
@@ -154,13 +161,33 @@ export const processPayment = async (req: Request, res: Response) => {
     if (!paymentCardId) {
       return res.status(400).json({ error: 'Card payment requires paymentCardId' });
     }
+    const paymentCard = await prisma.paymentCard.findFirst({
+      where: { id: paymentCardId, status: 'ACTIVE', deletedAt: null },
+      select: { currency: true, firmId: true },
+    });
+    if (!paymentCard) return res.status(404).json({ error: 'Payment card not found or inactive' });
+    if (normalizeCurrency(paymentCard.currency) !== currency) {
+      return res.status(400).json({ error: `Payment card currency is ${paymentCard.currency}, not ${currency}` });
+    }
+    if (paymentCard.firmId && paymentCard.firmId !== firmId) {
+      return res.status(403).json({ error: 'Payment card belongs to another firm' });
+    }
   }
+
+  const destinationAccount = await ensureFinancialAccount({
+    firmId, currency,
+    type: method === 'card' ? FinancialAccountType.CARD : method === 'bank' ? FinancialAccountType.BANK : FinancialAccountType.CASH,
+    kassaDeskId: method === 'cash' ? kassaDesk?.id : undefined,
+    paymentCardId: method === 'card' ? paymentCardId : undefined,
+    createdByUserId: actorUserId,
+  });
 
   try {
     await prisma.$transaction(async (tx) => {
-      const [firm, flight, paymentCard] = await Promise.all([
+      const [firm, flight, allocation, paymentCard] = await Promise.all([
         tx.firm.findUnique({ where: { id: firmId }, select: { id: true, name: true } }),
-        flightId ? tx.flight.findUnique({ where: { id: flightId }, select: { id: true } }) : Promise.resolve(null),
+        flightId ? tx.flight.findUnique({ where: { id: flightId }, select: { id: true, ownerFirmId: true, airline: { select: { firmId: true } } } }) : Promise.resolve(null),
+        allocationId ? tx.ticketAllocation.findUnique({ where: { id: allocationId }, select: { id: true, flightId: true, fromFirmId: true, toFirmId: true, status: true } }) : Promise.resolve(null),
         paymentCardId
           ? tx.paymentCard.findUnique({ where: { id: paymentCardId }, select: { id: true, ownerName: true, cardNumber: true, currency: true, status: true } })
           : Promise.resolve(null),
@@ -168,6 +195,7 @@ export const processPayment = async (req: Request, res: Response) => {
 
       if (!firm) throw new Error('Firm not found');
       if (flightId && !flight) throw new Error('Flight not found');
+      if (allocationId && (!allocation || allocation.status !== 'ACCEPTED' || allocation.toFirmId !== firmId || (flightId && allocation.flightId !== flightId))) throw new Error('Accepted allocation not found for this paying firm');
       if (method === 'card') {
         if (!paymentCard) throw new Error('Payment card not found');
         if (paymentCard.status !== 'ACTIVE') throw new Error('Payment card is not active');
@@ -185,7 +213,7 @@ export const processPayment = async (req: Request, res: Response) => {
       }
 
       const dayStart = startOfDayUtc(paymentDate);
-      await assertKassaOpenForDate(dayStart);
+      if (method !== 'bank') await assertKassaOpenForDate(dayStart, kassaDesk?.id);
 
       const exchangeRate = await resolveExchangeRateToUzs(authUser, {
         currency,
@@ -199,13 +227,17 @@ export const processPayment = async (req: Request, res: Response) => {
         data: {
           firmId,
           payerFirmId: firmId,
-          direction: 'FIRM_TO_PLATFORM',
-          subjectType: flightId ? 'FLIGHT' : 'DEPOSIT',
-          subjectId: flightId || firmId,
-          flightId: flightId || undefined,
+          receiverFirmId: allocation?.fromFirmId || flight?.ownerFirmId || flight?.airline?.firmId || undefined,
+          direction: allocation || flight?.ownerFirmId || flight?.airline?.firmId ? 'FIRM_TO_FIRM' : 'FIRM_TO_PLATFORM',
+          subjectType: allocationId ? 'TICKET_ALLOCATION' : flightId ? 'FLIGHT' : 'DEPOSIT',
+          subjectId: allocationId || flightId || firmId,
+          flightId: allocation?.flightId || flightId || undefined,
           createdByUserId: actorUserId,
           kassaDeskId: kassaDesk?.id,
+          destinationAccountId: destinationAccount.id,
           type: 'PAYMENT',
+          sourceMode: method === 'cash' ? 'MANUAL_CASH' : method === 'card' ? 'MANUAL_CARD' : 'MANUAL_BANK',
+          status: 'CONFIRMED',
           originalAmount: amount.toDecimalPlaces(4),
           currency,
           exchangeRate: exchangeRate.toDecimalPlaces(6),
@@ -220,8 +252,10 @@ export const processPayment = async (req: Request, res: Response) => {
             paymentCardOwner: paymentCard?.ownerName,
             paymentCardNumber: paymentCard?.cardNumber,
             payerLabel: firm.name,
-            receiverLabel: 'Admin / Airline',
-            directionLabel: `${firm.name} -> Admin / Airline`,
+            allocationId: allocation?.id,
+            receiverFirmId: allocation?.fromFirmId || flight?.ownerFirmId || flight?.airline?.firmId,
+            receiverLabel: allocation?.fromFirmId || flight?.ownerFirmId || flight?.airline?.firmId || 'Admin / Airline',
+            directionLabel: `${firm.name} -> ${allocation?.fromFirmId || flight?.ownerFirmId || flight?.airline?.firmId || 'Admin / Airline'}`,
           } as Prisma.InputJsonValue,
         }
       });

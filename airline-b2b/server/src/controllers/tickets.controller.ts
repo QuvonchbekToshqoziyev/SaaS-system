@@ -1,129 +1,97 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
-import { Prisma } from '@prisma/client';
+import { Prisma, TicketProductType } from '@prisma/client';
 import { payableDebtTypeFilter } from '../utils/transaction-types';
 import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
 import { assertActiveKassaDesk, assertKassaDeskForFirmSelection } from '../utils/kassa-desk-policy';
 import { canManageFirmWork } from '../utils/firm-user-roles';
 import { createFirmNotification } from '../utils/notifications';
 import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
+import { allocationDirection, canManageFlightInventory, normalizeCurrency, normalizeOptionalString, parseAllocationRows, parsePositiveDecimal, parsePositiveInt, parsePurchaserInfo, requiresAirlineConnectionForAllocation, requiresAllocationApproval, restoredTicketState, validateAllocationRejectionReason } from '../domains/tickets/ticket-input';
+import { writeAuditLog } from '../utils/audit';
+import { cancelLegSale, changeLegAllocation, countCancellableLegAllocationUnits, createTicketLegInventory } from '../domains/tickets/ticket-leg-inventory';
 
 function normalizeRole(role: unknown): string {
   return String(role || '').toUpperCase();
 }
 
-async function getFirmKind(firmId: string) {
-  if (!firmId) return null;
-  const firm = await prisma.firm.findUnique({
-    where: { id: firmId },
-    select: { kind: true },
-  });
-  return firm?.kind || null;
-}
-
-async function assertCanManageAirlineFlight(user: any, flightId: string) {
+async function assertCanManageFirmFlightInventory(user: any, flightId: string, requestedSourceFirmId?: unknown) {
   const role = normalizeRole(user?.role);
-  const firmId = user?.firmId ? String(user.firmId) : '';
-  if (role !== 'FIRM' || !firmId) throw new Error('Forbidden');
-  const firmKind = await getFirmKind(firmId);
-  if (firmKind !== 'AIRLINE') throw new Error('Only airline accounts can manage origin ticket stock');
+  const firmId = role === 'FIRM'
+    ? normalizeOptionalString(user?.firmId) || ''
+    : normalizeOptionalString(requestedSourceFirmId) || '';
+  if (!['FIRM', 'ADMIN', 'SUPERADMIN'].includes(role) || !firmId) throw new Error('sourceFirmId is required');
+  if (role === 'FIRM' && !canManageFirmWork(user)) throw new Error('Only firm admins and managers can manage flight inventory');
+  if (role === 'ADMIN' && !(await canAccessFirm(user, firmId))) throw new Error('Forbidden');
 
   const flight = await prisma.flight.findUnique({
     where: { id: flightId },
-    select: { airline: { select: { firmId: true } } },
-  });
-  if (!flight || flight.airline?.firmId !== firmId) throw new Error('Flight not found');
-}
-
-async function assertCanManageFirmFlightInventory(user: any, flightId: string) {
-  const role = normalizeRole(user?.role);
-  const firmId = user?.firmId ? String(user.firmId) : '';
-  if (role !== 'FIRM' || !firmId) throw new Error('Forbidden');
-  if (!canManageFirmWork(user)) throw new Error('Only firm admins and managers can manage flight inventory');
-
-  const ownedTickets = await prisma.ticket.count({
-    where: {
-      flightId,
-      assignedFirmId: firmId,
-      deletedAt: null,
+    select: {
+      ownerFirmId: true,
+      airline: { select: { firmId: true } },
+      _count: {
+        select: {
+          tickets: { where: { assignedFirmId: firmId, deletedAt: null } },
+        },
+      },
     },
   });
-  if (ownedTickets <= 0) throw new Error('Flight not found');
-  return firmId;
+  const isAirlineOwner = flight?.airline?.firmId === firmId;
+  const isFlightOwner = flight?.ownerFirmId === firmId || (!flight?.ownerFirmId && isAirlineOwner);
+  if (!flight || !canManageFlightInventory(firmId, flight.ownerFirmId, flight.airline?.firmId, flight._count.tickets)) throw new Error('Flight not found');
+  return { firmId, isAirlineOwner, isFlightOwner };
 }
 
-function parsePositiveInt(value: unknown): number | null {
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) return null;
-    const asInt = Math.floor(value);
-    if (asInt <= 0) return null;
-    return asInt;
-  }
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-    const asInt = Number.parseInt(trimmed, 10);
-    if (!Number.isFinite(asInt) || asInt <= 0) return null;
-    return asInt;
-  }
-  return null;
-}
-
-function normalizeCurrency(value: unknown): string {
-  return String(value || '').trim().toUpperCase();
-}
-
-function parsePositiveDecimal(value: unknown): Prisma.Decimal | null {
-  if (value === null || value === undefined) return null;
-  const raw = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : '';
-  if (!raw) return null;
-  try {
-    const d = new Prisma.Decimal(raw);
-    if (!d.isFinite() || !d.gt(0)) return null;
-    return d;
-  } catch {
-    return null;
-  }
-}
-
-function parseAllocationRows(value: unknown): Array<{ quantity: number; price: Prisma.Decimal }> {
-  if (!Array.isArray(value)) return [];
-  const rows: Array<{ quantity: number; price: Prisma.Decimal }> = [];
-  for (const item of value) {
-    if (!item || typeof item !== 'object') continue;
-    const raw = item as any;
-    const quantity = parsePositiveInt(raw.quantity ?? raw.count);
-    const price = parsePositiveDecimal(raw.allocationPrice ?? raw.price);
-    if (quantity && price) rows.push({ quantity, price: price.toDecimalPlaces(4) });
-  }
-  return rows;
-}
-
-function normalizeOptionalString(value: unknown): string | undefined {
-  if (value === null || value === undefined) return undefined;
-  const trimmed = String(value).trim();
-  return trimmed ? trimmed : undefined;
-}
-
-function parsePurchaserInfo(value: unknown):
-  | { name: string; idNumber: string; phone?: string; email?: string; notes?: string }
-  | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const v: any = value as any;
-  const name = normalizeOptionalString(v.name);
-  const idNumber = normalizeOptionalString(v.idNumber ?? v.id);
-  if (!name || !idNumber) return null;
-  const phone = normalizeOptionalString(v.phone);
-  const email = normalizeOptionalString(v.email);
-  const notes = normalizeOptionalString(v.notes);
+function allocationTargetWhere(sourceFirmId: string, targetFirmId?: string): Prisma.FirmWhereInput {
   return {
-    name,
-    idNumber,
-    ...(phone ? { phone } : {}),
-    ...(email ? { email } : {}),
-    ...(notes ? { notes } : {}),
+    kind: { not: 'AIRLINE' },
+    status: 'ACTIVE',
+    deletedAt: null,
+    AND: [
+      { id: { not: sourceFirmId } },
+      ...(targetFirmId ? [{ id: targetFirmId }] : []),
+    ],
   };
 }
+
+export const listAllocationTargets = async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const role = normalizeRole(user?.role);
+  const sourceFirmId = role === 'FIRM'
+    ? normalizeOptionalString(user?.firmId) || ''
+    : normalizeOptionalString(req.query?.sourceFirmId) || '';
+  if (!sourceFirmId) return res.status(400).json({ error: 'sourceFirmId is required' });
+  if (role === 'FIRM' && !canManageFirmWork(user)) return res.status(403).json({ error: 'Forbidden' });
+  if (role === 'ADMIN' && !(await canAccessFirm(user, sourceFirmId))) return res.status(403).json({ error: 'Forbidden' });
+
+  const sourceFirm = await prisma.firm.findUnique({ where: { id: sourceFirmId }, select: { kind: true } });
+  const firms = await prisma.firm.findMany({
+    where: {
+      ...allocationTargetWhere(sourceFirmId),
+      ...(sourceFirm?.kind === 'AIRLINE'
+        ? { firmAirlineConnections: { some: { airlineFirmId: sourceFirmId, status: 'ACTIVE' } } }
+        : {}),
+    },
+    select: {
+      id: true,
+      name: true,
+      kind: true,
+      _count: {
+        select: {
+          users: { where: { status: 'ACTIVE', deletedAt: null } },
+          userAccesses: { where: { user: { status: 'ACTIVE', deletedAt: null } } },
+        },
+      },
+    },
+    orderBy: { name: 'asc' },
+  });
+  return res.json(firms.map((firm) => ({
+    id: firm.id,
+    name: firm.name,
+    kind: firm.kind,
+    approvalRequired: requiresAllocationApproval(firm._count.users, firm._count.userAccesses),
+  })));
+};
 
 async function resolveKassaDesk(user: any, rawKassaDeskId: unknown) {
   const kassaDeskId = typeof rawKassaDeskId === 'string' ? rawKassaDeskId.trim() : '';
@@ -163,26 +131,592 @@ export const getTickets = async (req: Request, res: Response) => {
   const user = (req as any).user;
   const role = String(user?.role || '').toUpperCase();
   const ownFirmId = user?.firmId ? String(user.firmId) : '';
-  const firmKind = role === 'FIRM' ? await getFirmKind(ownFirmId) : null;
-
-  const where: any = id ? { flightId: String(id) } : {};
-  if (role === 'FIRM' && firmKind === 'AIRLINE') {
-    if (!ownFirmId) {
-      return res.status(400).json({ error: 'Firm account is missing firmId' });
-    }
-    where.flight = { airline: { firmId: ownFirmId } };
-  } else if (role === 'FIRM') {
-    if (!ownFirmId) {
-      return res.status(400).json({ error: 'Firm account is missing firmId' });
-    }
-    where.assignedFirmId = ownFirmId;
+  if (role === 'FIRM' && !ownFirmId) {
+    return res.status(400).json({ error: 'Firm account is missing firmId' });
   }
-  const tickets = await prisma.ticket.findMany({ where, include: { assignedFirm: true } });
-  res.json(tickets);
+
+  const accessibleFirmIds = role === 'ADMIN' ? await getAccessibleFirmIds(user) : undefined;
+  const firmIds = role === 'FIRM' ? [ownFirmId] : role === 'ADMIN' ? accessibleFirmIds || [] : undefined;
+  const where: Prisma.TicketWhereInput = {
+    ...(id ? { flightId: String(id) } : {}),
+    deletedAt: null,
+    status: { not: 'DELETED' },
+    ...(firmIds ? {
+      OR: [
+        { originalOwnerFirmId: { in: firmIds } },
+        { legs: { some: { currentOwnerFirmId: { in: firmIds } } } },
+        { assignedFirmId: { in: firmIds } },
+        { allocationSourceFirmId: { in: firmIds }, status: 'PENDING' },
+        { flight: { ownerFirmId: { in: firmIds } } },
+        { flight: { ownerFirmId: null, airline: { firmId: { in: firmIds } } } },
+      ],
+    } : {}),
+  };
+  const tickets = await prisma.ticket.findMany({
+    where,
+    include: {
+      assignedFirm: { select: { id: true, name: true } },
+      allocationSourceFirm: { select: { id: true, name: true, kind: true } },
+      flight: { select: { ownerFirmId: true, airline: { select: { firmId: true } } } },
+      legs: {
+        include: {
+          currentOwnerFirm: { select: { id: true, name: true } },
+          saleItems: { where: { status: 'CONFIRMED', sale: { status: 'CONFIRMED' } }, select: { saleId: true, salePriceSnapshot: true, saleCurrencySnapshot: true } },
+        },
+        orderBy: { direction: 'asc' },
+      },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+  res.json(tickets.map((ticket) => {
+    const ownsOrigin = !firmIds || firmIds.includes(String(ticket.originalOwnerFirmId || ticket.flight.ownerFirmId || ticket.flight.airline?.firmId || ''));
+    const visibleLegs = !firmIds || ownsOrigin
+      ? ticket.legs
+      : ticket.legs.filter((leg) => firmIds.includes(String(leg.currentOwnerFirmId || '')));
+    const sellableLegs = visibleLegs.filter((leg) => ['AVAILABLE', 'ASSIGNED'].includes(String(leg.status)));
+    const visibleOwners = Array.from(new Set(visibleLegs.map((leg) => leg.currentOwnerFirmId).filter(Boolean)));
+    const visibleCost = visibleLegs.reduce((sum, leg) => sum + Number(leg.acquisitionCostSnapshot), 0);
+    const allSold = visibleLegs.length > 0 && visibleLegs.every((leg) => leg.status === 'SOLD');
+    return {
+      id: ticket.id,
+      flightId: ticket.flightId,
+      status: allSold ? 'SOLD' : visibleLegs.some((leg) => leg.status === 'PENDING_ALLOCATION') ? 'PENDING' : visibleLegs.some((leg) => leg.status === 'RESERVED_FOR_TOUR') ? 'RESERVED_FOR_TOUR' : 'ASSIGNED',
+      ticketType: ticket.ticketType,
+      assignedFirmId: visibleOwners.length === 1 ? visibleOwners[0] : null,
+      assignedFirm: visibleOwners.length === 1 ? visibleLegs.find((leg) => leg.currentOwnerFirmId === visibleOwners[0])?.currentOwnerFirm || null : null,
+      allocationSourceFirmId: ticket.allocationSourceFirmId,
+      allocationSourceFirm: ticket.allocationSourceFirm,
+      currency: visibleLegs[0]?.currencySnapshot || ticket.currency,
+      price: visibleCost,
+      basePrice: visibleCost,
+      ...(ownsOrigin ? { originPrice: Number(ticket.originPrice), originalOwnerFirmId: ticket.originalOwnerFirmId } : {}),
+      soldPrice: allSold ? visibleLegs.flatMap((leg) => leg.saleItems).reduce((sum, item) => sum + Number(item.salePriceSnapshot), 0) : null,
+      soldCurrency: allSold ? visibleLegs.flatMap((leg) => leg.saleItems)[0]?.saleCurrencySnapshot || null : null,
+      purchaserInfo: ownsOrigin || allSold ? ticket.purchaserInfo : undefined,
+      legs: visibleLegs.map((leg) => ({
+        id: leg.id, direction: leg.direction, status: leg.status, origin: leg.origin, destination: leg.destination,
+        departureAt: leg.departureAt, arrivalAt: leg.arrivalAt, currentOwnerFirmId: leg.currentOwnerFirmId,
+        currentOwnerFirm: leg.currentOwnerFirm, acquisitionCostSnapshot: Number(leg.acquisitionCostSnapshot),
+        allocationPriceSnapshot: leg.allocationPriceSnapshot == null ? null : Number(leg.allocationPriceSnapshot),
+        currencySnapshot: leg.currencySnapshot,
+        saleId: leg.saleItems[0]?.saleId || null,
+      })),
+      availableRoundTrip: ticket.ticketType === 'ROUND_TRIP'
+        && ['OUTBOUND', 'RETURN'].every((direction) => sellableLegs.some((leg) => leg.direction === direction)),
+      availableOutbound: sellableLegs.some((leg) => leg.direction === 'OUTBOUND'),
+      availableReturn: sellableLegs.some((leg) => leg.direction === 'RETURN'),
+      canAllocate: sellableLegs.length > 0,
+      createdAt: ticket.createdAt,
+      updatedAt: ticket.updatedAt,
+    };
+  }));
+};
+
+export const listTicketAllocations = async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const role = normalizeRole(user?.role);
+  const firmId = normalizeOptionalString(user?.firmId);
+  const accessibleFirmIds = role === 'ADMIN' ? await getAccessibleFirmIds(user) : undefined;
+  const scopedFirmIds = role === 'FIRM' ? (firmId ? [firmId] : []) : role === 'ADMIN' ? accessibleFirmIds || [] : undefined;
+  if (role === 'FIRM' && !firmId) return res.status(400).json({ error: 'Firm account is missing firmId' });
+
+  const flightId = normalizeOptionalString(req.query?.flightId ?? req.query?.flight_id);
+  const allocations = await prisma.ticketAllocation.findMany({
+    where: {
+      ...(flightId ? { flightId } : {}),
+      ...(scopedFirmIds ? { OR: [{ fromFirmId: { in: scopedFirmIds } }, { toFirmId: { in: scopedFirmIds } }] } : {}),
+    },
+    include: {
+      flight: { select: { id: true, flightNumber: true, route: true, departure: true, arrival: true, ownerFirmId: true, status: true } },
+      fromFirm: { select: { id: true, name: true } },
+      toFirm: { select: { id: true, name: true } },
+      priceRows: { orderBy: { position: 'asc' } },
+      tickets: { where: { deletedAt: null }, select: { status: true } },
+      legItems: {
+        where: { status: 'ACTIVE' },
+        include: { ticketLeg: { select: { id: true, ticketId: true, direction: true, status: true, currentOwnerFirmId: true, origin: true, destination: true } } },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  return res.json(allocations.map((allocation) => {
+    const statusCounts = allocation.legItems.reduce<Record<string, number>>((counts, item) => {
+      const status = String(item.ticketLeg.status);
+      counts[status] = (counts[status] || 0) + 1;
+      return counts;
+    }, {});
+    const actorFirmIds = scopedFirmIds || [];
+    const canManage = role !== 'FIRM' || canManageFirmWork(user);
+    const mayReceive = role === 'SUPERADMIN' || (canManage && actorFirmIds.includes(allocation.toFirmId));
+    const maySend = role === 'SUPERADMIN' || (canManage && actorFirmIds.includes(allocation.fromFirmId));
+    return {
+      id: allocation.id,
+      flight: allocation.flight,
+      fromFirm: allocation.fromFirm,
+      toFirm: allocation.toFirm,
+      allocatedQuantity: allocation.parentTicketCount || allocation.priceRows.reduce((sum, row) => sum + row.quantity, 0) || allocation.tickets.length,
+      parentTicketCount: allocation.parentTicketCount,
+      segmentCount: allocation.segmentCount || allocation.legItems.length,
+      productType: allocation.productType,
+      direction: allocation.direction,
+      priceRows: allocation.priceRows.map((row) => ({ quantity: row.quantity, unitPrice: Number(row.unitPrice), totalAmount: Number(row.totalAmount), currency: row.currency, productType: row.productType, direction: row.direction })),
+      totalAmount: Number(allocation.totalAmount),
+      currency: allocation.currency,
+      status: allocation.status,
+      note: allocation.note,
+      acceptedAt: allocation.acceptedAt,
+      rejectionReason: allocation.rejectionReason,
+      rejectedAt: allocation.rejectedAt,
+      createdAt: allocation.createdAt,
+      legs: allocation.legItems.map((item) => ({
+        id: item.ticketLeg.id, ticketId: item.ticketLeg.ticketId, direction: item.ticketLeg.direction,
+        status: item.ticketLeg.status, currentOwnerFirmId: item.ticketLeg.currentOwnerFirmId,
+        origin: item.ticketLeg.origin, destination: item.ticketLeg.destination,
+        acquisitionCostSnapshot: Number(item.acquisitionCostSnapshot),
+        allocationPriceSnapshot: Number(item.allocationPriceSnapshot),
+        acquisitionCurrency: item.acquisitionCurrencySnapshot,
+        allocationCurrency: item.allocationCurrencySnapshot,
+      })),
+      acceptedQuantity: allocation.status === 'ACCEPTED' ? allocation.parentTicketCount : 0,
+      availableQuantity: allocation.parentTicketCount,
+      soldQuantity: statusCounts.SOLD || 0,
+      cancellableQuantity: allocation.productType === 'ROUND_TRIP'
+        ? Array.from(new Set(allocation.legItems.filter((item) => ['ASSIGNED', 'PENDING_ALLOCATION'].includes(item.ticketLeg.status)).map((item) => item.ticketLeg.ticketId)))
+            .filter((ticketId) => allocation.legItems.filter((item) => item.ticketLeg.ticketId === ticketId && ['ASSIGNED', 'PENDING_ALLOCATION'].includes(item.ticketLeg.status)).length === 2).length
+        : allocation.legItems.filter((item) => ['ASSIGNED', 'PENDING_ALLOCATION'].includes(item.ticketLeg.status)).length,
+      version: allocation.version,
+      canConfirm: allocation.status === 'PENDING' && mayReceive,
+      canReject: allocation.status === 'PENDING' && mayReceive,
+      canEdit: ['PENDING', 'ACCEPTED'].includes(allocation.status) && maySend,
+      canCancel: ['PENDING', 'ACCEPTED'].includes(allocation.status) && maySend,
+    };
+  }));
+};
+
+type ChangePriceRow = { quantity: number; unitPrice: Prisma.Decimal; position: number };
+
+function changeReason(value: unknown, label = 'O‘zgartirish sababini yozing.'): string {
+  const reason = normalizeOptionalString(value);
+  if (!reason || reason.length < 5) throw new Error(label);
+  if (reason.length > 500) throw new Error('Sabab 500 belgidan oshmasligi kerak.');
+  return reason;
+}
+
+function allocationRows(value: unknown): ChangePriceRow[] {
+  return parseAllocationRows(value).map((row, position) => ({ quantity: row.quantity, unitPrice: row.price, position }));
+}
+
+function rowQuantity(rows: Array<{ quantity: number }>): number {
+  return rows.reduce((sum, row) => sum + Math.max(0, Math.floor(Number(row.quantity || 0))), 0);
+}
+
+function rowTotal(rows: ChangePriceRow[]): Prisma.Decimal {
+  return rows.reduce((sum, row) => sum.add(row.unitPrice.mul(row.quantity)), new Prisma.Decimal(0)).toDecimalPlaces(4);
+}
+
+function resizePriceRows(rows: ChangePriceRow[], targetQuantity: number): ChangePriceRow[] {
+  const next: ChangePriceRow[] = [];
+  let remaining = targetQuantity;
+  for (const row of rows) {
+    if (remaining <= 0) break;
+    const quantity = Math.min(row.quantity, remaining);
+    if (quantity > 0) next.push({ quantity, unitPrice: row.unitPrice, position: next.length });
+    remaining -= quantity;
+  }
+  if (remaining > 0) {
+    const unitPrice = rows.at(-1)?.unitPrice;
+    if (!unitPrice) throw new Error('Ajratma narxi topilmadi.');
+    next.push({ quantity: remaining, unitPrice, position: next.length });
+  }
+  return next;
+}
+
+function subtractTicketPrices(rows: ChangePriceRow[], tickets: Array<{ basePrice: Prisma.Decimal }>): ChangePriceRow[] {
+  const counts = new Map<string, number>();
+  for (const ticket of tickets) {
+    const key = new Prisma.Decimal(ticket.basePrice).toDecimalPlaces(4).toString();
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  const next: ChangePriceRow[] = [];
+  for (const row of rows) {
+    const key = row.unitPrice.toDecimalPlaces(4).toString();
+    const remove = Math.min(row.quantity, counts.get(key) || 0);
+    counts.set(key, (counts.get(key) || 0) - remove);
+    if (row.quantity > remove) next.push({ quantity: row.quantity - remove, unitPrice: row.unitPrice, position: next.length });
+  }
+  const unmatched = Array.from(counts.values()).reduce((sum, count) => sum + count, 0);
+  return unmatched ? resizePriceRows(rows, Math.max(0, rowQuantity(rows) - tickets.length)) : next;
+}
+
+function priceRowsJson(rows: ChangePriceRow[]) {
+  return rows.map((row) => ({ quantity: row.quantity, price: row.unitPrice.toString() }));
+}
+
+function allocationSnapshot(allocation: any) {
+  const rows = allocation.priceRows.map((row: any, position: number) => ({
+    quantity: Number(row.quantity),
+    price: new Prisma.Decimal(row.unitPrice).toDecimalPlaces(4).toString(),
+    position,
+  }));
+  return {
+    quantity: rowQuantity(rows),
+    priceRows: rows,
+    totalAmount: new Prisma.Decimal(allocation.totalAmount).toDecimalPlaces(4).toString(),
+    currency: allocation.currency,
+    note: allocation.note,
+    status: allocation.status,
+    version: allocation.version,
+  };
+}
+
+async function mayManageSendingFirm(user: any, fromFirmId: string): Promise<boolean> {
+  const role = normalizeRole(user?.role);
+  if (role === 'SUPERADMIN') return true;
+  if (role === 'ADMIN') return canAccessFirm(user, fromFirmId);
+  return role === 'FIRM' && normalizeOptionalString(user?.firmId) === fromFirmId && canManageFirmWork(user);
+}
+
+async function mayManageReceivingFirm(user: any, receivingFirmId: string): Promise<boolean> {
+  const role = normalizeRole(user?.role);
+  if (role === 'SUPERADMIN') return true;
+  if (role === 'ADMIN') return canAccessFirm(user, receivingFirmId);
+  return role === 'FIRM' && normalizeOptionalString(user?.firmId) === receivingFirmId && canManageFirmWork(user);
+}
+
+async function addAllocationDebtAdjustment(
+  tx: Prisma.TransactionClient,
+  input: { allocation: any; requestId: string; ticketId: string; delta: Prisma.Decimal; actorUserId?: string; exchangeRate: Prisma.Decimal },
+) {
+  if (input.delta.isZero()) return;
+  await tx.transaction.create({
+    data: {
+      firmId: input.allocation.toFirmId,
+      payerFirmId: input.allocation.toFirmId,
+      receiverFirmId: input.allocation.fromFirmId,
+      flightId: input.allocation.flightId,
+      ticketId: input.ticketId,
+      createdByUserId: input.actorUserId,
+      type: 'PAYABLE',
+      originalAmount: input.delta.toDecimalPlaces(4),
+      currency: input.allocation.currency,
+      exchangeRate: input.exchangeRate.toDecimalPlaces(6),
+      baseAmount: input.delta.mul(input.exchangeRate).toDecimalPlaces(4),
+      direction: allocationDirection(input.allocation.fromFirm.kind),
+      subjectType: 'TICKET_ALLOCATION_ADJUSTMENT',
+      subjectId: input.requestId,
+      metadata: { allocationId: input.allocation.id, changeRequestId: input.requestId, note: 'Allocation change debt adjustment' },
+    },
+  });
+}
+
+async function applyAllocationChange(
+  tx: Prisma.TransactionClient,
+  input: { allocation: any; request: any; user: any; actorUserId?: string },
+) {
+  const { allocation, request, user, actorUserId } = input;
+  if (allocation.version !== request.baseVersion) throw new Error('Ajratma ma’lumotlari boshqa operatsiya orqali o‘zgargan. Sahifani yangilang.');
+  if (!['PENDING', 'ACCEPTED'].includes(allocation.status)) throw new Error('Ushbu ajratmani endi o‘zgartirib bo‘lmaydi.');
+
+  if (allocation.legItems?.length) {
+    const exchangeRate = allocation.status === 'ACCEPTED'
+      ? await resolveExchangeRateToUzs(user, { currency: allocation.currency, rateFirmId: allocation.fromFirmId })
+      : new Prisma.Decimal(1);
+    return changeLegAllocation(tx, {
+      allocation,
+      requestId: request.id,
+      type: request.type,
+      proposed: request.proposedValuesJson,
+      actorUserId,
+      exchangeRate,
+      debtDirection: allocationDirection(allocation.fromFirm.kind),
+    });
+  }
+
+  const currentRows: ChangePriceRow[] = allocation.priceRows.map((row: any, position: number) => ({
+    quantity: Number(row.quantity), unitPrice: new Prisma.Decimal(row.unitPrice), position,
+  }));
+  const currentQuantity = rowQuantity(currentRows);
+  const freeStatus = allocation.status === 'PENDING' ? 'PENDING' : 'ASSIGNED';
+  const freeTickets = allocation.tickets
+    .filter((ticket: any) => ticket.status === freeStatus && !ticket.tourPackageId && ticket.soldPrice == null)
+    .sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
+  const proposed = request.proposedValuesJson as any;
+  const exchangeRate = allocation.status === 'ACCEPTED'
+    ? await resolveExchangeRateToUzs(user, { currency: allocation.currency, rateFirmId: allocation.fromFirmId })
+    : new Prisma.Decimal(1);
+
+  let nextRows = currentRows;
+  let nextNote = allocation.note;
+  let nextCurrency = allocation.currency;
+  let removedTickets: any[] = [];
+  let addedTickets: any[] = [];
+
+  if (request.type === 'CANCEL') {
+    const cancelQuantity = parsePositiveInt(proposed.cancelQuantity);
+    if (!cancelQuantity || cancelQuantity > freeTickets.length) {
+      throw new Error(`Ushbu ajratmadan faqat ${freeTickets.length} ta chipta bekor qilinishi mumkin. Qolgan chiptalar sotilgan yoki boshqa operatsiyalarda band qilingan.`);
+    }
+    removedTickets = freeTickets.slice(0, cancelQuantity);
+    nextRows = subtractTicketPrices(currentRows, removedTickets);
+  } else {
+    nextRows = allocationRows(proposed.priceRows);
+    const nextQuantity = rowQuantity(nextRows);
+    if (!nextQuantity) throw new Error('Yangi chipta miqdori musbat bo‘lishi kerak.');
+    if (allocation.tickets.length !== currentQuantity) throw new Error('Boshqa operatsiyada ishlatilgan ajratmani faqat qisman bekor qilish mumkin.');
+    if (allocation.status === 'ACCEPTED' && normalizeCurrency(proposed.currency) !== normalizeCurrency(allocation.currency)) {
+      throw new Error('Tasdiqlangan ajratma valyutasini o‘zgartirib bo‘lmaydi.');
+    }
+    nextCurrency = normalizeCurrency(proposed.currency || allocation.currency);
+    nextNote = normalizeOptionalString(proposed.note) || null;
+    if (nextQuantity < currentQuantity) {
+      const removeCount = currentQuantity - nextQuantity;
+      if (removeCount > freeTickets.length) throw new Error(`Faqat ${freeTickets.length} ta erkin chipta kamaytirilishi mumkin.`);
+      removedTickets = freeTickets.slice(0, removeCount);
+    } else if (nextQuantity > currentQuantity) {
+      const addCount = nextQuantity - currentQuantity;
+      addedTickets = await tx.$queryRaw<any[]>`
+        SELECT *, "allocatedFirmId" AS "assignedFirmId", price AS "basePrice"
+        FROM "Ticket"
+        WHERE "flightId" = ${allocation.flightId}
+          AND "allocatedFirmId" = ${allocation.fromFirmId}
+          AND status = 'ASSIGNED' AND "tourPackageId" IS NULL AND "deletedAt" IS NULL
+        ORDER BY "createdAt" ASC FOR UPDATE SKIP LOCKED LIMIT ${addCount}
+      `;
+      if (addedTickets.length !== addCount) throw new Error(`Qo‘shimcha ${addCount} ta chipta uchun yuboruvchi firma zaxirasi yetarli emas.`);
+    }
+  }
+
+  for (const ticket of removedTickets) {
+    if (allocation.status === 'ACCEPTED') {
+      await addAllocationDebtAdjustment(tx, {
+        allocation, requestId: request.id, ticketId: ticket.id,
+        delta: new Prisma.Decimal(ticket.basePrice).negated(), actorUserId, exchangeRate,
+      });
+    }
+    await tx.ticket.update({
+      where: { id: ticket.id },
+      data: {
+        status: 'ASSIGNED', assignedFirmId: allocation.fromFirmId, allocationSourceFirmId: null,
+        basePrice: ticket.allocationSourcePrice || ticket.basePrice, allocationSourcePrice: null, allocationId: null,
+      },
+    });
+  }
+
+  if (request.type === 'EDIT') {
+    const retained = allocation.tickets
+      .filter((ticket: any) => !removedTickets.some((removed) => removed.id === ticket.id))
+      .sort((a: any, b: any) => a.createdAt.getTime() - b.createdAt.getTime());
+    const targetPrices = nextRows.flatMap((row) => Array.from({ length: row.quantity }, () => row.unitPrice));
+    const finalTickets = [...retained, ...addedTickets];
+    for (let index = 0; index < finalTickets.length; index += 1) {
+      const ticket = finalTickets[index];
+      const targetPrice = targetPrices[index];
+      if (!targetPrice) throw new Error('Ajratma narx qatorlari chipta soniga mos emas.');
+      const isAdded = addedTickets.some((added) => String(added.id) === String(ticket.id));
+      const oldPrice = isAdded ? new Prisma.Decimal(0) : new Prisma.Decimal(ticket.basePrice);
+      if (allocation.status === 'ACCEPTED' && !targetPrice.eq(oldPrice)) {
+        await addAllocationDebtAdjustment(tx, { allocation, requestId: request.id, ticketId: String(ticket.id), delta: targetPrice.sub(oldPrice), actorUserId, exchangeRate });
+      }
+      await tx.ticket.update({
+        where: { id: String(ticket.id) },
+        data: {
+          status: allocation.status === 'PENDING' ? 'PENDING' : (isAdded ? 'ASSIGNED' : ticket.status),
+          assignedFirmId: allocation.toFirmId,
+          allocationSourceFirmId: allocation.fromFirmId,
+          ...(isAdded ? { allocationSourcePrice: new Prisma.Decimal(ticket.basePrice) } : {}),
+          allocationId: allocation.id,
+          basePrice: targetPrice,
+          currency: nextCurrency,
+        },
+      });
+    }
+  }
+
+  await tx.ticketAllocationPriceRow.deleteMany({ where: { allocationId: allocation.id } });
+  if (nextRows.length) await tx.ticketAllocationPriceRow.createMany({
+    data: nextRows.map((row, position) => ({ allocationId: allocation.id, quantity: row.quantity, unitPrice: row.unitPrice, position })),
+  });
+  const updatedStatus = nextRows.length ? allocation.status : 'CANCELLED';
+  return tx.ticketAllocation.update({
+    where: { id: allocation.id },
+    data: {
+      status: updatedStatus,
+      totalAmount: rowTotal(nextRows),
+      currency: nextCurrency,
+      note: nextNote,
+      version: { increment: 1 },
+      ...(updatedStatus === 'CANCELLED' ? { cancelledAt: new Date(), cancelledByUserId: actorUserId || null } : {}),
+    },
+  });
+}
+
+export const createAllocationChangeRequest = async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const allocationId = String(req.params.id || '').trim();
+  const type = String(req.body?.type || '').trim().toUpperCase();
+  if (!['EDIT', 'CANCEL'].includes(type)) return res.status(400).json({ error: 'type EDIT yoki CANCEL bo‘lishi kerak.' });
+  try {
+    const reason = changeReason(req.body?.reason, type === 'CANCEL' ? 'Bekor qilish sababini yozing.' : 'Tahrirlash sababini yozing.');
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "TicketAllocation" WHERE id = ${allocationId} FOR UPDATE`;
+      const allocation = await tx.ticketAllocation.findUnique({
+        where: { id: allocationId },
+        include: {
+          fromFirm: { select: { id: true, name: true, kind: true } },
+          toFirm: {
+            select: { id: true, name: true, _count: { select: { users: { where: { status: 'ACTIVE', deletedAt: null } }, userAccesses: { where: { user: { status: 'ACTIVE', deletedAt: null } } } } } },
+          },
+          flight: { select: { id: true, flightNumber: true } },
+          priceRows: { orderBy: { position: 'asc' } },
+          tickets: { where: { deletedAt: null }, orderBy: { createdAt: 'asc' } },
+          legItems: {
+            where: { status: 'ACTIVE' },
+            include: { ticketLeg: { include: { saleItems: { where: { status: 'CONFIRMED', sale: { status: 'CONFIRMED' } }, select: { id: true } } } } },
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+      });
+      if (!allocation) throw new Error('Ajratma topilmadi.');
+      if (!(await mayManageSendingFirm(user, allocation.fromFirmId))) throw new Error('Ushbu ajratmani o‘zgartirish huquqiga ega emassiz.');
+      if (!['PENDING', 'ACCEPTED'].includes(allocation.status)) throw new Error('Ushbu ajratmani endi o‘zgartirib bo‘lmaydi.');
+      if (await tx.allocationChangeRequest.count({ where: { allocationId, status: 'PENDING_APPROVAL' } })) throw new Error('Ushbu ajratma bo‘yicha faol o‘zgartirish so‘rovi mavjud.');
+
+      const oldValues = allocationSnapshot(allocation);
+      let proposedValues: any;
+      if (type === 'EDIT') {
+        const requestedRows = allocationRows(req.body?.allocationRows ?? req.body?.priceRows);
+        const quantity = parsePositiveInt(req.body?.quantity) || (requestedRows.length ? rowQuantity(requestedRows) : oldValues.quantity);
+        const rows = requestedRows.length ? requestedRows : resizePriceRows(allocation.priceRows.map((row, position) => ({ quantity: row.quantity, unitPrice: new Prisma.Decimal(row.unitPrice), position })), quantity);
+        if (rowQuantity(rows) !== quantity) throw new Error('Narx qatorlari jami chipta miqdoriga mos emas.');
+        if (allocation.legItems.length && quantity !== oldValues.quantity) {
+          throw new Error('Miqdorni kamaytirish uchun “Bekor qilish”, oshirish uchun yangi ajratma yarating. Tahrirlashda narx va izoh o‘zgartiriladi.');
+        }
+        proposedValues = { quantity, priceRows: priceRowsJson(rows), currency: normalizeCurrency(req.body?.currency || allocation.currency), note: normalizeOptionalString(req.body?.note) || null };
+      } else {
+        const freeStatus = allocation.status === 'PENDING' ? 'PENDING' : 'ASSIGNED';
+        const cancellableQuantity = allocation.legItems.length
+          ? countCancellableLegAllocationUnits(allocation as any)
+          : allocation.tickets.filter((ticket) => ticket.status === freeStatus && !ticket.tourPackageId && ticket.soldPrice == null).length;
+        const cancelQuantity = parsePositiveInt(req.body?.quantity ?? req.body?.cancelQuantity) || cancellableQuantity;
+        if (!cancelQuantity || cancelQuantity > cancellableQuantity) throw new Error(`Ushbu ajratmadan faqat ${cancellableQuantity} ta chipta bekor qilinishi mumkin.`);
+        proposedValues = { cancelQuantity };
+      }
+
+      const requiresApproval = requiresAllocationApproval(allocation.toFirm._count.users, allocation.toFirm._count.userAccesses);
+      const request = await tx.allocationChangeRequest.create({
+        data: {
+          allocationId, requestedByFirmId: allocation.fromFirmId, requestedByUserId: normalizeOptionalString(user?.userId), receivingFirmId: allocation.toFirmId,
+          type, oldValuesJson: oldValues, proposedValuesJson: proposedValues, reason,
+          status: requiresApproval ? 'PENDING_APPROVAL' : 'APPROVED', requiresCounterpartyApproval: requiresApproval,
+          autoApproved: !requiresApproval, baseVersion: allocation.version,
+          ...(!requiresApproval ? { approvedAt: new Date(), appliedAt: new Date() } : {}),
+        },
+      });
+      let updatedAllocation = null;
+      if (!requiresApproval) updatedAllocation = await applyAllocationChange(tx, { allocation, request, user, actorUserId: normalizeOptionalString(user?.userId) });
+      await createFirmNotification(tx, allocation.toFirmId, {
+        title: requiresApproval ? 'Ajratma bo‘yicha o‘zgarish so‘rovi' : 'Ajratma avtomatik yangilandi',
+        body: `${allocation.fromFirm.name} ${allocation.flight.flightNumber || 'reys'} ajratmasi bo‘yicha ${type === 'EDIT' ? 'tahrir' : 'bekor qilish'} so‘rovini yaratdi.`,
+        type: type === 'EDIT' ? 'ALLOCATION_EDIT_REQUESTED' : 'ALLOCATION_CANCEL_REQUESTED', entityType: 'allocationChangeRequest', entityId: request.id,
+        metadata: { allocationId, changeRequestId: request.id, type, reason },
+      });
+      await writeAuditLog(req, {
+        action: type === 'EDIT' ? 'ALLOCATION_EDIT_REQUESTED' : 'ALLOCATION_CANCEL_REQUESTED', entityType: 'allocationChangeRequest', entityId: request.id,
+        entityLabel: allocation.flight.flightNumber, summary: `${allocation.fromFirm.name}: ajratma ${type === 'EDIT' ? 'tahriri' : 'bekor qilinishi'} so‘raldi`,
+        before: oldValues, after: proposedValues, metadata: { allocationId, reason, autoApproved: !requiresApproval },
+      }, tx);
+      return { request, updatedAllocation };
+    });
+    return res.status(201).json(result);
+  } catch (err: any) {
+    return res.status(400).json({ error: err?.message || 'Ajratma so‘rovini yaratib bo‘lmadi.' });
+  }
+};
+
+export const listAllocationChangeRequests = async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const role = normalizeRole(user?.role);
+  const firmId = normalizeOptionalString(user?.firmId);
+  const accessibleFirmIds = role === 'ADMIN' ? await getAccessibleFirmIds(user) || [] : undefined;
+  const flightId = normalizeOptionalString(req.query?.flightId ?? req.query?.flight_id);
+  const rows = await prisma.allocationChangeRequest.findMany({
+    where: {
+      ...(flightId ? { allocation: { flightId } } : {}),
+      ...(role === 'FIRM' ? { OR: [{ requestedByFirmId: firmId || '__missing__' }, { receivingFirmId: firmId || '__missing__' }] } : {}),
+      ...(role === 'ADMIN' ? { OR: [{ requestedByFirmId: { in: accessibleFirmIds } }, { receivingFirmId: { in: accessibleFirmIds } }] } : {}),
+    },
+    include: { allocation: { include: { flight: { select: { id: true, flightNumber: true, route: true } }, fromFirm: { select: { id: true, name: true } }, toFirm: { select: { id: true, name: true } } } } },
+    orderBy: { createdAt: 'desc' },
+  });
+  const canManage = role !== 'FIRM' || canManageFirmWork(user);
+  return res.json(rows.map((row) => ({
+    ...row,
+    canApprove: canManage && row.status === 'PENDING_APPROVAL' && (role === 'SUPERADMIN' || (role === 'FIRM' ? row.receivingFirmId === firmId : accessibleFirmIds?.includes(row.receivingFirmId))),
+    canReject: canManage && row.status === 'PENDING_APPROVAL' && (role === 'SUPERADMIN' || (role === 'FIRM' ? row.receivingFirmId === firmId : accessibleFirmIds?.includes(row.receivingFirmId))),
+  })));
+};
+
+export const approveAllocationChangeRequest = async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const requestId = String(req.params.id || '').trim();
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "AllocationChangeRequest" WHERE id = ${requestId} FOR UPDATE`;
+      const change = await tx.allocationChangeRequest.findUnique({ where: { id: requestId } });
+      if (!change) throw new Error('O‘zgartirish so‘rovi topilmadi.');
+      if (change.status !== 'PENDING_APPROVAL') throw new Error('Ushbu so‘rov allaqachon ko‘rib chiqilgan.');
+      if (!(await mayManageReceivingFirm(user, change.receivingFirmId))) throw new Error('Ushbu so‘rovni tasdiqlash huquqiga ega emassiz.');
+      await tx.$queryRaw`SELECT id FROM "TicketAllocation" WHERE id = ${change.allocationId} FOR UPDATE`;
+      const allocation = await tx.ticketAllocation.findUnique({
+        where: { id: change.allocationId },
+        include: {
+          fromFirm: { select: { id: true, name: true, kind: true } },
+          toFirm: { select: { id: true, name: true } },
+          flight: { select: { id: true, flightNumber: true } },
+          priceRows: { orderBy: { position: 'asc' } },
+          tickets: { where: { deletedAt: null }, orderBy: { createdAt: 'asc' } },
+          legItems: {
+            where: { status: 'ACTIVE' },
+            include: { ticketLeg: { include: { saleItems: { where: { status: 'CONFIRMED', sale: { status: 'CONFIRMED' } }, select: { id: true } } } } },
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+      });
+      if (!allocation) throw new Error('Ajratma topilmadi.');
+      const actorUserId = normalizeOptionalString(user?.userId);
+      const updated = await applyAllocationChange(tx, { allocation, request: change, user, actorUserId });
+      const decided = await tx.allocationChangeRequest.update({ where: { id: requestId }, data: { status: 'APPROVED', approvedByUserId: actorUserId, approvedAt: new Date(), appliedAt: new Date() } });
+      await createFirmNotification(tx, change.requestedByFirmId, { title: 'Ajratma o‘zgarishi tasdiqlandi', body: `${allocation.toFirm.name} ajratma bo‘yicha so‘rovni tasdiqladi.`, type: change.type === 'EDIT' ? 'ALLOCATION_EDIT_APPROVED' : 'ALLOCATION_CANCEL_APPROVED', entityType: 'allocationChangeRequest', entityId: requestId, metadata: { allocationId: allocation.id, changeRequestId: requestId } });
+      await writeAuditLog(req, { action: change.type === 'EDIT' ? 'ALLOCATION_EDIT_APPROVED' : 'ALLOCATION_CANCEL_APPROVED', entityType: 'allocationChangeRequest', entityId: requestId, entityLabel: allocation.flight.flightNumber, summary: `${allocation.toFirm.name} ajratma o‘zgarishini tasdiqladi`, before: change.oldValuesJson, after: change.proposedValuesJson, metadata: { allocationId: allocation.id } }, tx);
+      return { request: decided, allocation: updated };
+    });
+    return res.json(result);
+  } catch (err: any) { return res.status(400).json({ error: err?.message || 'So‘rovni tasdiqlab bo‘lmadi.' }); }
+};
+
+export const rejectAllocationChangeRequest = async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const requestId = String(req.params.id || '').trim();
+  try {
+    const rejectionReason = changeReason(req.body?.rejectionReason, 'Rad etish sababini yozing.');
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "AllocationChangeRequest" WHERE id = ${requestId} FOR UPDATE`;
+      const change = await tx.allocationChangeRequest.findUnique({ where: { id: requestId }, include: { allocation: { include: { flight: { select: { flightNumber: true } }, fromFirm: { select: { name: true } }, toFirm: { select: { name: true } } } } } });
+      if (!change) throw new Error('O‘zgartirish so‘rovi topilmadi.');
+      if (change.status !== 'PENDING_APPROVAL') throw new Error('Ushbu so‘rov allaqachon ko‘rib chiqilgan.');
+      if (!(await mayManageReceivingFirm(user, change.receivingFirmId))) throw new Error('Ushbu so‘rovni rad etish huquqiga ega emassiz.');
+      const rejected = await tx.allocationChangeRequest.update({ where: { id: requestId }, data: { status: 'REJECTED', rejectedByUserId: normalizeOptionalString(user?.userId), rejectionReason, rejectedAt: new Date() } });
+      await createFirmNotification(tx, change.requestedByFirmId, { title: 'Ajratma o‘zgarishi rad etildi', body: `${change.allocation.toFirm.name} ajratma o‘zgarishini rad etdi. Sababi: ${rejectionReason}`, type: change.type === 'EDIT' ? 'ALLOCATION_EDIT_REJECTED' : 'ALLOCATION_CANCEL_REJECTED', entityType: 'allocationChangeRequest', entityId: requestId, metadata: { allocationId: change.allocationId, changeRequestId: requestId, rejectionReason } });
+      await writeAuditLog(req, { action: change.type === 'EDIT' ? 'ALLOCATION_EDIT_REJECTED' : 'ALLOCATION_CANCEL_REJECTED', entityType: 'allocationChangeRequest', entityId: requestId, entityLabel: change.allocation.flight.flightNumber, summary: `${change.allocation.toFirm.name} ajratma o‘zgarishini rad etdi`, before: change.oldValuesJson, after: { status: 'REJECTED', rejectionReason }, metadata: { allocationId: change.allocationId } }, tx);
+      return rejected;
+    });
+    return res.json(result);
+  } catch (err: any) { return res.status(400).json({ error: err?.message || 'So‘rovni rad etib bo‘lmadi.' }); }
 };
 
 export const createTickets = async (req: Request, res: Response) => {
-  const { flightId, price, currency, quantity } = req.body;
+  const { flightId, price, currency, quantity, outboundCost, returnCost } = req.body;
   if (!flightId || typeof flightId !== 'string' || !flightId.trim()) {
     return res.status(400).json({ error: 'flightId is required' });
   }
@@ -190,10 +724,18 @@ export const createTickets = async (req: Request, res: Response) => {
   if (!resolvedQuantity) {
     return res.status(400).json({ error: 'quantity is required' });
   }
+  const resolvedPrice = Number(price);
+  const resolvedCurrency = normalizeCurrency(currency);
+  if (!Number.isFinite(resolvedPrice) || resolvedPrice < 0) return res.status(400).json({ error: 'price must be zero or greater' });
+  if (!/^[A-Z]{3}$/.test(resolvedCurrency)) return res.status(400).json({ error: 'currency must be a 3-letter code' });
 
   const flight = await prisma.flight.findUnique({
     where: { id: flightId.trim() },
-    select: { id: true, status: true },
+    select: {
+      id: true, status: true, tripType: true,
+      outboundOrigin: true, outboundDestination: true, returnOrigin: true, returnDestination: true,
+      departure: true, arrival: true, returnDeparture: true, returnArrival: true,
+    },
   });
   if (!flight) {
     return res.status(404).json({ error: 'Flight not found' });
@@ -203,21 +745,27 @@ export const createTickets = async (req: Request, res: Response) => {
   }
   let ownerFirmId = '';
   try {
-    ownerFirmId = await assertCanManageFirmFlightInventory((req as any).user, flightId.trim());
+    const source = await assertCanManageFirmFlightInventory((req as any).user, flightId.trim());
+    if (!source.isFlightOwner) throw new Error('Only the flight owner can add origin ticket stock');
+    ownerFirmId = source.firmId;
   } catch (err: any) {
     const message = err?.message || 'Forbidden';
     return res.status(message === 'Flight not found' ? 404 : 403).json({ error: message });
   }
 
-  const newTickets = Array.from({ length: resolvedQuantity }).map(() => ({
-    flightId: flightId.trim(),
-    basePrice: price,
-    currency,
-    status: 'ASSIGNED' as const,
-    assignedFirmId: ownerFirmId,
-  }));
-  const result = await prisma.ticket.createMany({ data: newTickets });
-  res.json({ success: true, count: result.count });
+  try {
+    const result = await prisma.$transaction((tx) => createTicketLegInventory(tx, {
+      flightId: flight.id, ownerFirmId, productType: flight.tripType || TicketProductType.ONE_WAY,
+      quantity: resolvedQuantity, totalCost: resolvedPrice, outboundCost, returnCost, currency: resolvedCurrency,
+      outboundOrigin: flight.outboundOrigin || 'UNKNOWN', outboundDestination: flight.outboundDestination || 'UNKNOWN',
+      outboundDeparture: flight.departure, outboundArrival: flight.arrival,
+      returnOrigin: flight.returnOrigin, returnDestination: flight.returnDestination,
+      returnDeparture: flight.returnDeparture, returnArrival: flight.returnArrival,
+    }));
+    res.json({ success: true, count: result.count, segmentCount: result.segmentCount });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Failed to create tickets' });
+  }
 };
 
 export const allocateTicket = async (req: Request, res: Response) => {
@@ -244,22 +792,36 @@ export const allocateTicket = async (req: Request, res: Response) => {
     }
 
     try {
-      const sourceFirmId = await assertCanManageFirmFlightInventory(user, resolvedFlightId);
-      if (sourceFirmId === targetFirmId) {
+      const source = await assertCanManageFirmFlightInventory(user, resolvedFlightId, req.body?.sourceFirmId);
+      if (source.firmId === targetFirmId) {
         return res.status(400).json({ error: 'Select a different firm for allocation' });
       }
       const result = await prisma.$transaction(async (tx) => {
-        const [firm, flight] = await Promise.all([
-          tx.firm.findUnique({ where: { id: targetFirmId }, select: { id: true, name: true } }),
+        const [firm, sourceFirm, flight] = await Promise.all([
+          tx.firm.findFirst({
+            where: allocationTargetWhere(source.firmId, targetFirmId),
+            select: {
+              id: true,
+              name: true,
+              _count: {
+                select: {
+                  users: { where: { status: 'ACTIVE', deletedAt: null } },
+                  userAccesses: { where: { user: { status: 'ACTIVE', deletedAt: null } } },
+                },
+              },
+            },
+          }),
+          tx.firm.findUnique({ where: { id: source.firmId }, select: { kind: true } }),
           tx.flight.findUnique({
             where: { id: resolvedFlightId },
             select: { id: true, status: true, flightNumber: true, airline: { select: { id: true, name: true, firmId: true } } },
           }),
         ]);
         if (!firm) throw new Error('Firm not found');
+        if (!sourceFirm) throw new Error('Source firm not found');
         if (!flight) throw new Error('Flight not found');
         if (flight.status === 'CANCELLED') throw new Error('Cannot allocate tickets for a cancelled flight');
-        if (flight.airline?.firmId) {
+        if (flight.airline?.firmId && requiresAirlineConnectionForAllocation(source.isAirlineOwner)) {
           const connection = await tx.airlineFirmConnection.findFirst({
             where: { airlineFirmId: flight.airline.firmId, firmId: targetFirmId, status: 'ACTIVE' },
             select: { id: true },
@@ -272,7 +834,7 @@ export const allocateTicket = async (req: Request, res: Response) => {
           FROM "Ticket"
           WHERE "flightId" = ${resolvedFlightId}
             AND status IN ('AVAILABLE', 'ASSIGNED')
-            AND "allocatedFirmId" = ${sourceFirmId}
+            AND ("allocatedFirmId" = ${source.firmId} OR (${source.isFlightOwner} = true AND "allocatedFirmId" IS NULL))
             AND "deletedAt" IS NULL
           ORDER BY "createdAt" ASC
           FOR UPDATE SKIP LOCKED
@@ -284,6 +846,49 @@ export const allocateTicket = async (req: Request, res: Response) => {
         }
 
         const ticketIds = tickets.map((t) => String(t.id));
+        const currencies = Array.from(new Set(tickets.map((ticket) => normalizeCurrency(ticket.currency))));
+        if (currencies.length !== 1) throw new Error('Currencies cannot be mixed in one allocation');
+        const priceRows = parsedAllocationRows.length
+          ? parsedAllocationRows.map((row, position) => ({ quantity: row.quantity, unitPrice: row.price.toDecimalPlaces(4), position }))
+          : (() => {
+              const prices = new Map<string, number>();
+              for (const ticket of tickets) {
+                const unitPrice = overridePrice?.gt(0)
+                  ? overridePrice.toDecimalPlaces(4)
+                  : new Prisma.Decimal(String(ticket.basePrice)).toDecimalPlaces(4);
+                const key = unitPrice.toString();
+                prices.set(key, (prices.get(key) || 0) + 1);
+              }
+              return Array.from(prices.entries()).map(([unitPrice, rowQuantity], position) => ({
+                quantity: rowQuantity,
+                unitPrice: new Prisma.Decimal(unitPrice),
+                position,
+              }));
+            })();
+        const totalAmount = priceRows.reduce(
+          (sum, row) => sum.add(row.unitPrice.mul(row.quantity)),
+          new Prisma.Decimal(0),
+        ).toDecimalPlaces(4);
+        const approvalRequired = requiresAllocationApproval(firm._count.users, firm._count.userAccesses);
+        const allocationStatus = approvalRequired ? 'PENDING' : 'ACCEPTED';
+        const allocation = await tx.ticketAllocation.create({
+          data: {
+            flightId: resolvedFlightId,
+            fromFirmId: source.firmId,
+            toFirmId: targetFirmId,
+            currency: currencies[0],
+            totalAmount,
+            status: allocationStatus,
+            ...(!approvalRequired ? { acceptedAt: new Date(), acceptedByUserId: null } : {}),
+            note: normalizeOptionalString(req.body?.note),
+            createdByUserId: user?.userId ? String(user.userId) : null,
+            priceRows: { create: priceRows },
+          },
+        });
+        await tx.$executeRaw`
+          UPDATE "Ticket" SET "allocationSourcePrice" = price
+          WHERE id IN (${Prisma.join(ticketIds)})
+        `;
         if (parsedAllocationRows.length) {
           let offset = 0;
           for (const row of parsedAllocationRows) {
@@ -293,8 +898,10 @@ export const allocateTicket = async (req: Request, res: Response) => {
             await tx.ticket.updateMany({
               where: { id: { in: rowTicketIds } },
               data: {
-                status: 'PENDING',
+                status: approvalRequired ? 'PENDING' : 'ASSIGNED',
                 assignedFirmId: targetFirmId,
+                allocationSourceFirmId: source.firmId,
+                allocationId: allocation.id,
                 basePrice: row.price,
               },
             });
@@ -303,27 +910,81 @@ export const allocateTicket = async (req: Request, res: Response) => {
           await tx.ticket.updateMany({
             where: { id: { in: ticketIds } },
             data: {
-              status: 'PENDING',
+              status: approvalRequired ? 'PENDING' : 'ASSIGNED',
               assignedFirmId: targetFirmId,
+              allocationSourceFirmId: source.firmId,
+              allocationId: allocation.id,
               ...(overridePrice?.gt(0) ? { basePrice: overridePrice.toDecimalPlaces(4) } : {}),
             },
           });
         }
-        await createFirmNotification(tx, targetFirmId, {
-          title: 'Ticket allocation pending',
-          body: `${ticketIds.length} ticket(s) for ${flight.flightNumber || 'flight'} were allocated to your firm. Accept them to start managing these tickets.`,
-          type: 'TICKET_ALLOCATION_PENDING',
-          entityType: 'flight',
-          entityId: resolvedFlightId,
-          metadata: {
-            flightId: resolvedFlightId,
-            flightNumber: flight.flightNumber,
-            count: ticketIds.length,
-            airlineId: flight.airline?.id,
-            airlineName: flight.airline?.name,
-            airlineFirmId: flight.airline?.firmId,
-          },
-        });
+        if (approvalRequired) {
+          await createFirmNotification(tx, targetFirmId, {
+            title: 'Ticket allocation pending',
+            body: `${flight.flightNumber || 'Flight'}: ${ticketIds.length} ticket(s), total ${totalAmount.toString()} ${currencies[0]}.`,
+            type: 'TICKET_ALLOCATION_PENDING',
+            entityType: 'flight',
+            entityId: resolvedFlightId,
+            metadata: {
+              flightId: resolvedFlightId,
+              flightNumber: flight.flightNumber,
+              allocationId: allocation.id,
+              count: ticketIds.length,
+              totalAmount: totalAmount.toString(),
+              currency: currencies[0],
+              airlineId: flight.airline?.id,
+              airlineName: flight.airline?.name,
+              airlineFirmId: flight.airline?.firmId,
+            },
+          });
+        } else {
+          const exchangeRate = await resolveExchangeRateToUzs(user, {
+            currency: currencies[0],
+            rateFirmId: source.firmId,
+          });
+          const pricesByTicketId = new Map<string, Prisma.Decimal>();
+          if (parsedAllocationRows.length) {
+            let offset = 0;
+            for (const row of parsedAllocationRows) {
+              for (const id of ticketIds.slice(offset, offset + row.quantity)) pricesByTicketId.set(id, row.price.toDecimalPlaces(4));
+              offset += row.quantity;
+            }
+          }
+          await tx.transaction.createMany({
+            data: tickets.map((ticket) => {
+              const ticketId = String(ticket.id);
+              const originalAmount = pricesByTicketId.get(ticketId)
+                || (overridePrice?.gt(0) ? overridePrice.toDecimalPlaces(4) : new Prisma.Decimal(String(ticket.basePrice)).toDecimalPlaces(4));
+              return {
+                firmId: targetFirmId,
+                payerFirmId: targetFirmId,
+                receiverFirmId: source.firmId,
+                flightId: resolvedFlightId,
+                ticketId,
+                createdByUserId: null,
+                type: 'PAYABLE' as const,
+                originalAmount,
+                currency: currencies[0],
+                exchangeRate: exchangeRate.toDecimalPlaces(6),
+                baseAmount: originalAmount.mul(exchangeRate).toDecimalPlaces(4),
+                direction: allocationDirection(sourceFirm.kind),
+                subjectType: 'TICKET_ALLOCATION',
+                subjectId: allocation.id,
+                metadata: { note: 'External firm ticket allocation accepted automatically', allocationId: allocation.id } as any,
+              };
+            }),
+          });
+          await writeAuditLog(req, {
+            action: 'TICKET_ALLOCATION_AUTO_ACCEPTED',
+            entityType: 'ticketAllocation',
+            entityId: allocation.id,
+            entityLabel: flight.flightNumber,
+            summary: `${ticketIds.length} ta chipta tashqi firma uchun avtomatik tasdiqlandi`,
+            before: { status: 'PENDING' },
+            after: { status: 'ACCEPTED', acceptedByUserId: null },
+            metadata: { flightId: resolvedFlightId, fromFirmId: source.firmId, toFirmId: targetFirmId, ticketQuantity: ticketIds.length, totalAmount: totalAmount.toString(), currency: currencies[0] },
+          }, tx);
+        }
         await createFirmNotification(tx, flight.airline?.firmId, {
           title: 'Tickets allocated',
           body: `${ticketIds.length} ticket(s) for ${flight.flightNumber || 'flight'} were allocated to ${firm.name}.`,
@@ -334,11 +995,16 @@ export const allocateTicket = async (req: Request, res: Response) => {
         });
         return {
           count: ticketIds.length,
-          priceRows: parsedAllocationRows.map((row) => ({ quantity: row.quantity, price: row.price.toString() })),
+          allocationId: allocation.id,
+          priceRows: priceRows.map((row) => ({ quantity: row.quantity, price: row.unitPrice.toString() })),
+          totalAmount: totalAmount.toString(),
+          currency: currencies[0],
+          status: allocationStatus,
+          approvalRequired,
         };
       });
 
-      return res.json({ success: true, count: result.count, priceRows: result.priceRows });
+      return res.json({ success: true, ...result });
     } catch (err: any) {
       return res.status(400).json({ error: err.message });
     }
@@ -350,6 +1016,8 @@ export const allocateTicket = async (req: Request, res: Response) => {
   if (!firmId || typeof firmId !== 'string') {
     return res.status(400).json({ error: 'firmId is required' });
   }
+  const targetFirmId = firmId.trim();
+  if (!targetFirmId) return res.status(400).json({ error: 'firmId is required' });
   
   try {
     const ticketFlight = await prisma.ticket.findUnique({
@@ -357,16 +1025,17 @@ export const allocateTicket = async (req: Request, res: Response) => {
       select: { flightId: true, assignedFirmId: true },
     });
     if (!ticketFlight) return res.status(404).json({ error: 'Ticket not found' });
-    const sourceFirmId = await assertCanManageFirmFlightInventory(user, ticketFlight.flightId);
-    if (sourceFirmId === firmId) {
+    const source = await assertCanManageFirmFlightInventory(user, ticketFlight.flightId, req.body?.sourceFirmId);
+    if (source.firmId === targetFirmId) {
       return res.status(400).json({ error: 'Select a different firm for allocation' });
     }
-    await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       // Find ticket
       const tickets: any[] = await tx.$queryRaw`
         SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
         FROM "Ticket"
         WHERE id = ${ticketId}
+          AND "deletedAt" IS NULL
         FOR UPDATE
       `;
       if (tickets.length === 0) throw new Error('Ticket not found');
@@ -378,47 +1047,120 @@ export const allocateTicket = async (req: Request, res: Response) => {
       });
       if (!flight) throw new Error('Flight not found');
       if (flight.status === 'CANCELLED') throw new Error('Cannot allocate tickets for a cancelled flight');
-      if (flight.airline?.firmId) {
+      if (flight.airline?.firmId && requiresAirlineConnectionForAllocation(source.isAirlineOwner)) {
         const connection = await tx.airlineFirmConnection.findFirst({
-          where: { airlineFirmId: flight.airline.firmId, firmId, status: 'ACTIVE' },
+          where: { airlineFirmId: flight.airline.firmId, firmId: targetFirmId, status: 'ACTIVE' },
           select: { id: true },
         });
         if (!connection) throw new Error('Airline is not connected to this firm');
       }
       
       if (!['AVAILABLE', 'ASSIGNED'].includes(String(ticket.status))) throw new Error('Ticket is not available for allocation');
-      if (String(ticket.assignedFirmId || '') !== sourceFirmId) throw new Error('Ticket is not in your inventory');
+      if (String(ticket.assignedFirmId || '') !== source.firmId && !(source.isFlightOwner && !ticket.assignedFirmId)) throw new Error('Ticket is not in your inventory');
 
-      const firm = await tx.firm.findUnique({ where: { id: firmId }, select: { id: true, name: true } });
+      const [firm, sourceFirm] = await Promise.all([
+        tx.firm.findFirst({
+          where: allocationTargetWhere(source.firmId, targetFirmId),
+          select: {
+            id: true,
+            name: true,
+            _count: {
+              select: {
+                users: { where: { status: 'ACTIVE', deletedAt: null } },
+                userAccesses: { where: { user: { status: 'ACTIVE', deletedAt: null } } },
+              },
+            },
+          },
+        }),
+        tx.firm.findUnique({ where: { id: source.firmId }, select: { kind: true } }),
+      ]);
       if (!firm) throw new Error('Firm not found');
+      if (!sourceFirm) throw new Error('Source firm not found');
 
+      const unitPrice = overridePrice?.gt(0)
+        ? overridePrice.toDecimalPlaces(4)
+        : new Prisma.Decimal(String(ticket.basePrice)).toDecimalPlaces(4);
+      const currency = normalizeCurrency(ticket.currency);
+      const approvalRequired = requiresAllocationApproval(firm._count.users, firm._count.userAccesses);
+      const allocationStatus = approvalRequired ? 'PENDING' : 'ACCEPTED';
+      const allocation = await tx.ticketAllocation.create({
+        data: {
+          flightId: String(ticket.flightId),
+          fromFirmId: source.firmId,
+          toFirmId: targetFirmId,
+          currency,
+          totalAmount: unitPrice,
+          status: allocationStatus,
+          ...(!approvalRequired ? { acceptedAt: new Date(), acceptedByUserId: null } : {}),
+          note: normalizeOptionalString(req.body?.note),
+          createdByUserId: user?.userId ? String(user.userId) : null,
+          priceRows: { create: [{ quantity: 1, unitPrice, position: 0 }] },
+        },
+      });
       // Update ticket
       await tx.ticket.update({
         where: { id: ticketId },
         data: {
-          status: 'PENDING',
-          assignedFirmId: firmId,
+          status: approvalRequired ? 'PENDING' : 'ASSIGNED',
+          assignedFirmId: targetFirmId,
+          allocationSourceFirmId: source.firmId,
+          allocationSourcePrice: new Prisma.Decimal(String(ticket.basePrice)).toDecimalPlaces(4),
+          allocationId: allocation.id,
           ...(overridePrice?.gt(0) ? { basePrice: overridePrice.toDecimalPlaces(4) } : {}),
         }
       });
-      await createFirmNotification(tx, firmId, {
-        title: 'Ticket allocation pending',
-        body: `A ticket for ${flight.flightNumber || 'flight'} was allocated to your firm. Accept it to start managing this ticket.`,
-        type: 'TICKET_ALLOCATION_PENDING',
-        entityType: 'ticket',
-        entityId: ticketId,
-        metadata: { flightId: flight.id, flightNumber: flight.flightNumber, ticketId, airlineId: flight.airline?.id, airlineName: flight.airline?.name, airlineFirmId: flight.airline?.firmId },
-      });
+      if (approvalRequired) {
+        await createFirmNotification(tx, targetFirmId, {
+          title: 'Ticket allocation pending',
+          body: `${flight.flightNumber || 'Flight'}: 1 ticket, total ${unitPrice.toString()} ${currency}.`,
+          type: 'TICKET_ALLOCATION_PENDING',
+          entityType: 'ticket',
+          entityId: ticketId,
+          metadata: { allocationId: allocation.id, flightId: flight.id, flightNumber: flight.flightNumber, ticketId, totalAmount: unitPrice.toString(), currency, airlineId: flight.airline?.id, airlineName: flight.airline?.name, airlineFirmId: flight.airline?.firmId },
+        });
+      } else {
+        const exchangeRate = await resolveExchangeRateToUzs(user, { currency, rateFirmId: source.firmId });
+        await tx.transaction.create({
+          data: {
+            firmId: targetFirmId,
+            payerFirmId: targetFirmId,
+            receiverFirmId: source.firmId,
+            flightId: String(ticket.flightId),
+            ticketId,
+            createdByUserId: null,
+            type: 'PAYABLE',
+            originalAmount: unitPrice,
+            currency,
+            exchangeRate: exchangeRate.toDecimalPlaces(6),
+            baseAmount: unitPrice.mul(exchangeRate).toDecimalPlaces(4),
+            direction: allocationDirection(sourceFirm.kind),
+            subjectType: 'TICKET_ALLOCATION',
+            subjectId: allocation.id,
+            metadata: { note: 'External firm ticket allocation accepted automatically', allocationId: allocation.id },
+          },
+        });
+        await writeAuditLog(req, {
+          action: 'TICKET_ALLOCATION_AUTO_ACCEPTED',
+          entityType: 'ticketAllocation',
+          entityId: allocation.id,
+          entityLabel: flight.flightNumber,
+          summary: '1 ta chipta tashqi firma uchun avtomatik tasdiqlandi',
+          before: { status: 'PENDING' },
+          after: { status: 'ACCEPTED', acceptedByUserId: null },
+          metadata: { flightId: String(ticket.flightId), fromFirmId: source.firmId, toFirmId: targetFirmId, ticketQuantity: 1, totalAmount: unitPrice.toString(), currency },
+        }, tx);
+      }
       await createFirmNotification(tx, flight.airline?.firmId, {
         title: 'Ticket allocated',
         body: `A ticket for ${flight.flightNumber || 'flight'} was allocated to ${firm.name}.`,
         type: 'TICKET_ALLOCATED',
         entityType: 'ticket',
         entityId: ticketId,
-        metadata: { flightId: flight.id, flightNumber: flight.flightNumber, ticketId, firmId, firmName: firm.name },
+        metadata: { flightId: flight.id, flightNumber: flight.flightNumber, ticketId, firmId: targetFirmId, firmName: firm.name },
       });
+      return { allocationId: allocation.id, status: allocationStatus, approvalRequired };
     });
-    res.json({ success: true });
+    res.json({ success: true, ...result });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -429,29 +1171,129 @@ export const confirmAllocation = async (req: Request, res: Response) => {
   const role = normalizeRole(user?.role);
   const actorUserId = user?.userId ? String(user.userId) : undefined;
 
-  if (role !== 'FIRM') {
+  if (!['FIRM', 'ADMIN', 'SUPERADMIN'].includes(role)) {
     return res.status(403).json({ error: 'Forbidden' });
   }
-  if (!canManageFirmWork(user)) {
+  if (role === 'FIRM' && !canManageFirmWork(user)) {
     return res.status(403).json({ error: 'Only firm admins and managers can confirm ticket allocations' });
   }
 
   const ownFirmId = user?.firmId ? String(user.firmId) : '';
-  if (!ownFirmId) {
+  if (role === 'FIRM' && !ownFirmId) {
     return res.status(400).json({ error: 'Firm account is missing firmId' });
   }
 
-  const kassaDesk = await resolveKassaDesk(user, req.body?.kassaDeskId);
-
-  const { ticketId, flightId, flight_id, quantity, count } = req.body;
+  const { allocationId, ticketId, flightId, flight_id, quantity, count } = req.body;
   const resolvedFlightId = (flightId || flight_id) && typeof (flightId || flight_id) === 'string'
     ? String(flightId || flight_id).trim()
     : '';
   const resolvedQuantity = parsePositiveInt(quantity ?? count);
+  const requestedFirmId = role === 'FIRM' ? ownFirmId : normalizeOptionalString(req.body?.firmId);
+
+  if (normalizeOptionalString(allocationId)) {
+    const resolvedAllocationId = String(allocationId).trim();
+    try {
+      const kassaDesk = await resolveKassaDesk(user, req.body?.kassaDeskId);
+      const result = await prisma.$transaction(async (tx) => {
+        const locked: Array<{ id: string }> = await tx.$queryRaw`
+          SELECT id FROM "TicketAllocation" WHERE id = ${resolvedAllocationId} FOR UPDATE
+        `;
+        if (!locked.length) throw new Error('Allocation not found');
+        const allocation = await tx.ticketAllocation.findUnique({
+          where: { id: resolvedAllocationId },
+          include: {
+            flight: { select: { id: true, status: true, flightNumber: true, airline: { select: { id: true, name: true, firmId: true } } } },
+            fromFirm: { select: { id: true, name: true, kind: true } },
+            toFirm: { select: { id: true, name: true } },
+            priceRows: true,
+          },
+        });
+        if (!allocation) throw new Error('Allocation not found');
+        if (allocation.status !== 'PENDING') throw new Error('Ushbu ajratma allaqachon ko‘rib chiqilgan.');
+        if (allocation.flight.status === 'CANCELLED') throw new Error('Cannot confirm allocation for a cancelled flight');
+        if (role === 'FIRM' ? allocation.toFirmId !== ownFirmId : !(await canAccessFirm(user, allocation.toFirmId))) {
+          throw new Error('Siz ushbu ajratmani tasdiqlash huquqiga ega emassiz.');
+        }
+
+        const tickets: any[] = await tx.$queryRaw`
+          SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
+          FROM "Ticket"
+          WHERE "allocationId" = ${resolvedAllocationId}
+            AND status = 'PENDING'
+            AND "deletedAt" IS NULL
+          ORDER BY "createdAt" ASC
+          FOR UPDATE
+        `;
+        const expectedQuantity = allocation.priceRows.reduce((sum, row) => sum + row.quantity, 0);
+        if (!tickets.length || tickets.length !== expectedQuantity) throw new Error('Allocation ticket count is inconsistent');
+
+        const exchangeRate = await resolveExchangeRateToUzs(user, {
+          currency: allocation.currency,
+          rateFirmId: allocation.fromFirmId,
+        });
+        await tx.ticket.updateMany({
+          where: { allocationId: resolvedAllocationId, status: 'PENDING', deletedAt: null },
+          data: { status: 'ASSIGNED' },
+        });
+        await tx.ticketAllocation.update({
+          where: { id: resolvedAllocationId },
+          data: { status: 'ACCEPTED', acceptedAt: new Date(), acceptedByUserId: actorUserId || null },
+        });
+        await tx.transaction.createMany({
+          data: tickets.map((ticket) => {
+            const originalAmount = new Prisma.Decimal(String(ticket.basePrice)).toDecimalPlaces(4);
+            return {
+              firmId: allocation.toFirmId,
+              payerFirmId: allocation.toFirmId,
+              receiverFirmId: allocation.fromFirmId,
+              flightId: allocation.flightId,
+              ticketId: String(ticket.id),
+              createdByUserId: actorUserId,
+              kassaDeskId: kassaDesk?.id,
+              type: 'PAYABLE' as const,
+              originalAmount,
+              currency: allocation.currency,
+              exchangeRate: exchangeRate.toDecimalPlaces(6),
+              baseAmount: originalAmount.mul(exchangeRate).toDecimalPlaces(4),
+              direction: allocationDirection(allocation.fromFirm.kind),
+              subjectType: 'TICKET_ALLOCATION',
+              subjectId: allocation.id,
+              metadata: { note: 'Ticket allocation confirmed', allocationId: allocation.id } as any,
+            };
+          }),
+        });
+        await createFirmNotification(tx, allocation.fromFirmId, {
+          title: 'Ajratma tasdiqlandi',
+          body: `${allocation.toFirm.name} ${allocation.flight.flightNumber || 'reys'} bo‘yicha ${tickets.length} ta chipta ajratmasini tasdiqladi.`,
+          type: 'TICKET_ALLOCATION_ACCEPTED',
+          entityType: 'ticketAllocation',
+          entityId: allocation.id,
+          metadata: { allocationId: allocation.id, flightId: allocation.flightId, count: tickets.length, totalAmount: allocation.totalAmount.toString(), currency: allocation.currency },
+        });
+        await writeAuditLog(req, {
+          action: 'TICKET_ALLOCATION_ACCEPTED',
+          entityType: 'ticketAllocation',
+          entityId: allocation.id,
+          entityLabel: allocation.flight.flightNumber,
+          summary: `${tickets.length} ta chipta ajratmasi tasdiqlandi`,
+          before: { status: 'PENDING' },
+          after: { status: 'ACCEPTED', acceptedByUserId: actorUserId },
+          metadata: { flightId: allocation.flightId, fromFirmId: allocation.fromFirmId, toFirmId: allocation.toFirmId, ticketQuantity: tickets.length, totalAmount: allocation.totalAmount.toString(), currency: allocation.currency },
+        }, tx);
+        return { count: tickets.length, totalAmount: allocation.totalAmount.toString(), currency: allocation.currency };
+      });
+      return res.json({ success: true, allocationId: resolvedAllocationId, ...result });
+    } catch (err: any) {
+      return res.status(400).json({ error: err?.message || 'Failed to confirm allocation' });
+    }
+  }
 
   // Batch confirm: firm confirms N pending allocations for a flight
   if (!ticketId && resolvedFlightId && resolvedQuantity) {
+    if (!requestedFirmId) return res.status(400).json({ error: 'firmId is required' });
+    if (!(await canAccessFirm(user, requestedFirmId))) return res.status(403).json({ error: 'Forbidden' });
     try {
+      const kassaDesk = await resolveKassaDesk(user, req.body?.kassaDeskId);
       const result = await prisma.$transaction(async (tx) => {
         const flight = await tx.flight.findUnique({
           where: { id: resolvedFlightId },
@@ -459,14 +1301,13 @@ export const confirmAllocation = async (req: Request, res: Response) => {
         });
         if (!flight) throw new Error('Flight not found');
         if (flight.status === 'CANCELLED') throw new Error('Cannot confirm allocation for a cancelled flight');
-        const airlineFirmId = flight.airline?.firmId || null;
-
         const tickets: any[] = await tx.$queryRaw`
           SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
           FROM "Ticket"
           WHERE "flightId" = ${resolvedFlightId}
             AND status = 'PENDING'
-            AND "allocatedFirmId" = ${ownFirmId}
+            AND "allocatedFirmId" = ${requestedFirmId}
+            AND "deletedAt" IS NULL
           ORDER BY "createdAt" ASC
           FOR UPDATE SKIP LOCKED
           LIMIT ${resolvedQuantity}
@@ -477,6 +1318,11 @@ export const confirmAllocation = async (req: Request, res: Response) => {
         }
 
         const ticketIds = tickets.map((t) => String(t.id));
+        const sourceFirmIds = Array.from(new Set(tickets.map((ticket) => normalizeOptionalString(ticket.allocationSourceFirmId)).filter((value): value is string => Boolean(value))));
+        const sourceFirms = sourceFirmIds.length
+          ? await tx.firm.findMany({ where: { id: { in: sourceFirmIds } }, select: { id: true, kind: true } })
+          : [];
+        const sourceKindById = new Map(sourceFirms.map((firm) => [firm.id, firm.kind] as const));
         await tx.ticket.updateMany({
           where: { id: { in: ticketIds } },
           data: { status: 'ASSIGNED' },
@@ -487,14 +1333,14 @@ export const confirmAllocation = async (req: Request, res: Response) => {
           const currency = normalizeCurrency(t.currency);
           const exchangeRate = await resolveExchangeRateToUzs(user, {
             currency,
-            overrideRate: req.body?.exchangeRate,
+            rateFirmId: normalizeOptionalString(t.allocationSourceFirmId) || requestedFirmId,
           });
           const baseAmount = originalAmount.mul(exchangeRate).toDecimalPlaces(4);
 
           return {
-            firmId: ownFirmId,
-            payerFirmId: ownFirmId,
-            receiverFirmId: airlineFirmId,
+            firmId: requestedFirmId,
+            payerFirmId: requestedFirmId,
+            receiverFirmId: normalizeOptionalString(t.allocationSourceFirmId) || null,
             flightId: String(t.flightId),
             ticketId: String(t.id),
             createdByUserId: actorUserId,
@@ -504,12 +1350,13 @@ export const confirmAllocation = async (req: Request, res: Response) => {
             currency,
             exchangeRate: exchangeRate.toDecimalPlaces(6),
             baseAmount,
-            direction: airlineFirmId ? 'AIRLINE_TO_FIRM' : undefined,
+            direction: allocationDirection(sourceKindById.get(String(t.allocationSourceFirmId || ''))),
             metadata: {
-              note: airlineFirmId ? 'Airline ticket allocation confirmed, firm owes airline' : 'Allocation confirmed by firm, debt incurred',
+              note: 'Ticket allocation confirmed, receiving firm owes sending firm',
               airlineId: flight.airline?.id,
               airlineName: flight.airline?.name,
-              airlineFirmId,
+              airlineFirmId: flight.airline?.firmId || null,
+              allocationSourceFirmId: normalizeOptionalString(t.allocationSourceFirmId) || null,
               kassaDeskId: kassaDesk?.id,
               kassaDeskLabel: kassaDesk?.name,
             } as any,
@@ -517,22 +1364,24 @@ export const confirmAllocation = async (req: Request, res: Response) => {
         }));
 
         await tx.transaction.createMany({ data: transactionRows });
-        await createFirmNotification(tx, ownFirmId, {
+        await createFirmNotification(tx, requestedFirmId, {
           title: 'Ticket allocation accepted',
           body: `${ticketIds.length} ticket(s) for ${flight.flightNumber || 'flight'} are now active in your firm inventory.`,
           type: 'TICKET_ALLOCATION_ACCEPTED',
           entityType: 'flight',
           entityId: resolvedFlightId,
-          metadata: { flightId: resolvedFlightId, flightNumber: flight.flightNumber, count: ticketIds.length, airlineId: flight.airline?.id, airlineName: flight.airline?.name, airlineFirmId },
+          metadata: { flightId: resolvedFlightId, flightNumber: flight.flightNumber, count: ticketIds.length, airlineId: flight.airline?.id, airlineName: flight.airline?.name, airlineFirmId: flight.airline?.firmId || null },
         });
-        await createFirmNotification(tx, airlineFirmId, {
-          title: 'Firm accepted tickets',
-          body: `${ticketIds.length} ticket(s) for ${flight.flightNumber || 'flight'} were accepted by the firm.`,
-          type: 'TICKET_ALLOCATION_ACCEPTED',
-          entityType: 'flight',
-          entityId: resolvedFlightId,
-          metadata: { flightId: resolvedFlightId, flightNumber: flight.flightNumber, count: ticketIds.length, firmId: ownFirmId },
-        });
+        for (const sourceFirmId of sourceFirmIds) {
+          await createFirmNotification(tx, sourceFirmId, {
+            title: 'Firm accepted tickets',
+            body: `${ticketIds.filter((_, index) => String(tickets[index].allocationSourceFirmId || '') === sourceFirmId).length} ticket(s) for ${flight.flightNumber || 'flight'} were accepted by the receiving firm.`,
+            type: 'TICKET_ALLOCATION_ACCEPTED',
+            entityType: 'flight',
+            entityId: resolvedFlightId,
+            metadata: { flightId: resolvedFlightId, flightNumber: flight.flightNumber, count: ticketIds.length, firmId: requestedFirmId },
+          });
+        }
         return { count: ticketIds.length };
       });
 
@@ -547,11 +1396,13 @@ export const confirmAllocation = async (req: Request, res: Response) => {
   }
 
   try {
+    const kassaDesk = await resolveKassaDesk(user, req.body?.kassaDeskId);
     await prisma.$transaction(async (tx) => {
       const tickets: any[] = await tx.$queryRaw`
         SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
         FROM "Ticket"
         WHERE id = ${ticketId}
+          AND "deletedAt" IS NULL
         FOR UPDATE
       `;
       if (tickets.length === 0) throw new Error('Ticket not found');
@@ -565,17 +1416,24 @@ export const confirmAllocation = async (req: Request, res: Response) => {
       if (flight.status === 'CANCELLED') throw new Error('Cannot confirm allocation for a cancelled flight');
 
       if (ticket.status !== 'PENDING') throw new Error('Ticket is not pending confirmation');
-      if (String(ticket.assignedFirmId || '') !== ownFirmId) throw new Error('Not your ticket');
+      const receivingFirmId = String(ticket.assignedFirmId || '');
+      if (!receivingFirmId) throw new Error('Ticket is missing receiving firm');
+      if (role === 'FIRM' ? receivingFirmId !== ownFirmId : !(await canAccessFirm(user, receivingFirmId))) {
+        throw new Error('Not your ticket');
+      }
 
       const originalAmount = new Prisma.Decimal(String(ticket.basePrice));
       const currency = normalizeCurrency(ticket.currency);
+      const sourceFirmId = normalizeOptionalString(ticket.allocationSourceFirmId);
 
       const exchangeRate = await resolveExchangeRateToUzs(user, {
         currency,
-        overrideRate: req.body?.exchangeRate,
+        rateFirmId: sourceFirmId || receivingFirmId,
       });
       const baseAmount = originalAmount.mul(exchangeRate).toDecimalPlaces(4);
-      const airlineFirmId = flight.airline?.firmId || null;
+      const sourceFirm = sourceFirmId
+        ? await tx.firm.findUnique({ where: { id: sourceFirmId }, select: { kind: true } })
+        : null;
 
       await tx.ticket.update({
         where: { id: ticketId },
@@ -584,9 +1442,9 @@ export const confirmAllocation = async (req: Request, res: Response) => {
 
       await tx.transaction.create({
         data: {
-          firmId: ownFirmId,
-          payerFirmId: ownFirmId,
-          receiverFirmId: airlineFirmId,
+          firmId: receivingFirmId,
+          payerFirmId: receivingFirmId,
+          receiverFirmId: sourceFirmId || null,
           flightId: String(ticket.flightId),
           ticketId: String(ticketId),
           createdByUserId: actorUserId,
@@ -596,38 +1454,182 @@ export const confirmAllocation = async (req: Request, res: Response) => {
           currency,
           exchangeRate: exchangeRate.toDecimalPlaces(6),
           baseAmount,
-          direction: airlineFirmId ? 'AIRLINE_TO_FIRM' : undefined,
+          direction: allocationDirection(sourceFirm?.kind),
           metadata: {
-            note: airlineFirmId ? 'Airline ticket allocation confirmed, firm owes airline' : 'Allocation confirmed by firm, debt incurred',
+            note: 'Ticket allocation confirmed, receiving firm owes sending firm',
             airlineId: flight.airline?.id,
             airlineName: flight.airline?.name,
-            airlineFirmId,
+            airlineFirmId: flight.airline?.firmId || null,
+            allocationSourceFirmId: sourceFirmId || null,
             kassaDeskId: kassaDesk?.id,
             kassaDeskLabel: kassaDesk?.name,
           },
         },
       });
-      await createFirmNotification(tx, ownFirmId, {
+      await createFirmNotification(tx, receivingFirmId, {
         title: 'Ticket allocation accepted',
         body: `A ticket for ${flight.flightNumber || 'flight'} is now active in your firm inventory.`,
         type: 'TICKET_ALLOCATION_ACCEPTED',
         entityType: 'ticket',
         entityId: ticketId,
-        metadata: { flightId: String(ticket.flightId), flightNumber: flight.flightNumber, ticketId, airlineId: flight.airline?.id, airlineName: flight.airline?.name, airlineFirmId },
+        metadata: { flightId: String(ticket.flightId), flightNumber: flight.flightNumber, ticketId, airlineId: flight.airline?.id, airlineName: flight.airline?.name, airlineFirmId: flight.airline?.firmId || null },
       });
-      await createFirmNotification(tx, airlineFirmId, {
+      await createFirmNotification(tx, sourceFirmId, {
         title: 'Firm accepted ticket',
         body: `A ticket for ${flight.flightNumber || 'flight'} was accepted by the firm.`,
         type: 'TICKET_ALLOCATION_ACCEPTED',
         entityType: 'ticket',
         entityId: ticketId,
-        metadata: { flightId: String(ticket.flightId), flightNumber: flight.flightNumber, ticketId, firmId: ownFirmId },
+        metadata: { flightId: String(ticket.flightId), flightNumber: flight.flightNumber, ticketId, firmId: receivingFirmId },
       });
     });
 
     return res.json({ success: true });
   } catch (err: any) {
     return res.status(400).json({ error: err.message });
+  }
+};
+
+export const rejectAllocation = async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const role = normalizeRole(user?.role);
+  const allocationId = normalizeOptionalString(req.body?.allocationId);
+  let rejectionReason: string | undefined;
+  const actorUserId = normalizeOptionalString(user?.userId);
+  if (allocationId) {
+    try {
+      rejectionReason = validateAllocationRejectionReason(req.body?.rejectionReason);
+    } catch (err: any) {
+      return res.status(400).json({ error: err?.message });
+    }
+    if (!['FIRM', 'ADMIN', 'SUPERADMIN'].includes(role)) return res.status(403).json({ error: 'Forbidden' });
+    if (role === 'FIRM' && !canManageFirmWork(user)) return res.status(403).json({ error: 'Only firm admins and managers can reject ticket allocations' });
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const locked: Array<{ id: string }> = await tx.$queryRaw`
+          SELECT id FROM "TicketAllocation" WHERE id = ${allocationId} FOR UPDATE
+        `;
+        if (!locked.length) throw new Error('Allocation not found');
+        const allocation = await tx.ticketAllocation.findUnique({
+          where: { id: allocationId },
+          include: {
+            flight: { select: { flightNumber: true } },
+            fromFirm: { select: { id: true, name: true } },
+            toFirm: { select: { id: true, name: true } },
+            priceRows: true,
+          },
+        });
+        if (!allocation) throw new Error('Allocation not found');
+        if (allocation.status !== 'PENDING') throw new Error('Ushbu ajratma allaqachon ko‘rib chiqilgan.');
+        const ownFirmId = normalizeOptionalString(user?.firmId);
+        if (role === 'FIRM' ? allocation.toFirmId !== ownFirmId : !(await canAccessFirm(user, allocation.toFirmId))) {
+          throw new Error('Siz ushbu ajratmani rad etish huquqiga ega emassiz.');
+        }
+        const tickets: Array<{ id: string; basePrice: Prisma.Decimal; allocationSourcePrice: Prisma.Decimal | null }> = await tx.$queryRaw`
+          SELECT id, price AS "basePrice", "allocationSourcePrice" FROM "Ticket"
+          WHERE "allocationId" = ${allocationId} AND status = 'PENDING' AND "deletedAt" IS NULL
+          FOR UPDATE
+        `;
+        const expectedQuantity = allocation.priceRows.reduce((sum, row) => sum + row.quantity, 0);
+        if (!tickets.length || tickets.length !== expectedQuantity) throw new Error('Allocation ticket count is inconsistent');
+
+        for (const ticket of tickets) await tx.ticket.update({
+          where: { id: ticket.id },
+          data: {
+            status: 'ASSIGNED', assignedFirmId: allocation.fromFirmId, allocationSourceFirmId: null,
+            basePrice: ticket.allocationSourcePrice || ticket.basePrice, allocationSourcePrice: null, allocationId: null,
+          },
+        });
+        const rejectedAt = new Date();
+        await tx.ticketAllocation.update({
+          where: { id: allocationId },
+          data: { status: 'REJECTED', rejectionReason, rejectedAt, rejectedByUserId: actorUserId || null },
+        });
+        await createFirmNotification(tx, allocation.fromFirmId, {
+          title: 'Chipta ajratmasi rad etildi',
+          body: `${allocation.toFirm.name} firmasi ${allocation.flight.flightNumber || 'reys'} bo‘yicha ${tickets.length} ta chipta ajratmasini rad etdi. Sababi: ${rejectionReason}`,
+          type: 'TICKET_ALLOCATION_REJECTED',
+          entityType: 'ticketAllocation',
+          entityId: allocation.id,
+          metadata: { allocationId: allocation.id, flightId: allocation.flightId, ticketQuantity: tickets.length, totalAmount: allocation.totalAmount.toString(), currency: allocation.currency, rejectionReason, rejectedByUserId: actorUserId, rejectedAt },
+        });
+        await writeAuditLog(req, {
+          action: 'TICKET_ALLOCATION_REJECTED',
+          entityType: 'ticketAllocation',
+          entityId: allocation.id,
+          entityLabel: allocation.flight.flightNumber,
+          summary: `${allocation.toFirm.name} ${tickets.length} ta chipta ajratmasini rad etdi`,
+          before: { status: 'PENDING' },
+          after: { status: 'REJECTED', rejectionReason, rejectedAt, rejectedByUserId: actorUserId },
+          metadata: { allocationId: allocation.id, flightId: allocation.flightId, fromFirmId: allocation.fromFirmId, toFirmId: allocation.toFirmId, rejectedFirmName: allocation.toFirm.name, rejectionReason, ticketQuantity: tickets.length, totalAmount: allocation.totalAmount.toString(), currency: allocation.currency },
+        }, tx);
+        return { count: tickets.length, status: 'REJECTED', rejectionReason, rejectedAt };
+      });
+      return res.json({ success: true, allocationId, ...result });
+    } catch (err: any) {
+      return res.status(400).json({ error: err?.message || 'Failed to reject allocation' });
+    }
+  }
+  const ticketId = normalizeOptionalString(req.body?.ticketId);
+  if (!ticketId) return res.status(400).json({ error: 'ticketId is required' });
+  if (!['FIRM', 'ADMIN', 'SUPERADMIN'].includes(role)) return res.status(403).json({ error: 'Forbidden' });
+  if (role === 'FIRM' && !canManageFirmWork(user)) return res.status(403).json({ error: 'Only firm admins and managers can reject ticket allocations' });
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const rows: any[] = await tx.$queryRaw`
+        SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
+        FROM "Ticket"
+        WHERE id = ${ticketId}
+          AND "deletedAt" IS NULL
+        FOR UPDATE
+      `;
+      if (!rows.length) throw new Error('Ticket not found');
+      const ticket = rows[0];
+      if (String(ticket.status) !== 'PENDING') throw new Error('Ticket is not pending confirmation');
+
+      const receivingFirmId = normalizeOptionalString(ticket.assignedFirmId);
+      const sourceFirmId = normalizeOptionalString(ticket.allocationSourceFirmId);
+      const actorFirmId = normalizeOptionalString(user?.firmId);
+      const mayAct = role === 'SUPERADMIN'
+        || (role === 'FIRM' && Boolean(actorFirmId && [receivingFirmId, sourceFirmId].includes(actorFirmId)))
+        || (role === 'ADMIN' && Boolean(
+          (receivingFirmId && await canAccessFirm(user, receivingFirmId))
+          || (sourceFirmId && await canAccessFirm(user, sourceFirmId))
+        ));
+      if (!mayAct) throw new Error('Not your ticket');
+
+      const restored = restoredTicketState(sourceFirmId);
+      await tx.ticket.update({
+        where: { id: ticketId },
+        data: {
+          ...restored, allocationSourceFirmId: null,
+          basePrice: ticket.allocationSourcePrice || ticket.basePrice, allocationSourcePrice: null, allocationId: null,
+        },
+      });
+
+      const flight = await tx.flight.findUnique({ where: { id: String(ticket.flightId) }, select: { flightNumber: true } });
+      await createFirmNotification(tx, sourceFirmId, {
+        title: 'Ticket allocation returned',
+        body: `A pending ticket for ${flight?.flightNumber || 'flight'} was returned to your inventory.`,
+        type: 'TICKET_ALLOCATION_REJECTED',
+        entityType: 'ticket',
+        entityId: ticketId,
+        metadata: { ticketId, flightId: String(ticket.flightId), receivingFirmId },
+      });
+      await createFirmNotification(tx, receivingFirmId, {
+        title: 'Ticket allocation cancelled',
+        body: `A pending ticket for ${flight?.flightNumber || 'flight'} was cancelled.`,
+        type: 'TICKET_ALLOCATION_REJECTED',
+        entityType: 'ticket',
+        entityId: ticketId,
+        metadata: { ticketId, flightId: String(ticket.flightId), sourceFirmId },
+      });
+      return restored;
+    });
+    return res.json({ success: true, ...result });
+  } catch (err: any) {
+    return res.status(400).json({ error: err?.message || 'Failed to reject allocation' });
   }
 };
 
@@ -652,6 +1654,7 @@ export const deallocateTicket = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'firmId is required' });
     }
     const targetFirmId = firmId.trim();
+    if (role === 'ADMIN' && !(await canAccessFirm(user, targetFirmId))) return res.status(403).json({ error: 'Forbidden' });
 
     try {
       const result = await prisma.$transaction(async (tx) => {
@@ -668,6 +1671,8 @@ export const deallocateTicket = async (req: Request, res: Response) => {
           WHERE "flightId" = ${resolvedFlightId}
             AND "allocatedFirmId" = ${targetFirmId}
             AND status IN ('PENDING', 'ASSIGNED')
+            AND "allocationId" IS NULL
+            AND "deletedAt" IS NULL
           ORDER BY "createdAt" ASC
           FOR UPDATE SKIP LOCKED
           LIMIT ${resolvedQuantity}
@@ -682,10 +1687,15 @@ export const deallocateTicket = async (req: Request, res: Response) => {
           .filter((t) => String(t.status) === 'ASSIGNED')
           .map((t) => String(t.id));
 
-        await tx.ticket.updateMany({
-          where: { id: { in: ticketIds } },
-          data: { status: 'AVAILABLE', assignedFirmId: null },
-        });
+        for (const ticket of tickets) {
+          await tx.ticket.update({
+            where: { id: String(ticket.id) },
+            data: {
+              ...restoredTicketState(ticket.allocationSourceFirmId), allocationSourceFirmId: null,
+              basePrice: ticket.allocationSourcePrice || ticket.basePrice, allocationSourcePrice: null, allocationId: null,
+            },
+          });
+        }
 
         if (assignedTicketIds.length > 0) {
           const payables = await tx.transaction.findMany({
@@ -706,7 +1716,7 @@ export const deallocateTicket = async (req: Request, res: Response) => {
 
           const reversalRows = assignedTicketIds.map((tid) => {
             const payable = payableByTicketId.get(tid);
-            if (!payable) throw new Error(`Missing PAYABLE transaction for ticket ${tid}`);
+            if (!payable) return null;
 
             const originalAmount = new Prisma.Decimal(String(payable.originalAmount)).mul(-1).toDecimalPlaces(4);
             const exchangeRate = new Prisma.Decimal(String(payable.exchangeRate)).toDecimalPlaces(6);
@@ -714,6 +1724,8 @@ export const deallocateTicket = async (req: Request, res: Response) => {
 
             return {
               firmId: targetFirmId,
+              payerFirmId: payable.payerFirmId || targetFirmId,
+              receiverFirmId: payable.receiverFirmId || null,
               flightId: String(payable.flightId),
               ticketId: tid,
               createdByUserId: actorUserId,
@@ -722,6 +1734,7 @@ export const deallocateTicket = async (req: Request, res: Response) => {
               currency: String(payable.currency),
               exchangeRate,
               baseAmount,
+              direction: payable.direction || undefined,
               metadata: {
                 note: 'Ticket deallocated, debt reversed',
                 reversedTransactionId: String(payable.id),
@@ -729,7 +1742,8 @@ export const deallocateTicket = async (req: Request, res: Response) => {
             };
           });
 
-          await tx.transaction.createMany({ data: reversalRows });
+          const validReversals = reversalRows.filter((row): row is NonNullable<typeof row> => Boolean(row));
+          if (validReversals.length) await tx.transaction.createMany({ data: validReversals });
         }
 
         return { count: ticketIds.length };
@@ -751,20 +1765,28 @@ export const deallocateTicket = async (req: Request, res: Response) => {
         SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
         FROM "Ticket"
         WHERE id = ${ticketId}
+          AND "deletedAt" IS NULL
         FOR UPDATE
       `;
       if (tickets.length === 0) throw new Error('Ticket not found');
       const ticket = tickets[0];
+
+      if (ticket.allocationId) throw new Error('Ajratma bilan bog‘langan chipta uchun ajratma panelidagi bekor qilish so‘rovidan foydalaning.');
 
       const prevStatus = String(ticket.status || '');
       const prevFirmId = ticket.assignedFirmId ? String(ticket.assignedFirmId) : '';
 
       if (prevStatus === 'SOLD') throw new Error('Cannot deallocate a sold ticket');
       if (!prevFirmId || prevStatus === 'AVAILABLE') throw new Error('Ticket is not allocated');
+      if (role === 'ADMIN' && !(await canAccessFirm(user, prevFirmId))) throw new Error('Forbidden');
 
+      const restored = restoredTicketState(ticket.allocationSourceFirmId);
       await tx.ticket.update({
         where: { id: ticketId },
-        data: { status: 'AVAILABLE', assignedFirmId: null },
+        data: {
+          ...restored, allocationSourceFirmId: null,
+          basePrice: ticket.allocationSourcePrice || ticket.basePrice, allocationSourcePrice: null, allocationId: null,
+        },
       });
 
       if (prevStatus === 'ASSIGNED') {
@@ -776,7 +1798,7 @@ export const deallocateTicket = async (req: Request, res: Response) => {
           },
           orderBy: { createdAt: 'desc' },
         });
-        if (!payable) throw new Error('Missing PAYABLE transaction for ticket');
+        if (!payable) return;
 
         const originalAmount = new Prisma.Decimal(String(payable.originalAmount)).mul(-1).toDecimalPlaces(4);
         const exchangeRate = new Prisma.Decimal(String(payable.exchangeRate)).toDecimalPlaces(6);
@@ -785,6 +1807,8 @@ export const deallocateTicket = async (req: Request, res: Response) => {
         await tx.transaction.create({
           data: {
             firmId: prevFirmId,
+            payerFirmId: payable.payerFirmId || prevFirmId,
+            receiverFirmId: payable.receiverFirmId || null,
             flightId: String(ticket.flightId),
             ticketId: String(ticketId),
             createdByUserId: actorUserId,
@@ -793,6 +1817,7 @@ export const deallocateTicket = async (req: Request, res: Response) => {
             currency: String(payable.currency),
             exchangeRate,
             baseAmount,
+            direction: payable.direction || undefined,
             metadata: {
               note: 'Ticket deallocated, debt reversed',
               reversedTransactionId: String(payable.id),
@@ -833,8 +1858,8 @@ export const sellTicket = async (req: Request, res: Response) => {
   if (!saleAmount) {
     return res.status(400).json({ error: 'salePrice is required' });
   }
-  if (!/^[A-Z]{3}$/.test(currency)) {
-    return res.status(400).json({ error: 'saleCurrency must be a 3-letter code (e.g. UZS)' });
+  if (!['USD', 'UZS'].includes(currency)) {
+    return res.status(400).json({ error: 'saleCurrency must be USD or UZS' });
   }
   let saleExchangeRate: Prisma.Decimal;
   try {
@@ -887,6 +1912,7 @@ export const sellTicket = async (req: Request, res: Response) => {
           WHERE "flightId" = ${resolvedFlightId}
             AND status = 'ASSIGNED'
             AND "allocatedFirmId" = ${sellerFirmId}
+            AND "deletedAt" IS NULL
           ORDER BY "createdAt" ASC
           FOR UPDATE SKIP LOCKED
           LIMIT ${resolvedQuantity}
@@ -951,6 +1977,7 @@ export const sellTicket = async (req: Request, res: Response) => {
         SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
         FROM "Ticket"
         WHERE id = ${ticketId}
+          AND "deletedAt" IS NULL
         FOR UPDATE
       `;
       if (tickets.length === 0) throw new Error('Ticket not found');
@@ -1034,6 +2061,7 @@ export const cancelSale = async (req: Request, res: Response) => {
         SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
         FROM "Ticket"
         WHERE id = ${resolvedTicketId}
+          AND "deletedAt" IS NULL
         FOR UPDATE
       `;
       if (tickets.length === 0) throw new Error('Ticket not found');
@@ -1050,6 +2078,7 @@ export const cancelSale = async (req: Request, res: Response) => {
         orderBy: { createdAt: 'desc' },
       });
       if (!sale) throw new Error('Missing SALE transaction for ticket');
+      if (role === 'ADMIN' && !(await canAccessFirm(user, String(sale.firmId)))) throw new Error('Forbidden');
 
       const originalAmount = new Prisma.Decimal(String(sale.originalAmount)).mul(-1).toDecimalPlaces(4);
       const exchangeRate = new Prisma.Decimal(String(sale.exchangeRate)).toDecimalPlaces(6);
@@ -1133,6 +2162,7 @@ export const createSaleCancellationRequest = async (req: Request, res: Response)
         SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
         FROM "Ticket"
         WHERE id = ${resolvedTicketId}
+          AND "deletedAt" IS NULL
         FOR UPDATE
       `;
       if (tickets.length === 0) throw new Error('Ticket not found');
@@ -1148,6 +2178,16 @@ export const createSaleCancellationRequest = async (req: Request, res: Response)
       });
       if (existing) throw new Error('Cancellation request already pending for this ticket');
 
+      const activeSegmentSales = await tx.ticketSale.findMany({
+        where: {
+          sellerFirmId: ownFirmId,
+          status: 'CONFIRMED',
+          items: { some: { status: 'CONFIRMED', ticketLeg: { ticketId: resolvedTicketId } } },
+        },
+        select: { id: true },
+      });
+      if (activeSegmentSales.length > 1) throw new Error('Bu bilet segmentlari alohida sotilgan. Har bir sotuvni saleId bo‘yicha alohida bekor qiling.');
+
       return tx.saleCancellationRequest.create({
         data: {
           flightId: String(ticket.flightId),
@@ -1156,6 +2196,7 @@ export const createSaleCancellationRequest = async (req: Request, res: Response)
           status: 'PENDING',
           reason,
           createdByUserId: actorUserId,
+          ticketSaleId: activeSegmentSales[0]?.id || null,
         },
         select: {
           id: true,
@@ -1197,6 +2238,7 @@ export const listSaleCancellationRequests = async (req: Request, res: Response) 
   const where: any = { status: resolvedStatus };
   if (resolvedFlightId) where.flightId = resolvedFlightId;
   if (role === 'FIRM') where.firmId = ownFirmId;
+  if (role === 'ADMIN') where.firmId = { in: await getAccessibleFirmIds(user) || [] };
 
   const requests = await prisma.saleCancellationRequest.findMany({
     where,
@@ -1205,6 +2247,7 @@ export const listSaleCancellationRequests = async (req: Request, res: Response) 
       id: true,
       flightId: true,
       ticketId: true,
+      ticketSaleId: true,
       firmId: true,
       status: true,
       reason: true,
@@ -1248,6 +2291,10 @@ export const approveSaleCancellationRequest = async (req: Request, res: Response
   }
 
   const resolvedRequestId = requestId.trim();
+  if (role === 'ADMIN') {
+    const request = await prisma.saleCancellationRequest.findUnique({ where: { id: resolvedRequestId }, select: { firmId: true } });
+    if (!request || !(await canAccessFirm(user, request.firmId))) return res.status(403).json({ error: 'Forbidden' });
+  }
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -1270,10 +2317,22 @@ export const approveSaleCancellationRequest = async (req: Request, res: Response
       if (!ticketId) throw new Error('Invalid request: missing ticketId');
       if (!firmId) throw new Error('Invalid request: missing firmId');
 
+      if (reqRow.ticketSaleId) {
+        const segmentSale = await tx.ticketSale.findUnique({ where: { id: String(reqRow.ticketSaleId) } });
+        if (!segmentSale || segmentSale.sellerFirmId !== firmId) throw new Error('Segment sale does not match request firm');
+        await cancelLegSale(tx, { saleId: segmentSale.id, cancelledByUserId: actorUserId, reason: `${firmReason}; ${decisionReason}` });
+        await tx.saleCancellationRequest.update({
+          where: { id: resolvedRequestId },
+          data: { status: 'APPROVED', decisionReason, decidedByUserId: actorUserId, decidedAt: new Date() },
+        });
+        return;
+      }
+
       const tickets: any[] = await tx.$queryRaw`
         SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
         FROM "Ticket"
         WHERE id = ${ticketId}
+          AND "deletedAt" IS NULL
         FOR UPDATE
       `;
       if (tickets.length === 0) throw new Error('Ticket not found');

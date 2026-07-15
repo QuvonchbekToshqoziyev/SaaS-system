@@ -34,7 +34,7 @@ There is no public registration. Users enter through:
 
 Roles are stored as Prisma enum values and normalized at frontend/backend boundaries:
 
-- `SUPERADMIN`: full system access, admin management, audit log, maintenance edit/delete, login page editor, all firms and financial views.
+- `SUPERADMIN`: full system access, admin management, audit log, explicit correction actions, login page editor, all firms and financial views.
 - `ADMIN`: operational role for assigned firms. Can manage flights, tickets, firms within access, payments, reports, kassa operations, employees, and some support workflows.
 - `FIRM`: partner firm role. Can see firm-scoped data, confirm allocations, sell assigned tickets, request sale cancellation, create tour packages, sell owned tour packages, add partner firm records, manage employees for its firm, use kassa cash adjustment where allowed, and use chat.
 
@@ -48,6 +48,14 @@ Firm scoping is handled through:
 ## Main Navigation
 
 Dashboard navigation is defined in `DashboardLayout.tsx`.
+
+### Task Launcher
+
+The persistent `Yangi operatsiya` action asks what happened in business language
+and routes the operator to the existing domain form instead of requiring them to
+choose a module. It covers customer payment, tour sale, cash income, firm debt,
+ticket sale, and daily kassa closing. Firm roles see only actions they are allowed
+to perform; the destination forms retain their normal backend permission checks.
 
 Firm users:
 
@@ -284,7 +292,7 @@ Allowed role:
 
 Flow:
 
-1. Request goes through maintenance delete.
+1. Request goes through the firm-specific delete controller.
 2. Firm status is set to `DELETED`.
 3. `deletedAt` and `deletedByUserId` are stored.
 4. Related financial rows remain in place for audit and migration safety.
@@ -317,8 +325,6 @@ Frontend:
   - `GET /tickets/cancel-sale-requests`
   - `POST /tickets/cancel-sale-requests`
   - `POST /tickets/cancel-sale-requests/approve`
-  - `PATCH /tickets/:id`
-  - `DELETE /tickets/:id`
 
 ### Flight List
 
@@ -522,22 +528,11 @@ Note:
 
 - Current route handles approval. A separate rejection endpoint is not present in the route map.
 
-### Maintenance Edit/Delete Tickets
+### Ticket Corrections
 
-Allowed role:
-
-- `SUPERADMIN`.
-
-API:
-
-- `PATCH /tickets/:id`
-- `DELETE /tickets/:id`
-
-Flow:
-
-- Routes proxy to maintenance controller.
-- Delete uses specialized ticket cleanup where needed.
-- Audit log records update/delete.
+Tickets are not patched or deleted through a generic record endpoint. Allocation,
+deallocation, sale cancellation, and cancellation-request approval are explicit
+domain actions that preserve their linked financial effects and audit history.
 
 ## Transaction Workflows
 
@@ -551,11 +546,11 @@ Frontend:
   - `GET /transactions/:id`
   - `POST /transactions`
   - `POST /transactions/cash`
-  - `PATCH /transactions/:id`
+  - `POST /transactions/account`
+  - `PATCH /transactions/:id/daily-cash`
+  - `DELETE /transactions/:id/daily-cash`
   - `DELETE /transactions/:id`
   - `POST /payments`
-  - `PATCH /payments/:id`
-  - `DELETE /payments/:id`
 
 ### List Transactions
 
@@ -666,21 +661,10 @@ Financial effect:
 - Firm paid amount increases.
 - Outstanding debt decreases in reports.
 
-### Maintenance Edit/Delete Payments
+### Payment Corrections
 
-Allowed role:
-
-- `SUPERADMIN`.
-
-API:
-
-- `PATCH /payments/:id`
-- `DELETE /payments/:id`
-
-Flow:
-
-- Routes proxy to maintenance controller.
-- Audit log records update/delete.
+Payments are immutable after creation. A correction must use a dedicated reversal
+or adjustment action; no generic payment PATCH or DELETE route is exposed.
 
 ### Transaction Detail
 
@@ -694,22 +678,12 @@ Flow:
 2. Backend enforces firm scope.
 3. Page shows firm, flight, ticket, payer/receiver, amounts, method, metadata, and timestamps.
 
-### Maintenance Edit/Delete Transactions
+### Transaction Corrections
 
-Allowed role:
-
-- `SUPERADMIN`.
-
-API:
-
-- `PATCH /transactions/:id`
-- `DELETE /transactions/:id`
-
-Flow:
-
-- Routes proxy to maintenance controller.
-- Delete removes ledger entries and detaches tour package sale if linked.
-- Audit log records update/delete.
+Daily-cash rows have explicit update/delete actions with ownership checks and a
+required correction reason for non-creators. Other supported transaction removal
+uses the transaction-specific delete controller and audit trail; arbitrary field
+patching is not exposed.
 
 ## Kassa Workflows
 
@@ -880,10 +854,6 @@ Frontend:
   - `GET /tour-packages/sales`
   - `POST /tour-packages`
   - `POST /tour-packages/:id/sell`
-  - `PATCH /tour-packages/:id`
-  - `DELETE /tour-packages/:id`
-  - `PATCH /tour-packages/sales/:id`
-  - `DELETE /tour-packages/sales/:id`
 
 ### List Tour Packages
 
@@ -937,18 +907,11 @@ Audit:
 
 - Tour package sale is logged.
 
-### Maintenance Edit/Delete
+### Tour Package Corrections
 
-Allowed role:
-
-- `SUPERADMIN`.
-
-Flow:
-
-- Package and sale edit/delete routes proxy to maintenance controller.
-- Deleting sale restores package available quantity and deletes linked transaction.
-- Deleting package deletes associated sales first.
-- Audit log records maintenance update/delete.
+Packages and sales are not patched or deleted through generic record routes.
+Corrections that must restore inventory or reverse a linked transaction require a
+dedicated domain action before they are exposed.
 
 ## Employee Workflows
 
@@ -1375,28 +1338,35 @@ Access:
 
 - Routes are mounted under `/logs`; check route middleware before exposing in UI.
 
-## Maintenance Workflow
+## Correction Workflow
 
 API:
 
-- `PATCH /admin/records/:model/:id`
-- `DELETE /admin/records/:model/:id`
-
-Allowed role:
-
-- `SUPERADMIN`.
-
-Supported models include:
-
-- User, firm, employee, invitation, flight, ticket, currency rate, site content, transaction, ledger entry, tour package, tour package sale, payment, kassa day, sale cancellation request.
+- Generic model-based maintenance routes are intentionally not exposed.
 
 Behavior:
 
-- Generic update strips `id`, `createdAt`, and `updatedAt`.
-- User password updates are hashed.
-- Delete requests are archive/soft-delete operations for user, firm, employee, invitation, flight, ticket, tour package, payment card, and kassa desk records.
-- Transaction, ledger entry, payment, tour package sale, sale cancellation request, currency rate, kassa day, and site content records are retained and cannot be physically deleted through maintenance.
-- Audit log records update and soft-delete actions.
+- Every correction route is tied to one domain action and its permission rules.
+- Financial corrections preserve history through reversal, adjustment, cancellation,
+  or a reasoned domain-specific soft delete.
+- Arbitrary Prisma model names and arbitrary request-body fields are never accepted.
+- Correction actions record the actor, reason, before/after state, and linked records
+  where applicable.
+- Same-day cash edits and removals require a correction reason even when the
+  original creator performs the action.
+
+## Financial Trust And Reconciliation
+
+- Kassa displays inherited opening balance, daily cash/card movement by currency,
+  expected/current balance, closing balance, and the users who opened and closed
+  the session.
+- Daily reconciliation can be exported to CSV/Excel or printed with signature
+  lines for the cashier and reviewer.
+- Transaction lists and exports show who entered each record.
+- Audit Log includes a one-click `Kechadan beri o‘zgarishlar` filter and presents
+  common actions/entities in operator-facing Uzbek rather than database names.
+- PostgreSQL backup and disposable restore-test commands are maintained under
+  `scripts/`; production scheduling requires explicit operations approval.
 
 ## Currency Rate Workflow
 
@@ -1404,8 +1374,19 @@ API:
 
 - `GET /currency-rates`
 - `POST /currency-rates`
-- `PATCH /currency-rates/:id`
-- `DELETE /currency-rates/:id`
+
+Currency rates are immutable snapshots. Incorrect rates are superseded by a new
+rate rather than edited or deleted.
+
+## Data Templates And Exports
+
+Settings provides downloadable Uzbek templates for firms, employees,
+transactions, and tour packages. Users can download one formatted Excel workbook
+with four sheets or a separate UTF-8 CSV template for each dataset.
+
+The Firms, Employees, Transactions, and Tours pages export their currently loaded
+rows as CSV or Excel. CSV downloads include a UTF-8 byte-order mark for Excel
+compatibility, and text values that begin like spreadsheet formulas are escaped.
 
 Allowed roles:
 
@@ -1479,9 +1460,19 @@ Key enums:
 - Sale cancellation creates negative sale.
 - Kassa cash/card totals are computed from transactions, not entered manually.
 - Cash/card movement requires open kassa date when using payment or manual kassa transaction flows.
-- Financial rows are not physically deleted through normal maintenance. Corrections should be reversals, adjustments, closure/cancellation, or soft-delete metadata on non-ledger records.
+- Financial rows are not physically deleted through generic maintenance. Corrections use explicit domain actions such as reversals, adjustments, closure/cancellation, or reasoned soft deletion where the domain permits it.
 
 ## Architecture Principles From Historical Specs
+
+### Incremental Feature Boundaries
+
+Large pages and controllers are reduced incrementally when they are changed; they
+are not rewritten wholesale. Pure input policy and query logic lives under
+`server/src/domains/<feature>/`, with focused tests. Frontend data contracts,
+formatters, URL parsing, and other stable view logic live under
+`client/src/features/<feature>/`. Controllers keep HTTP orchestration, services
+keep database transactions, and pages keep React state until a complete form or
+table can be moved without duplicating business behavior.
 
 The removed draft/spec/roadmap docs repeated several principles that remain useful. Treat these as product direction, but verify exact current behavior against code before changing production logic.
 
@@ -1561,30 +1552,6 @@ Dev target:
 Known operational note:
 
 - If DNS for `dev.b2b.booking.ado-finance.com` is not configured, certbot cannot issue SSL and the deploy script leaves an HTTP bootstrap nginx config active.
-
-### Optional Docker Workflow
-
-Docker is available as a local/container workflow and does not replace the current production PM2/nginx deployment.
-
-Command:
-
-```bash
-cd airline-b2b
-docker compose up --build
-```
-
-Container layout:
-
-- `db`: PostgreSQL 16, exposed on host port `5433` by default.
-- `server`: Express API on container/host port `5000`.
-- `client`: nginx serving the static Next.js export on host port `3000`.
-- Client `/api/*` requests are proxied to the server container.
-
-Operational notes:
-
-- Compose sets `DOCKER_APPLY_SCHEMA=true` for local use, so the server runs `npx prisma db push` at startup.
-- For shared Docker environments, override `JWT_SECRET`, database credentials, and host ports.
-- Production and dev releases still use `deploy.sh` and `deploy-dev.sh`.
 
 ### Schema Change Gate
 

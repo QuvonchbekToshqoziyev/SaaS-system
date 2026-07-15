@@ -74,7 +74,7 @@ export default function AdminsPage() {
   const [creating, setCreating] = useState(false);
 
   const { data: admins = [], isLoading: loadingAdmins } = useQuery<AdminRow[]>({
-    queryKey: ['admins'],
+    queryKey: ['admins', user?.id || user?.email || 'anonymous'],
     queryFn: async () => {
       const res = await api.get('/auth/admins');
       return Array.isArray(res.data) ? res.data : [];
@@ -83,7 +83,7 @@ export default function AdminsPage() {
   });
 
   const { data: firms = [], isLoading: loadingFirms } = useQuery<FirmRow[]>({
-    queryKey: ['firms'],
+    queryKey: ['firms', user?.id || user?.email || 'anonymous'],
     queryFn: async () => {
       const res = await api.get('/firms');
       return Array.isArray(res.data) ? res.data : [];

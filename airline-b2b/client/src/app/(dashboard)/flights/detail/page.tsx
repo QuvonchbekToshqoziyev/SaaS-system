@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { useEffect, useMemo, useState, Suspense, type FormEvent } from 'react';
 import { api } from '@/lib/api';
 import toast from 'react-hot-toast';
@@ -12,9 +14,12 @@ function FlightDetailContent() {
   const searchParams = useSearchParams();
   const id = searchParams.get("id");
   const [data, setData] = useState<any>(null);
+  const [allocations, setAllocations] = useState<any[]>([]);
+  const [allocationChangeRequests, setAllocationChangeRequests] = useState<any[]>([]);
   const [firms, setFirms] = useState<any[]>([]);
   const [kassaDesks, setKassaDesks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const { user } = useAuth();
   const { tr } = useLanguage();
 
@@ -25,8 +30,12 @@ function FlightDetailContent() {
   const [isAllocateModalOpen, setIsAllocateModalOpen] = useState(false);
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [selectedFirmId, setSelectedFirmId] = useState<string>('');
+  const [allocationSourceFirmId, setAllocationSourceFirmId] = useState<string>('');
   const [allocateQuantity, setAllocateQuantity] = useState<string>('1');
   const [allocatePrice, setAllocatePrice] = useState<string>('');
+  const [allocateProductType, setAllocateProductType] = useState<'ROUND_TRIP' | 'ONE_WAY'>('ROUND_TRIP');
+  const [allocateDirection, setAllocateDirection] = useState<'OUTBOUND' | 'RETURN'>('OUTBOUND');
+  const [allocateCurrency, setAllocateCurrency] = useState<'USD' | 'UZS'>('UZS');
   const [allocatePricingMode, setAllocatePricingMode] = useState<'SAME' | 'MIXED'>('SAME');
   const [allocationRows, setAllocationRows] = useState<Array<{ quantity: string; price: string }>>([{ quantity: '1', price: '' }]);
   const [allocateBusy, setAllocateBusy] = useState(false);
@@ -35,6 +44,8 @@ function FlightDetailContent() {
   const [sellBusy, setSellBusy] = useState(false);
 
   const [sellPrice, setSellPrice] = useState<string>('');
+  const [sellProductType, setSellProductType] = useState<'ROUND_TRIP' | 'ONE_WAY'>('ROUND_TRIP');
+  const [sellDirection, setSellDirection] = useState<'OUTBOUND' | 'RETURN'>('OUTBOUND');
   const [sellCurrency, setSellCurrency] = useState<'USD' | 'UZS' | 'OTHER'>('UZS');
   const [sellOtherCurrency, setSellOtherCurrency] = useState<string>('');
   const [sellExchangeRate, setSellExchangeRate] = useState<string>('');
@@ -51,6 +62,8 @@ function FlightDetailContent() {
   const [sellBatchBusy, setSellBatchBusy] = useState(false);
 
   const [sellBatchPrice, setSellBatchPrice] = useState<string>('');
+  const [sellBatchProductType, setSellBatchProductType] = useState<'ROUND_TRIP' | 'ONE_WAY'>('ROUND_TRIP');
+  const [sellBatchDirection, setSellBatchDirection] = useState<'OUTBOUND' | 'RETURN'>('OUTBOUND');
   const [sellBatchCurrency, setSellBatchCurrency] = useState<'USD' | 'UZS' | 'OTHER'>('UZS');
   const [sellBatchOtherCurrency, setSellBatchOtherCurrency] = useState<string>('');
   const [sellBatchExchangeRate, setSellBatchExchangeRate] = useState<string>('');
@@ -64,12 +77,19 @@ function FlightDetailContent() {
 
   const [confirmAllocationTicketId, setConfirmAllocationTicketId] = useState<string | null>(null);
   const [confirmAllocationBusy, setConfirmAllocationBusy] = useState(false);
-  const [confirmAllocationExchangeRate, setConfirmAllocationExchangeRate] = useState<string>('');
-
-  const [confirmBatchModalOpen, setConfirmBatchModalOpen] = useState(false);
-  const [confirmBatchQuantity, setConfirmBatchQuantity] = useState<string>('1');
-  const [confirmBatchBusy, setConfirmBatchBusy] = useState(false);
-  const [confirmBatchExchangeRate, setConfirmBatchExchangeRate] = useState<string>('');
+  const [rejectAllocationModal, setRejectAllocationModal] = useState<any>(null);
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [rejectAllocationBusy, setRejectAllocationBusy] = useState(false);
+  const [editAllocation, setEditAllocation] = useState<any>(null);
+  const [editAllocationRows, setEditAllocationRows] = useState<Array<{ quantity: string; price: string }>>([]);
+  const [editAllocationNote, setEditAllocationNote] = useState('');
+  const [editAllocationReason, setEditAllocationReason] = useState('');
+  const [editAllocationBusy, setEditAllocationBusy] = useState(false);
+  const [cancelAllocation, setCancelAllocation] = useState<any>(null);
+  const [cancelAllocationQuantity, setCancelAllocationQuantity] = useState('1');
+  const [cancelAllocationReason, setCancelAllocationReason] = useState('');
+  const [cancelAllocationBusy, setCancelAllocationBusy] = useState(false);
+  const [changeRequestBusyId, setChangeRequestBusyId] = useState<string | null>(null);
 
   const [deallocateConfirm, setDeallocateConfirm] = useState<null | { ticketId: string; status: string }>(null);
   const [deallocateBusy, setDeallocateBusy] = useState(false);
@@ -87,15 +107,18 @@ function FlightDetailContent() {
   const fetchData = async () => {
     try {
       if (!id) return;
+      setLoadError('');
       const role = String(user?.role || '').toUpperCase();
       const firmRole = user?.firmRole || 'FIRM_ADMIN';
       const canManageFirmWork = role !== 'FIRM' || firmRole === 'FIRM_ADMIN' || firmRole === 'MANAGER';
       const canAllocateTickets = role === 'FIRM' && canManageFirmWork;
 
-      const [reportRes, ticketsRes, firmsRes, cancelReqRes, desksRes] = await Promise.all([
+      const [reportRes, ticketsRes, allocationsRes, allocationChangeRes, firmsRes, cancelReqRes, desksRes] = await Promise.all([
         api.get(`/reports/flight?flight_id=${id}`),
         api.get(`/tickets?flight_id=${id}`),
-        canAllocateTickets ? api.get('/firms') : Promise.resolve({ data: [] as any[] }),
+        api.get(`/tickets/allocations?flight_id=${id}`),
+        api.get(`/tickets/allocation-change-requests?flight_id=${id}`),
+        canAllocateTickets ? api.get('/tickets/allocation-targets') : Promise.resolve({ data: [] as any[] }),
         api.get(`/tickets/cancel-sale-requests?flight_id=${id}&status=PENDING`).catch(() => ({ data: [] })),
         api.get('/kassa/desks').catch(() => ({ data: [] })),
       ]);
@@ -105,6 +128,8 @@ function FlightDetailContent() {
         : reportRes.data;
 
       setData({ report, tickets: ticketsRes.data });
+      setAllocations(Array.isArray(allocationsRes.data) ? allocationsRes.data : []);
+      setAllocationChangeRequests(Array.isArray(allocationChangeRes.data) ? allocationChangeRes.data : []);
 
       const pendingRequests = Array.isArray((cancelReqRes as any)?.data) ? (cancelReqRes as any).data : [];
       setPendingSaleCancelRequests(pendingRequests);
@@ -117,7 +142,9 @@ function FlightDetailContent() {
       if (firmsList.length > 0) setSelectedFirmId(String(firmsList[0].id));
 
     } catch (err: any) {
-      toast.error(err?.response?.data?.error || 'Failed to load flight details');
+      const message = err?.response?.data?.error || tr('Failed to load flight details', 'Reys tafsilotlarini yuklab bo\'lmadi');
+      setLoadError(message);
+      toast.error(message);
     } finally {
       if (loading) setLoading(false);
     }
@@ -125,27 +152,62 @@ function FlightDetailContent() {
 
   useEffect(() => {
     fetchData();
-  }, [id]);
+  }, [id, user?.id, user?.role, user?.firmId, user?.firmRole]);
 
-  const openAllocateModal = (ticketId: string) => {
+  const loadAllocationTargets = async (sourceFirmId: string) => {
+    const res = await api.get('/tickets/allocation-targets', { params: { sourceFirmId } });
+    const rows = Array.isArray(res.data) ? res.data : [];
+    setFirms(rows);
+    setSelectedFirmId(rows[0]?.id ? String(rows[0].id) : '');
+  };
+
+  const openAllocateModal = async (ticketId: string) => {
     setSelectedTicketId(ticketId);
     setAllocateQuantity('1');
     const ticket = Array.isArray(data?.tickets) ? data.tickets.find((t: any) => String(t.id) === String(ticketId)) : null;
-    setAllocatePrice(ticket?.price != null ? String(ticket.price) : '');
+    const productType = ticket?.availableRoundTrip ? 'ROUND_TRIP' : 'ONE_WAY';
+    const direction = ticket?.availableOutbound ? 'OUTBOUND' : 'RETURN';
+    const selectedLeg = (ticket?.legs || []).find((leg: any) => leg.direction === direction);
+    const suggestedPrice = productType === 'ROUND_TRIP' ? ticket?.price : selectedLeg?.acquisitionCostSnapshot;
+    setAllocateProductType(productType);
+    setAllocateDirection(direction);
+    setAllocateCurrency(['USD', 'UZS'].includes(String(ticket?.currency || '').toUpperCase()) ? String(ticket.currency).toUpperCase() as 'USD' | 'UZS' : 'UZS');
+    setAllocatePrice(suggestedPrice != null ? String(suggestedPrice) : '');
     setAllocatePricingMode('SAME');
-    setAllocationRows([{ quantity: '1', price: ticket?.price != null ? String(ticket.price) : '' }]);
+    setAllocationRows([{ quantity: '1', price: suggestedPrice != null ? String(suggestedPrice) : '' }]);
+    const sourceFirmId = String(ticket?.assignedFirmId || user?.firmId || '');
+    if (!sourceFirmId) return toast.error(tr('Ticket source firm is missing', 'Chipta egasi bo\'lgan firma topilmadi'));
+    setAllocationSourceFirmId(sourceFirmId);
+    try {
+      await loadAllocationTargets(sourceFirmId);
+    } catch (err: any) {
+      return toast.error(err?.response?.data?.error || tr('Failed to load firms', 'Firmalarni yuklab bo\'lmadi'));
+    }
     setIsAllocateModalOpen(true);
   };
 
-  const openAllocateBatchModal = () => {
+  const openAllocateBatchModal = async () => {
     setSelectedTicketId(null);
     setAllocateQuantity('1');
     const firstAvailable = Array.isArray(data?.tickets)
-      ? data.tickets.find((t: any) => ['AVAILABLE', 'ASSIGNED'].includes(String(t.status).toUpperCase()) && !t.soldPrice)
+      ? data.tickets.find((t: any) => t.canAllocate !== false && ['AVAILABLE', 'ASSIGNED'].includes(String(t.status).toUpperCase()) && !t.soldPrice)
       : null;
     setAllocatePrice(firstAvailable?.price != null ? String(firstAvailable.price) : '');
     setAllocatePricingMode('SAME');
     setAllocationRows([{ quantity: '1', price: firstAvailable?.price != null ? String(firstAvailable.price) : '' }]);
+    const rtAvailable = Number(data?.report?.inventorySummary?.rtOw?.availableRoundTripCount || 0) > 0;
+    const outboundAvailable = Number(data?.report?.inventorySummary?.rtOw?.availableOutboundLegCount || 0) > 0;
+    setAllocateProductType(rtAvailable ? 'ROUND_TRIP' : 'ONE_WAY');
+    setAllocateDirection(outboundAvailable ? 'OUTBOUND' : 'RETURN');
+    setAllocateCurrency(['USD', 'UZS'].includes(String(firstAvailable?.currency || '').toUpperCase()) ? String(firstAvailable.currency).toUpperCase() as 'USD' | 'UZS' : 'UZS');
+    const sourceFirmId = String(firstAvailable?.assignedFirmId || user?.firmId || '');
+    if (!sourceFirmId) return toast.error(tr('No source inventory is available', 'Yuborish uchun chipta zaxirasi topilmadi'));
+    setAllocationSourceFirmId(sourceFirmId);
+    try {
+      await loadAllocationTargets(sourceFirmId);
+    } catch (err: any) {
+      return toast.error(err?.response?.data?.error || tr('Failed to load firms', 'Firmalarni yuklab bo\'lmadi'));
+    }
     setIsAllocateModalOpen(true);
   };
 
@@ -189,8 +251,14 @@ function FlightDetailContent() {
     try {
       setAllocateBusy(true);
       if (selectedTicketId) {
-        await api.post(`/tickets/allocate`, { ticketId: selectedTicketId, firmId: selectedFirmId, allocationPrice: allocatePrice.trim() });
-        toast.success('Allocation created (pending firm confirmation)');
+        const res = await api.post(`/tickets/allocate`, {
+          ticketId: selectedTicketId, firmId: selectedFirmId, sourceFirmId: allocationSourceFirmId,
+          allocationPrice: allocatePrice.trim(), productType: allocateProductType,
+          direction: allocateProductType === 'ONE_WAY' ? allocateDirection : undefined, currency: allocateCurrency,
+        });
+        toast.success(res?.data?.status === 'ACCEPTED'
+          ? tr('Ticket allocated and confirmed automatically', 'Chipta ajratildi va avtomatik tasdiqlandi')
+          : tr('Allocation created (pending firm confirmation)', 'Ajratma yaratildi (firma tasdig‘i kutilmoqda)'));
       } else {
         const qty = useMixedPrices
           ? normalizedRows.reduce((sum, row) => sum + row.quantity, 0)
@@ -207,12 +275,22 @@ function FlightDetailContent() {
           ? {
               flightId: id,
               firmId: selectedFirmId,
+              sourceFirmId: allocationSourceFirmId,
+              productType: allocateProductType,
+              direction: allocateProductType === 'ONE_WAY' ? allocateDirection : undefined,
+              currency: allocateCurrency,
               allocationRows: normalizedRows.map((row) => ({ quantity: row.quantity, price: row.price })),
             }
-          : { flightId: id, firmId: selectedFirmId, quantity: qty, allocationPrice: allocatePrice.trim() };
+          : {
+              flightId: id, firmId: selectedFirmId, sourceFirmId: allocationSourceFirmId, quantity: qty,
+              allocationPrice: allocatePrice.trim(), productType: allocateProductType,
+              direction: allocateProductType === 'ONE_WAY' ? allocateDirection : undefined, currency: allocateCurrency,
+            };
         const res = await api.post(`/tickets/allocate`, payload);
         const count = res?.data?.count ?? (useMixedPrices ? normalizedRows.reduce((sum, row) => sum + row.quantity, 0) : qty);
-        toast.success(`Allocated ${count} ticket(s) (pending confirmation)`);
+        toast.success(res?.data?.status === 'ACCEPTED'
+          ? tr(`${count} ticket(s) allocated and confirmed automatically`, `${count} ta chipta ajratildi va avtomatik tasdiqlandi`)
+          : tr(`${count} ticket(s) allocated (pending confirmation)`, `${count} ta chipta ajratildi (tasdiq kutilmoqda)`));
       }
       setIsAllocateModalOpen(false);
       fetchData();
@@ -232,15 +310,9 @@ function FlightDetailContent() {
     [kassaDesks, sellBatchFirmId],
   );
   const confirmAllocationTicket = useMemo(
-    () => (Array.isArray(data?.tickets) ? data.tickets : []).find((ticket: any) => String(ticket?.id || '') === String(confirmAllocationTicketId || '')),
-    [data?.tickets, confirmAllocationTicketId],
+    () => allocations.find((allocation: any) => String(allocation?.id || '') === String(confirmAllocationTicketId || '')),
+    [allocations, confirmAllocationTicketId],
   );
-  const confirmAllocationCurrency = String(confirmAllocationTicket?.currency || data?.flight?.currency || 'UZS').trim().toUpperCase();
-  const firstPendingTicket = useMemo(
-    () => (Array.isArray(data?.tickets) ? data.tickets : []).find((ticket: any) => String(ticket?.status || '').toUpperCase() === 'PENDING'),
-    [data?.tickets],
-  );
-  const confirmBatchCurrency = String(firstPendingTicket?.currency || data?.flight?.currency || 'UZS').trim().toUpperCase();
 
   const handleSell = async (ticketId: string, body: any) => {
     try {
@@ -257,6 +329,9 @@ function FlightDetailContent() {
     const price = ticket?.price != null ? String(ticket.price) : '';
 
     setSellConfirmTicketId(String(ticket?.id || ''));
+    const productType = ticket?.availableRoundTrip ? 'ROUND_TRIP' : 'ONE_WAY';
+    setSellProductType(productType);
+    setSellDirection(ticket?.availableOutbound ? 'OUTBOUND' : 'RETURN');
     const ticketFirmId = String(ticket?.assignedFirmId || user?.firmId || '');
     setSellFirmId(ticketFirmId);
     const firstDesk = kassaDesks.find((desk) => String(desk.firmId) === ticketFirmId);
@@ -325,6 +400,8 @@ function FlightDetailContent() {
         exchangeRate: currencyCode !== 'UZS' ? sellExchangeRate.trim() : undefined,
         purchaser,
         kassaDeskId: sellKassaDeskId || undefined,
+        productType: sellProductType,
+        direction: sellProductType === 'ONE_WAY' ? sellDirection : undefined,
       });
       setSellConfirmTicketId(null);
     } finally {
@@ -339,6 +416,10 @@ function FlightDetailContent() {
     const price = firstAssigned?.price != null ? String(firstAssigned.price) : '';
 
     setSellBatchPrice(price);
+    const rtAvailable = Number(data?.report?.inventorySummary?.rtOw?.availableRoundTripCount || 0) > 0;
+    const outboundAvailable = Number(data?.report?.inventorySummary?.rtOw?.availableOutboundLegCount || 0) > 0;
+    setSellBatchProductType(rtAvailable ? 'ROUND_TRIP' : 'ONE_WAY');
+    setSellBatchDirection(outboundAvailable ? 'OUTBOUND' : 'RETURN');
     if (currencyCode === 'USD' || currencyCode === 'UZS') {
       setSellBatchCurrency(currencyCode as any);
       setSellBatchOtherCurrency('');
@@ -449,6 +530,8 @@ function FlightDetailContent() {
         exchangeRate: currencyCode !== 'UZS' ? sellBatchExchangeRate.trim() : undefined,
         purchaser,
         kassaDeskId: sellBatchKassaDeskId || undefined,
+        productType: sellBatchProductType,
+        direction: sellBatchProductType === 'ONE_WAY' ? sellBatchDirection : undefined,
       });
       const count = res?.data?.count ?? qty;
       toast.success(`Marked ${count} ticket(s) as sold`);
@@ -461,9 +544,8 @@ function FlightDetailContent() {
     }
   };
 
-  const openConfirmAllocation = (ticketId: string) => {
-    setConfirmAllocationTicketId(ticketId);
-    setConfirmAllocationExchangeRate('');
+  const openConfirmAllocation = (allocationId: string) => {
+    setConfirmAllocationTicketId(allocationId);
   };
 
   const closeConfirmAllocation = () => {
@@ -475,11 +557,8 @@ function FlightDetailContent() {
     if (!confirmAllocationTicketId || confirmAllocationBusy) return;
     setConfirmAllocationBusy(true);
     try {
-      await api.post('/tickets/confirm', {
-        ticketId: confirmAllocationTicketId,
-        exchangeRate: confirmAllocationCurrency !== 'UZS' ? confirmAllocationExchangeRate.trim() : undefined,
-      });
-      toast.success('Allocation confirmed');
+      await api.post('/tickets/confirm', { allocationId: confirmAllocationTicketId });
+      toast.success(tr('Allocation confirmed', 'Ajratma tasdiqlandi'));
       setConfirmAllocationTicketId(null);
       fetchData();
     } catch (err: any) {
@@ -489,45 +568,91 @@ function FlightDetailContent() {
     }
   };
 
-  const openConfirmBatchModal = () => {
-    setConfirmBatchQuantity('1');
-    setConfirmBatchExchangeRate('');
-    setConfirmBatchModalOpen(true);
-  };
-
-  const closeConfirmBatchModal = () => {
-    if (confirmBatchBusy) return;
-    setConfirmBatchModalOpen(false);
-  };
-
-  const confirmBatchAllocation = async () => {
-    if (confirmBatchBusy) return;
-    const qty = Number.parseInt(String(confirmBatchQuantity || '').trim(), 10);
-    if (!id) {
-      toast.error('Missing flight id');
-      return;
-    }
-    if (!Number.isFinite(qty) || qty <= 0) {
-      toast.error('Enter a valid quantity');
-      return;
-    }
-
-    setConfirmBatchBusy(true);
+  const rejectAllocation = async () => {
+    if (!rejectAllocationModal || rejectAllocationBusy) return;
+    const reason = rejectionReason.trim();
+    if (reason.length < 5) return toast.error(tr('Write the allocation rejection reason', 'Ajratmani rad etish sababini yozing.'));
+    setRejectAllocationBusy(true);
     try {
-      const res = await api.post('/tickets/confirm', {
-        flightId: id,
-        quantity: qty,
-        exchangeRate: confirmBatchCurrency !== 'UZS' ? confirmBatchExchangeRate.trim() : undefined,
-      });
-      const count = res?.data?.count ?? qty;
-      toast.success(`Confirmed ${count} ticket(s)`);
-      setConfirmBatchModalOpen(false);
-      fetchData();
+      await api.post('/tickets/reject', { allocationId: rejectAllocationModal.id, rejectionReason: reason });
+      toast.success(tr('Allocation returned to the sending firm', 'Ajratma yuborgan firmaga qaytarildi'));
+      setRejectAllocationModal(null);
+      setRejectionReason('');
+      await fetchData();
     } catch (err: any) {
-      toast.error(err?.response?.data?.error || 'Failed to confirm allocations');
+      toast.error(err?.response?.data?.error || tr('Failed to reject allocation', 'Ajratmani qaytarib bo\'lmadi'));
     } finally {
-      setConfirmBatchBusy(false);
+      setRejectAllocationBusy(false);
     }
+  };
+
+  const openEditAllocation = (allocation: any) => {
+    setEditAllocation(allocation);
+    setEditAllocationRows((allocation.priceRows || []).map((row: any) => ({ quantity: String(row.quantity), price: String(row.unitPrice) })));
+    setEditAllocationNote(allocation.note || '');
+    setEditAllocationReason('');
+  };
+
+  const submitAllocationEdit = async () => {
+    if (!editAllocation || editAllocationBusy) return;
+    const reason = editAllocationReason.trim();
+    if (reason.length < 5) return toast.error(tr('Write the edit reason', 'Tahrirlash sababini yozing.'));
+    const rows = editAllocationRows.map((row) => ({ quantity: Number(row.quantity), price: Number(row.price) }));
+    if (!rows.length || rows.some((row) => !Number.isInteger(row.quantity) || row.quantity <= 0 || !Number.isFinite(row.price) || row.price <= 0)) {
+      return toast.error(tr('Check quantity and price rows', 'Chipta miqdori va narx qatorlarini tekshiring.'));
+    }
+    setEditAllocationBusy(true);
+    try {
+      const response = await api.post(`/tickets/allocations/${editAllocation.id}/change-requests`, {
+        type: 'EDIT', allocationRows: rows, currency: editAllocation.currency, note: editAllocationNote, reason,
+      });
+      toast.success(response.data?.request?.requiresCounterpartyApproval
+        ? tr('Edit request sent for approval', 'Tahrir so‘rovi tasdiqlash uchun yuborildi')
+        : tr('External-firm allocation updated automatically', 'Tashqi firma ajratmasi avtomatik yangilandi'));
+      setEditAllocation(null);
+      await fetchData();
+    } catch (err: any) { toast.error(err?.response?.data?.error || tr('Failed to edit allocation', 'Ajratmani tahrirlab bo‘lmadi')); }
+    finally { setEditAllocationBusy(false); }
+  };
+
+  const openCancelAllocation = (allocation: any) => {
+    setCancelAllocation(allocation);
+    setCancelAllocationQuantity(String(Math.max(1, Number(allocation.cancellableQuantity || 1))));
+    setCancelAllocationReason('');
+  };
+
+  const submitAllocationCancel = async () => {
+    if (!cancelAllocation || cancelAllocationBusy) return;
+    const reason = cancelAllocationReason.trim();
+    const quantity = Number(cancelAllocationQuantity);
+    if (reason.length < 5) return toast.error(tr('Write the cancellation reason', 'Bekor qilish sababini yozing.'));
+    if (!Number.isInteger(quantity) || quantity <= 0 || quantity > Number(cancelAllocation.cancellableQuantity || 0)) return toast.error(tr('Check cancellable ticket quantity', 'Bekor qilinadigan chipta sonini tekshiring.'));
+    setCancelAllocationBusy(true);
+    try {
+      const response = await api.post(`/tickets/allocations/${cancelAllocation.id}/change-requests`, { type: 'CANCEL', quantity, reason });
+      toast.success(response.data?.request?.requiresCounterpartyApproval
+        ? tr('Cancellation request sent for approval', 'Bekor qilish so‘rovi tasdiqlash uchun yuborildi')
+        : tr('External-firm allocation cancelled automatically', 'Tashqi firma ajratmasi avtomatik bekor qilindi'));
+      setCancelAllocation(null);
+      await fetchData();
+    } catch (err: any) { toast.error(err?.response?.data?.error || tr('Failed to cancel allocation', 'Ajratmani bekor qilib bo‘lmadi')); }
+    finally { setCancelAllocationBusy(false); }
+  };
+
+  const decideAllocationChange = async (request: any, decision: 'approve' | 'reject') => {
+    if (changeRequestBusyId) return;
+    let rejectionReason = '';
+    if (decision === 'reject') {
+      rejectionReason = window.prompt(tr('Rejection reason', 'Rad etish sababi'))?.trim() || '';
+      if (rejectionReason.length < 5) return toast.error(tr('Write the rejection reason', 'Rad etish sababini yozing.'));
+    }
+    setChangeRequestBusyId(request.id);
+    try {
+      await api.post(`/tickets/allocation-change-requests/${request.id}/${decision}`, decision === 'reject' ? { rejectionReason } : {});
+      toast.success(decision === 'approve' ? tr('Change approved', 'O‘zgarish tasdiqlandi') : tr('Change rejected', 'O‘zgarish rad etildi'));
+      await fetchData();
+    } catch (err: any) { toast.error(err?.response?.data?.error || tr('Failed to review request', 'So‘rovni ko‘rib chiqib bo‘lmadi')); }
+    finally { setChangeRequestBusyId(null); }
   };
 
   const openDeallocateConfirm = (ticketId: string, status: string) => {
@@ -651,8 +776,21 @@ function FlightDetailContent() {
     );
   }
 
+  if (loadError) {
+    return (
+      <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-6 text-center">
+        <p className="font-semibold text-red-600">{loadError}</p>
+        <button type="button" onClick={fetchData} className="mt-4 rounded-lg bg-primary px-4 py-2 font-semibold text-primary-foreground">
+          {tr('Try again', 'Qayta urinish')}
+        </button>
+      </div>
+    );
+  }
+
   const summary = data?.report || {};
   const tickets = data?.tickets || [];
+  const allocationOperationTicket = tickets.find((ticket: any) => String(ticket.id) === String(selectedTicketId || ''));
+  const saleOperationTicket = tickets.find((ticket: any) => String(ticket.id) === String(sellConfirmTicketId || ''));
   const flightStatusLabel = String(summary?.flight?.status || 'SCHEDULED');
   const flightStatusNormalized = flightStatusLabel.trim().toUpperCase();
   const flightCancelled = flightStatusNormalized === 'CANCELLED';
@@ -665,10 +803,10 @@ function FlightDetailContent() {
   const role = String(user?.role || '').toUpperCase();
   const firmRole = user?.firmRole || 'FIRM_ADMIN';
   const canManageFirmWork = role !== 'FIRM' || firmRole === 'FIRM_ADMIN' || firmRole === 'MANAGER';
-  const canAllocate = role === 'FIRM' && canManageFirmWork;
+  const canAllocate = (role === 'FIRM' && canManageFirmWork) || role === 'ADMIN' || role === 'SUPERADMIN';
   const canDeallocateTickets = ['SUPERADMIN', 'ADMIN'].includes(role);
   const canBatchSell = ['SUPERADMIN', 'ADMIN'].includes(role) || (role === 'FIRM' && canManageFirmWork);
-  const canConfirmAllocations = role === 'FIRM' && canManageFirmWork;
+  const canConfirmAllocations = (role === 'FIRM' && canManageFirmWork) || role === 'ADMIN' || role === 'SUPERADMIN';
 
   const getTicketStatusLabel = (status?: string) => {
     const normalized = String(status || '').trim().toUpperCase();
@@ -686,7 +824,7 @@ function FlightDetailContent() {
     if (!pendingCancelRequestByTicketId.has(tid)) pendingCancelRequestByTicketId.set(tid, r);
   }
 
-  const visibleTickets = tickets.filter((ticket: any) => {
+  const visibleTickets = tickets.filter((ticket: any) => role !== 'FIRM' || String(ticket.status).toUpperCase() !== 'PENDING').filter((ticket: any) => {
     const text = ticketSearch.trim().toLowerCase();
     if (!text) return true;
     return [
@@ -698,21 +836,14 @@ function FlightDetailContent() {
       ticket.assignedFirmId,
     ].filter(Boolean).join(' ').toLowerCase().includes(text);
   });
-  const remainingTotalsMap: Map<string, { count: number; total: number }> = tickets
-    .filter((ticket: any) => ['AVAILABLE', 'ASSIGNED'].includes(String(ticket.status || '').toUpperCase()) && !ticket.soldPrice)
-    .reduce((map: Map<string, { count: number; total: number }>, ticket: any) => {
-      const currency = String(ticket.currency || '').trim().toUpperCase() || tr('No currency', 'Valyutasiz');
-      const price = Number(ticket.price || 0);
-      const current = map.get(currency) || { count: 0, total: 0 };
-      current.count += 1;
-      current.total += Number.isFinite(price) ? price : 0;
-      map.set(currency, current);
-      return map;
-    }, new Map<string, { count: number; total: number }>());
-  const remainingTotalsByCurrency: Array<{ currency: string; count: number; total: number }> = [];
-  remainingTotalsMap.forEach((value, currency) => {
-    remainingTotalsByCurrency.push({ currency, ...value });
-  });
+  const hasAllocatableTickets = tickets.some((ticket: any) => ticket.canAllocate !== false && ['AVAILABLE', 'ASSIGNED'].includes(String(ticket.status).toUpperCase()) && !ticket.soldPrice);
+  const inventorySummary = summary.inventorySummary || {};
+  const inventoryAmounts = (metric: any) => (metric?.amounts || []).map((row: any) => (
+    <div key={row.currency} className="flex items-baseline justify-between gap-2">
+      <span className="text-xs text-muted">{Number(row.count || 0)} ta</span>
+      <span className="text-lg font-bold">{Number(row.total || 0).toLocaleString()} {row.currency}</span>
+    </div>
+  ));
   const mixedAllocationTotalQuantity = allocationRows.reduce((sum, row) => {
     const quantity = Number.parseInt(String(row.quantity || '').trim(), 10);
     return sum + (Number.isFinite(quantity) && quantity > 0 ? quantity : 0);
@@ -740,23 +871,40 @@ function FlightDetailContent() {
         </span>
       </div>
 
-      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-6">
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
         <div className="bg-surface-2 border border-border rounded-lg p-5">
           <div className="flex items-center gap-2 text-primary mb-2">
             <Tag size={16} />
             <span className="text-sm font-medium">
-              {tr('Remaining ticket value', 'Qolgan chiptalar summasi')}
+              {tr('Total received tickets', 'Jami olingan bilet soni / summasi')}
             </span>
           </div>
           <div className="space-y-1">
-            {remainingTotalsByCurrency.length > 0 ? remainingTotalsByCurrency.map((row) => (
-              <div key={row.currency} className="flex items-baseline justify-between gap-2">
-                <span className="text-sm text-muted">{row.count}x</span>
-                <span className="text-lg font-bold">{row.total.toFixed(2)} {row.currency}</span>
-              </div>
-            )) : (
-              <div className="text-lg font-bold">0.00</div>
-            )}
+            <div className="text-2xl font-bold">{Number(inventorySummary.received?.count || 0)} ta</div>
+            {inventoryAmounts(inventorySummary.received)}
+          </div>
+        </div>
+
+        <div className="bg-surface-2 border border-border rounded-lg p-5">
+          <div className="flex items-center gap-2 text-green-600 mb-2">
+            <Activity size={16} />
+            <span className="text-sm font-medium">{tr('Sold or allocated tickets', 'Jami sotilgan / ajratilgan bilet soni / summasi')}</span>
+          </div>
+          <div className="space-y-1">
+            <div className="text-2xl font-bold">{Number(inventorySummary.soldOrAllocated?.count || 0)} ta</div>
+            {inventoryAmounts(inventorySummary.soldOrAllocated)}
+          </div>
+        </div>
+
+        <div className="bg-surface-2 border border-border rounded-lg p-5">
+          <div className="flex items-center gap-2 text-yellow-600 mb-2">
+            <Tag size={16} />
+            <span className="text-sm font-medium">{tr('Remaining tickets', 'Qolgan bilet soni / summasi')}</span>
+          </div>
+          <div className="space-y-1">
+            <div className="text-2xl font-bold">{Number(inventorySummary.remaining?.count || 0)} ta</div>
+            {inventoryAmounts(inventorySummary.remaining)}
+            {Number(inventorySummary.remaining?.reservedForTourCount || 0) > 0 && <div className="text-xs text-muted">{tr('Reserved for tours', 'Tur uchun band')}: {inventorySummary.remaining.reservedForTourCount} ta</div>}
           </div>
         </div>
 
@@ -812,6 +960,104 @@ function FlightDetailContent() {
         )}
       </div>
 
+      <section className="rounded-xl border border-border bg-surface-2 p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-xl font-bold">RT / OW {tr('inventory control', 'zaxira nazorati')}</h3>
+            <p className="text-sm text-muted">{tr('Parent tickets and usable flight segments are shown separately.', 'Asosiy biletlar va ishlatiladigan reys segmentlari alohida ko‘rsatiladi.')}</p>
+          </div>
+          {inventorySummary.reconciliationRequired && <span className="rounded-full border border-red-500/40 bg-red-500/10 px-3 py-1 text-sm font-semibold text-red-500">{tr('Reconciliation required', 'Hisobni qayta tekshirish kerak')} · {inventorySummary.migrationIssueCount}</span>}
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
+          {[
+            ['RT', inventorySummary.rtOw?.availableRoundTripCount],
+            ['OUTBOUND', inventorySummary.rtOw?.availableOutboundLegCount],
+            ['RETURN', inventorySummary.rtOw?.availableReturnLegCount],
+            [tr('Pending', 'Kutilmoqda'), inventorySummary.pendingAllocationCount],
+            [tr('Tour reserved', 'Turga band'), inventorySummary.reservedForTourCount],
+            [tr('Direct sold', 'To‘g‘ridan sotildi'), inventorySummary.directSoldTicketCount],
+            [tr('Partial tickets', 'Qisman ishlatilgan'), inventorySummary.rtOw?.partiallyUsedTicketCount],
+          ].map(([label, value]) => <div key={String(label)} className="rounded-lg border border-border bg-surface p-3 text-center"><div className="text-2xl font-bold">{Number(value || 0)}</div><div className="text-xs text-muted">{label}</div></div>)}
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+          {[
+            [tr('Accepted allocation revenue', 'Tasdiqlangan ajratma tushumi'), inventorySummary.acceptedAllocationRevenueByCurrency],
+            [tr('Allocated cost', 'Ajratilgan tannarx'), inventorySummary.allocatedCostByCurrency],
+            [tr('Gross profit', 'Yalpi foyda'), inventorySummary.allocationGrossProfitByCurrency],
+            [tr('Outstanding debt', 'Qoldiq qarz'), inventorySummary.outstandingDebtByCurrency],
+          ].map(([label, rows]: any) => <div key={String(label)} className="rounded-lg border border-border p-3"><div className="text-xs font-semibold text-muted">{label}</div>{(rows || []).length ? rows.map((row: any) => <div key={row.currency} className="mt-1 text-lg font-bold">{Number(row.total || 0).toLocaleString()} {row.currency}</div>) : <div className="mt-1 text-lg font-bold">0</div>}</div>)}
+        </div>
+      </section>
+
+      {(inventorySummary.recipients || []).length > 0 && (
+        <section className="rounded-xl border border-border bg-surface-2 p-5">
+          <h3 className="text-xl font-bold text-foreground">{tr('Who received the tickets', 'Kimga sotilgan / ajratilgan')}</h3>
+          <div className="mt-4 overflow-x-auto">
+            <table className="excel-table">
+              <thead><tr><th>{tr('Recipient', 'Qabul qiluvchi')}</th><th>{tr('Type', 'Turi')}</th><th className="text-right">{tr('Tickets', 'Bilet')}</th><th className="text-right">{tr('Amount', 'Summa')}</th><th>{tr('Status', 'Holat')}</th></tr></thead>
+              <tbody>{inventorySummary.recipients.map((recipient: any, index: number) => (
+                <tr key={`${recipient.allocationId || recipient.ticketId || recipient.name}-${index}`}>
+                  <td className="font-semibold">{recipient.name}</td>
+                  <td>{recipient.type === 'FIRM' ? tr('Firm allocation', 'Firmaga ajratma') : tr('Customer sale', 'Mijozga sotuv')}</td>
+                  <td className="text-right">{recipient.quantity} ta</td>
+                  <td className="text-right">{Number(recipient.totalAmount || 0).toLocaleString()} {recipient.currency}</td>
+                  <td>{recipient.status}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      <section className="rounded-xl border border-border bg-surface-2 p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div><h3 className="text-xl font-bold text-foreground">{tr('Ticket allocations', 'Chipta ajratmalari')}</h3><p className="text-sm text-muted">{tr('Bulk allocations, single-ticket actions, edits and cancellations in one place.', 'Bulk ajratmalar, bitta chipta amallari, tahrir va bekor qilish bir joyda.')}</p></div>
+          {canAllocate && hasAllocatableTickets && <button type="button" onClick={openAllocateBatchModal} disabled={flightCancelled} className="rounded-lg bg-yellow-600 px-4 py-2 font-bold text-white disabled:opacity-50">{tr('Bulk allocate', 'Bulk ajratish')}</button>}
+        </div>
+        <div className="mt-4 overflow-x-auto">
+          <table className="excel-table">
+	            <thead><tr><th>{tr('Sender → Receiver', 'Yuboruvchi → Qabul qiluvchi')}</th><th>RT / OW</th><th>{tr('Status', 'Holat')}</th><th className="text-right">{tr('Tickets', 'Biletlar')}</th><th>{tr('Price rows', 'Narx qatorlari')}</th><th className="text-right">{tr('Total', 'Jami')}</th><th>{tr('Actions', 'Amallar')}</th></tr></thead>
+            <tbody>
+	              {allocations.length === 0 ? <tr><td colSpan={7} className="text-center text-muted">{tr('No allocations yet', 'Hali ajratmalar yo‘q')}</td></tr> : allocations.map((allocation: any) => {
+                const hasPendingChange = allocationChangeRequests.some((request: any) => request.allocationId === allocation.id && request.status === 'PENDING_APPROVAL');
+                return <tr key={allocation.id}>
+	                  <td><div className="font-semibold">{allocation.fromFirm?.name || '—'} → {allocation.toFirm?.name || '—'}</div><div className="text-xs text-muted">#{String(allocation.id).slice(0, 8)}</div></td>
+	                  <td><span className="rounded bg-primary/15 px-2 py-1 text-xs font-bold text-primary">{allocation.productType === 'ONE_WAY' ? `OW · ${allocation.direction}` : 'RT'}</span><div className="mt-1 text-xs text-muted">{allocation.segmentCount || 0} {tr('segments', 'segment')}</div></td>
+                  <td><span className={`rounded-full border px-2 py-1 text-xs font-bold ${allocation.status === 'PENDING' ? 'border-yellow-600/50 text-yellow-500' : allocation.status === 'ACCEPTED' ? 'border-green-600/50 text-green-500' : 'border-red-600/50 text-red-500'}`}>{allocation.status}</span>{hasPendingChange && <div className="mt-1 text-xs text-yellow-500">{tr('Change pending', 'O‘zgarish kutilmoqda')}</div>}</td>
+                  <td className="text-right"><div className="font-bold">{allocation.allocatedQuantity} ta</div><div className="text-xs text-muted">{tr('Free', 'Erkin')}: {allocation.cancellableQuantity || 0} · {tr('Sold', 'Sotilgan')}: {allocation.soldQuantity || 0}</div></td>
+                  <td><div className="flex min-w-56 flex-wrap gap-1">{(allocation.priceRows || []).map((row: any, index: number) => <span key={`${allocation.id}-${index}`} className="rounded border border-border px-2 py-1 text-xs">{row.quantity} × {Number(row.unitPrice).toLocaleString()} {allocation.currency}</span>)}</div></td>
+                  <td className="text-right font-bold">{Number(allocation.totalAmount || 0).toLocaleString()} {allocation.currency}</td>
+                  <td><div className="flex min-w-52 flex-wrap gap-2">
+                    {allocation.status === 'PENDING' && allocation.canReject && <button type="button" onClick={() => { setRejectAllocationModal(allocation); setRejectionReason(''); }} className="rounded border border-red-600/40 px-2 py-1 text-xs font-semibold text-red-500">{tr('Reject', 'Rad etish')}</button>}
+                    {allocation.status === 'PENDING' && allocation.canConfirm && canConfirmAllocations && <button type="button" onClick={() => openConfirmAllocation(allocation.id)} className="rounded bg-yellow-600 px-2 py-1 text-xs font-semibold text-white">{tr('Confirm', 'Tasdiqlash')}</button>}
+                    {allocation.canEdit && !hasPendingChange && <button type="button" onClick={() => openEditAllocation(allocation)} className="rounded border border-primary/50 px-2 py-1 text-xs font-semibold text-primary">{tr('Edit', 'Tahrirlash')}</button>}
+                    {allocation.canCancel && Number(allocation.cancellableQuantity || 0) > 0 && !hasPendingChange && <button type="button" onClick={() => openCancelAllocation(allocation)} className="rounded border border-red-600/40 px-2 py-1 text-xs font-semibold text-red-500">{tr('Cancel', 'Bekor qilish')}</button>}
+                  </div></td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {allocationChangeRequests.length > 0 && <section className="rounded-xl border border-border bg-surface-2 p-5">
+        <h3 className="text-xl font-bold">{tr('Allocation change requests', 'Ajratma bo‘yicha o‘zgarish so‘rovlari')}</h3>
+        <div className="mt-4 overflow-x-auto"><table className="excel-table"><thead><tr><th>{tr('Flight / firms', 'Reys / firmalar')}</th><th>{tr('Change', 'O‘zgarish')}</th><th>{tr('Difference', 'Farqi')}</th><th>{tr('Reason', 'Sabab')}</th><th>{tr('Status', 'Holat')}</th><th>{tr('Actions', 'Amallar')}</th></tr></thead><tbody>
+          {allocationChangeRequests.map((request: any) => {
+            const oldValues = request.oldValuesJson || {};
+            const proposed = request.proposedValuesJson || {};
+            return <tr key={request.id}>
+              <td><div className="font-semibold">{request.allocation?.flight?.flightNumber}</div><div className="text-xs text-muted">{request.allocation?.fromFirm?.name} → {request.allocation?.toFirm?.name}</div></td>
+              <td>{request.type === 'EDIT' ? tr('Edit', 'Tahrirlash') : tr('Cancel', 'Bekor qilish')}</td>
+              <td>{request.type === 'EDIT' ? <><div>{tr('Quantity', 'Miqdor')}: {oldValues.quantity} → {proposed.quantity}</div><div>{tr('Total', 'Jami')}: {Number(oldValues.totalAmount || 0).toLocaleString()} {oldValues.currency}</div></> : <div>{tr('Cancel quantity', 'Bekor qilinadi')}: {proposed.cancelQuantity} ta</div>}</td>
+              <td className="max-w-xs whitespace-normal">{request.reason}{request.rejectionReason && <div className="text-red-500">{request.rejectionReason}</div>}</td>
+              <td>{request.autoApproved ? tr('Auto-approved', 'Avtomatik tasdiqlandi') : request.status}</td>
+              <td><div className="flex gap-2">{request.canReject && <button type="button" disabled={changeRequestBusyId === request.id} onClick={() => decideAllocationChange(request, 'reject')} className="rounded border border-red-600/40 px-2 py-1 text-xs text-red-500">{tr('Reject', 'Rad etish')}</button>}{request.canApprove && <button type="button" disabled={changeRequestBusyId === request.id} onClick={() => decideAllocationChange(request, 'approve')} className="rounded bg-primary px-2 py-1 text-xs font-bold text-primary-foreground">{tr('Approve', 'Tasdiqlash')}</button>}</div></td>
+            </tr>;
+          })}
+        </tbody></table></div>
+      </section>}
+
       <div className="bg-surface-2 border border-border rounded-lg overflow-hidden">
         <div className="px-3 py-2 border-b border-border grid grid-cols-1 gap-2 lg:grid-cols-[220px_1fr_auto] lg:items-end">
           <h3 className="text-lg font-bold lg:pb-1">{tr('Tickets Inventory', 'Chiptalar zaxirasi')}</h3>
@@ -826,24 +1072,14 @@ function FlightDetailContent() {
             />
           </div>
           <div className="flex items-center gap-3 flex-wrap justify-end">
-            {canAllocate && (
+            {canAllocate && hasAllocatableTickets && (
               <button
                 type="button"
                 onClick={openAllocateBatchModal}
                 disabled={flightCancelled}
                 className="px-3 py-1 bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40 rounded transition border border-yellow-600/50 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {tr('Allocate tickets', 'Chiptalarni ajratish')}
-              </button>
-            )}
-            {canConfirmAllocations && (
-              <button
-                type="button"
-                onClick={openConfirmBatchModal}
-                disabled={flightCancelled}
-                className="px-3 py-1 bg-yellow-600/10 text-yellow-300 hover:bg-yellow-600/20 rounded transition border border-yellow-600/30 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {tr('Confirm tickets', 'Chiptalarni tasdiqlash')}
+                {tr('Bulk allocate', 'Bulk ajratish')}
               </button>
             )}
             {canBatchSell && (
@@ -864,7 +1100,8 @@ function FlightDetailContent() {
               <thead>
                 <tr className="bg-surface text-sm text-muted">
                   <th className="p-4 font-semibold">{tr('Ticket ID', 'Chipta ID')}</th>
-                  <th className="p-4 font-semibold">{tr('Status', 'Holat')}</th>
+	                  <th className="p-4 font-semibold">RT / OW {tr('segments', 'segmentlar')}</th>
+	                  <th className="p-4 font-semibold">{tr('Status', 'Holat')}</th>
                   <th className="p-4 font-semibold">{tr('Price / Currency', 'Narx / Valyuta')}</th>
                   <th className="p-4 font-semibold">{tr('Assigned Firm', 'Biriktirilgan firma')}</th>
                   <th className="p-4 font-semibold text-right">{tr('Actions', 'Amallar')}</th>
@@ -878,8 +1115,15 @@ function FlightDetailContent() {
                         <Tag size={14} className="text-muted" />
                         {ticket.id.slice(0, 8)}...
                       </div>
-                    </td>
-                    <td className="p-4">
+	                    </td>
+	                    <td className="p-4">
+	                      <div className="flex flex-wrap gap-1">{(ticket.legs || []).map((leg: any) => (
+	                        <span key={leg.id} className={`rounded border px-2 py-1 text-xs font-semibold ${['AVAILABLE', 'ASSIGNED'].includes(leg.status) ? 'border-green-600/40 text-green-500' : leg.status === 'SOLD' ? 'border-blue-600/40 text-blue-500' : 'border-border text-muted'}`}>
+	                          {leg.direction === 'OUTBOUND' ? 'OUT' : 'RETURN'} · {leg.status} · {Number(leg.acquisitionCostSnapshot || 0).toLocaleString()} {leg.currencySnapshot}
+	                        </span>
+	                      ))}</div>
+	                    </td>
+	                    <td className="p-4">
                       <span className={`px-3 py-1 rounded-full text-xs font-bold inline-block border ${
                         ticket.status === 'AVAILABLE' ? 'bg-green-900/30 text-green-400 border-green-700/50' :
                         ticket.status === 'PENDING' ? 'bg-yellow-900/30 text-yellow-400 border-yellow-700/50' :
@@ -897,24 +1141,20 @@ function FlightDetailContent() {
                         {ticket.assignedFirmId && <Briefcase size={14} className="text-muted" />}
                         {ticket.assignedFirm?.name || ticket.assignedFirmId || '—'}
                       </div>
+                      {ticket.status === 'PENDING' && ticket.allocationSourceFirm && (
+                        <div className="mt-1 text-xs text-muted">
+                          {tr('From', 'Yuborgan')}: {ticket.allocationSourceFirm.name}
+                        </div>
+                      )}
                     </td>
                     <td className="p-4 text-right space-x-3">
-                      {canAllocate && ['AVAILABLE', 'ASSIGNED'].includes(String(ticket.status).toUpperCase()) && (
+                      {canAllocate && ticket.canAllocate !== false && ['AVAILABLE', 'ASSIGNED'].includes(String(ticket.status).toUpperCase()) && (
                         <button
                           onClick={() => openAllocateModal(ticket.id)}
                           disabled={flightCancelled}
                           className="px-3 py-1 bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40 rounded transition border border-yellow-600/50 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          {tr('Allocate', 'Ajratish')}
-                        </button>
-                      )}
-                      {canConfirmAllocations && ticket.status === 'PENDING' && (
-                        <button
-                          onClick={() => openConfirmAllocation(ticket.id)}
-                          disabled={flightCancelled}
-                          className="px-3 py-1 bg-yellow-600/20 text-yellow-300 hover:bg-yellow-600/40 rounded transition border border-yellow-600/50 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {tr('Confirm', 'Tasdiqlash')}
+                          {tr('Allocate one', 'Bitta ajratish')}
                         </button>
                       )}
                       {canBatchSell && ticket.status === 'ASSIGNED' && (
@@ -926,7 +1166,7 @@ function FlightDetailContent() {
                           {tr('Mark Sold', 'Sotildi deb belgilash')}
                         </button>
                       )}
-                      {canDeallocateTickets && (ticket.status === 'PENDING' || ticket.status === 'ASSIGNED') && (
+                      {canDeallocateTickets && !(ticket.legs || []).length && !ticket.allocationId && (ticket.status === 'PENDING' || ticket.status === 'ASSIGNED') && (
                         <button
                           onClick={() => openDeallocateConfirm(ticket.id, ticket.status)}
                           className="px-3 py-1 bg-red-600/10 text-red-300 hover:bg-red-600/20 rounded transition border border-red-600/30 font-medium"
@@ -966,7 +1206,7 @@ function FlightDetailContent() {
                 ))}
                 {visibleTickets.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="p-8 text-center text-muted">
+	                    <td colSpan={6} className="p-8 text-center text-muted">
                       <Plane className="mx-auto h-8 w-8 mb-2 opacity-50" />
                       {tr('No tickets found for this flight.', 'Bu reys uchun chipta topilmadi.')}
                     </td>
@@ -1018,22 +1258,13 @@ function FlightDetailContent() {
                     </div>
 
                     <div className="mt-4 flex items-center justify-end gap-2 flex-wrap">
-                      {canAllocate && ['AVAILABLE', 'ASSIGNED'].includes(String(ticket.status).toUpperCase()) && (
+                      {canAllocate && ticket.canAllocate !== false && ['AVAILABLE', 'ASSIGNED'].includes(String(ticket.status).toUpperCase()) && (
                         <button
                           onClick={() => openAllocateModal(ticket.id)}
                           disabled={flightCancelled}
                           className="px-3 py-1 bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40 rounded transition border border-yellow-600/50 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          {tr('Allocate', 'Ajratish')}
-                        </button>
-                      )}
-                      {canConfirmAllocations && ticket.status === 'PENDING' && (
-                        <button
-                          onClick={() => openConfirmAllocation(ticket.id)}
-                          disabled={flightCancelled}
-                          className="px-3 py-1 bg-yellow-600/20 text-yellow-300 hover:bg-yellow-600/40 rounded transition border border-yellow-600/50 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {tr('Confirm', 'Tasdiqlash')}
+                          {tr('Allocate one', 'Bitta ajratish')}
                         </button>
                       )}
                       {canBatchSell && ticket.status === 'ASSIGNED' && (
@@ -1045,7 +1276,7 @@ function FlightDetailContent() {
                           {tr('Mark Sold', 'Sotildi deb belgilash')}
                         </button>
                       )}
-                      {canDeallocateTickets && (ticket.status === 'PENDING' || ticket.status === 'ASSIGNED') && (
+                      {canDeallocateTickets && !(ticket.legs || []).length && !ticket.allocationId && (ticket.status === 'PENDING' || ticket.status === 'ASSIGNED') && (
                         <button
                           onClick={() => openDeallocateConfirm(ticket.id, ticket.status)}
                           className="px-3 py-1 bg-red-600/10 text-red-300 hover:bg-red-600/20 rounded transition border border-red-600/30 font-medium"
@@ -1099,7 +1330,19 @@ function FlightDetailContent() {
                 : tr('Allocate tickets', 'Chiptalarni ajratish')}
             </h3>
             
-            <form onSubmit={handleAllocateSubmit} className="space-y-4">
+	            <form onSubmit={handleAllocateSubmit} className="space-y-4">
+	              <div className="rounded-lg border border-border bg-surface-2 p-4">
+	                <div className="grid gap-3 sm:grid-cols-3">
+	                  <label><span className="compact-label">{tr('Control mode', 'Boshqaruv turi')}</span><select className="compact-control" value={selectedTicketId ? 'SINGLE' : 'BULK'} disabled><option value="SINGLE">{tr('Single ticket', 'Bitta bilet')}</option><option value="BULK">Bulk</option></select></label>
+	                  <label><span className="compact-label">{tr('Ticket product', 'Bilet mahsuloti')}</span><select className="compact-control" value={allocateProductType} onChange={(e) => setAllocateProductType(e.target.value as any)} disabled={allocateBusy}><option value="ROUND_TRIP" disabled={Boolean(selectedTicketId && !allocationOperationTicket?.availableRoundTrip)}>RT — borish–kelish</option><option value="ONE_WAY">OW — segment</option></select></label>
+	                  {allocateProductType === 'ONE_WAY' && <label><span className="compact-label">{tr('Direction', 'Yo‘nalish')}</span><select className="compact-control" value={allocateDirection} onChange={(e) => setAllocateDirection(e.target.value as any)} disabled={allocateBusy}><option value="OUTBOUND" disabled={Boolean(selectedTicketId && !allocationOperationTicket?.availableOutbound)}>OUTBOUND</option><option value="RETURN" disabled={Boolean(selectedTicketId && !allocationOperationTicket?.availableReturn)}>RETURN</option></select></label>}
+	                </div>
+	                <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs text-muted">
+	                  <div className="rounded bg-surface p-2"><strong className="block text-base text-foreground">{inventorySummary.rtOw?.availableRoundTripCount || 0}</strong>RT</div>
+	                  <div className="rounded bg-surface p-2"><strong className="block text-base text-foreground">{inventorySummary.rtOw?.availableOutboundLegCount || 0}</strong>OUTBOUND</div>
+	                  <div className="rounded bg-surface p-2"><strong className="block text-base text-foreground">{inventorySummary.rtOw?.availableReturnLegCount || 0}</strong>RETURN</div>
+	                </div>
+	              </div>
               <div>
                 <label className="block text-sm font-medium text-muted mb-2">{tr('Select Firm', 'Firmani tanlang')}</label>
                 {firms.length > 0 ? (
@@ -1112,19 +1355,16 @@ function FlightDetailContent() {
                     <option value="" disabled>{tr('-- Select a Firm --', '-- Firmani tanlang --')}</option>
                     {firms.map((f: any) => (
                       <option key={f.id} value={f.id}>
-                        {String(f.name || f.id) + ` (ID: ${String(f.id).slice(0, 8)}...)`}
+                        {String(f.name || f.id) + ` (ID: ${String(f.id).slice(0, 8)}...)` + (f.approvalRequired
+                          ? ` — ${tr('approval required', 'tasdiq talab qilinadi')}`
+                          : ` — ${tr('automatic confirmation', 'avtomatik tasdiq')}`)}
                       </option>
                     ))}
                   </select>
                 ) : (
-                  <input
-                    type="text"
-                    required
-                    className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
-                    placeholder={tr('Enter Firm UUID', 'Firma UUID kiriting')}
-                    value={selectedFirmId}
-                    onChange={(e) => setSelectedFirmId(e.target.value)}
-                  />
+                  <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-600">
+                    {tr('No active firm is available.', 'Faol firma topilmadi.')}
+                  </div>
                 )}
               </div>
 
@@ -1172,9 +1412,10 @@ function FlightDetailContent() {
                 </div>
               )}
 
-              {(selectedTicketId || allocatePricingMode === 'SAME') ? (
-                <div>
-                  <label className="block text-sm font-medium text-muted mb-2">{tr('Allocation price (per ticket)', 'Ajratma narxi (har chipta)')}</label>
+	              {(selectedTicketId || allocatePricingMode === 'SAME') ? (
+	                <div className="grid gap-3 sm:grid-cols-[1fr_120px]">
+	                  <div>
+	                  <label className="block text-sm font-medium text-muted mb-2">{tr('Allocation price (per ticket)', 'Ajratma narxi (har chipta)')}</label>
                   <input
                     inputMode="decimal"
                     required
@@ -1182,9 +1423,11 @@ function FlightDetailContent() {
                     placeholder="0"
                     value={allocatePrice}
                     onChange={(e) => setAllocatePrice(e.target.value)}
-                    disabled={allocateBusy}
-                  />
-                </div>
+	                    disabled={allocateBusy}
+	                  />
+	                  </div>
+	                  <label><span className="block text-sm font-medium text-muted mb-2">{tr('Currency', 'Valyuta')}</span><select className="compact-control py-3" value={allocateCurrency} onChange={(e) => setAllocateCurrency(e.target.value as any)} disabled={allocateBusy}><option value="UZS">UZS</option><option value="USD">USD</option></select></label>
+	                </div>
               ) : (
                 <div className="rounded-lg border border-border bg-surface-2 p-3">
                   <div className="flex items-center justify-between gap-3">
@@ -1251,7 +1494,7 @@ function FlightDetailContent() {
                 </button>
                 <button
                   type="submit"
-                  disabled={allocateBusy}
+                  disabled={allocateBusy || firms.length === 0}
                   className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 text-white rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {allocateBusy ? tr('Allocating…', 'Ajratilmoqda…') : tr('Allocate', 'Ajratish')}
@@ -1274,8 +1517,14 @@ function FlightDetailContent() {
               {tr('transaction.', 'tranzaksiyasini yaratadi.')}
             </p>
 
-            <div className="mt-4 space-y-3">
-              <div>
+	            <div className="mt-4 space-y-3">
+	              <div className="rounded-lg border border-border bg-surface-2 p-3">
+	                <div className="grid gap-3 sm:grid-cols-2">
+	                  <label><span className="compact-label">{tr('Ticket product', 'Bilet mahsuloti')}</span><select className="compact-control" value={sellProductType} onChange={(e) => setSellProductType(e.target.value as any)} disabled={sellBusy}><option value="ROUND_TRIP" disabled={!saleOperationTicket?.availableRoundTrip}>RT — borish–kelish</option><option value="ONE_WAY">OW — segment</option></select></label>
+	                  {sellProductType === 'ONE_WAY' && <label><span className="compact-label">{tr('Direction', 'Yo‘nalish')}</span><select className="compact-control" value={sellDirection} onChange={(e) => setSellDirection(e.target.value as any)} disabled={sellBusy}><option value="OUTBOUND" disabled={!saleOperationTicket?.availableOutbound}>OUTBOUND</option><option value="RETURN" disabled={!saleOperationTicket?.availableReturn}>RETURN</option></select></label>}
+	                </div>
+	              </div>
+	              <div>
                 <label className="block text-sm font-medium text-muted mb-1">{tr('Sale price (per ticket)', 'Sotuv narxi (har chipta uchun)')}</label>
                 <input
                   type="number"
@@ -1429,32 +1678,62 @@ function FlightDetailContent() {
         </div>
       )}
 
+      {editAllocation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-border bg-surface p-6 shadow-2xl">
+            <h3 className="text-xl font-bold">{tr('Edit allocation', 'Ajratmani tahrirlash')}</h3>
+            <p className="mt-1 text-sm text-muted">{editAllocation.fromFirm?.name} → {editAllocation.toFirm?.name}</p>
+            <div className="mt-4 space-y-3">
+              {editAllocationRows.map((row, index) => <div key={index} className="grid grid-cols-[1fr_1fr_auto] gap-2">
+                <label><span className="compact-label">{tr('Quantity', 'Miqdor')}</span><input type="number" min="1" className="compact-control" value={row.quantity} onChange={(event) => setEditAllocationRows((rows) => rows.map((item, rowIndex) => rowIndex === index ? { ...item, quantity: event.target.value } : item))} /></label>
+                <label><span className="compact-label">{tr('Unit price', 'Bir dona narxi')}</span><input type="number" min="0.01" step="0.01" className="compact-control" value={row.price} onChange={(event) => setEditAllocationRows((rows) => rows.map((item, rowIndex) => rowIndex === index ? { ...item, price: event.target.value } : item))} /></label>
+                <button type="button" disabled={editAllocationRows.length === 1} onClick={() => setEditAllocationRows((rows) => rows.filter((_, rowIndex) => rowIndex !== index))} className="mt-5 rounded border border-red-600/40 px-3 text-red-500 disabled:opacity-40">×</button>
+              </div>)}
+              <button type="button" onClick={() => setEditAllocationRows((rows) => [...rows, { quantity: '1', price: rows.at(-1)?.price || '' }])} className="rounded border border-primary/50 px-3 py-2 text-sm font-semibold text-primary">+ {tr('Add price row', 'Narx qatori qo‘shish')}</button>
+              <label className="block"><span className="compact-label">{tr('Note', 'Izoh')}</span><textarea className="compact-control" rows={2} value={editAllocationNote} onChange={(event) => setEditAllocationNote(event.target.value)} /></label>
+              <label className="block"><span className="compact-label">{tr('Required edit reason', 'Tahrirlash sababi (majburiy)')}</span><textarea className="compact-control" rows={3} maxLength={500} value={editAllocationReason} onChange={(event) => setEditAllocationReason(event.target.value)} /></label>
+            </div>
+            <div className="mt-6 flex justify-end gap-3"><button type="button" disabled={editAllocationBusy} onClick={() => setEditAllocation(null)} className="rounded bg-surface-2 px-4 py-2">{tr('Close', 'Yopish')}</button><button type="button" disabled={editAllocationBusy} onClick={submitAllocationEdit} className="rounded bg-primary px-4 py-2 font-bold text-primary-foreground disabled:opacity-50">{editAllocationBusy ? tr('Saving…', 'Saqlanmoqda…') : tr('Send change', 'O‘zgarishni yuborish')}</button></div>
+          </div>
+        </div>
+      )}
+
+      {cancelAllocation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-xl border border-border bg-surface p-6 shadow-2xl">
+            <h3 className="text-xl font-bold">{tr('Cancel allocation', 'Ajratmani bekor qilish')}</h3>
+            <p className="mt-1 text-sm text-muted">{tr('Only free, unsold and tour-unreserved tickets can be cancelled.', 'Faqat erkin, sotilmagan va turga band qilinmagan chiptalar bekor qilinadi.')}</p>
+            <label className="mt-4 block"><span className="compact-label">{tr('Ticket quantity', 'Bilet soni')} (max: {cancelAllocation.cancellableQuantity})</span><input type="number" min="1" max={cancelAllocation.cancellableQuantity} className="compact-control" value={cancelAllocationQuantity} onChange={(event) => setCancelAllocationQuantity(event.target.value)} /></label>
+            <label className="mt-4 block"><span className="compact-label">{tr('Required cancellation reason', 'Bekor qilish sababi (majburiy)')}</span><textarea className="compact-control" rows={4} maxLength={500} value={cancelAllocationReason} onChange={(event) => setCancelAllocationReason(event.target.value)} /></label>
+            <div className="mt-6 flex justify-end gap-3"><button type="button" disabled={cancelAllocationBusy} onClick={() => setCancelAllocation(null)} className="rounded bg-surface-2 px-4 py-2">{tr('Close', 'Yopish')}</button><button type="button" disabled={cancelAllocationBusy} onClick={submitAllocationCancel} className="rounded bg-red-600 px-4 py-2 font-bold text-white disabled:opacity-50">{cancelAllocationBusy ? tr('Sending…', 'Yuborilmoqda…') : tr('Cancel tickets', 'Biletlarni bekor qilish')}</button></div>
+          </div>
+        </div>
+      )}
+
       {confirmAllocationTicketId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-sm p-6">
             <h3 className="text-xl font-bold text-foreground mb-2">{tr('Confirm allocation', 'Ajratmani tasdiqlash')}</h3>
             <p className="text-sm text-muted">
-              {tr('Confirm this allocation?', 'Ushbu ajratmani tasdiqlaysizmi?')}{' '}
-              {tr('This will set the ticket to', 'Bu chiptani')}{' '}
-              <span className="text-foreground font-semibold">ASSIGNED</span>{' '}
-              {tr('and create a', 'holatiga o‘tkazadi va')}{' '}
-              <span className="text-foreground font-semibold">PAYABLE</span>{' '}
-              {tr('(debt) transaction.', '(qarz) tranzaksiyasini yaratadi.')}
+              {tr('All tickets in this allocation will be accepted together.', 'Ushbu ajratmadagi barcha chiptalar birgalikda tasdiqlanadi.')}
             </p>
 
-            {confirmAllocationCurrency !== 'UZS' && (
-              <div className="mt-4">
-                <label className="block text-sm font-medium text-muted mb-1">
-                  {tr('Rate to UZS', 'UZS kursi')} ({confirmAllocationCurrency})
-                </label>
-                <input
-                  inputMode="decimal"
-                  value={confirmAllocationExchangeRate}
-                  onChange={(e) => setConfirmAllocationExchangeRate(e.target.value)}
-                  disabled={confirmAllocationBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
-                  placeholder="12600"
-                />
+            {confirmAllocationTicket && (
+              <div className="mt-4 space-y-3 rounded-lg border border-border bg-surface-2 p-4">
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted">{tr('Tickets', 'Bilet soni')}</span>
+                  <strong>{confirmAllocationTicket.allocatedQuantity} ta</strong>
+                </div>
+                {(confirmAllocationTicket.priceRows || []).map((row: any, index: number) => (
+                  <div key={index} className="flex justify-between gap-3 text-sm">
+                    <span className="text-muted">{row.quantity} ta ×</span>
+                    <span>{Number(row.unitPrice || 0).toLocaleString()} {confirmAllocationTicket.currency}</span>
+                  </div>
+                ))}
+                <div className="flex justify-between gap-3 border-t border-border pt-3">
+                  <span className="font-semibold text-muted">{tr('Total', 'Jami summa')}</span>
+                  <strong>{Number(confirmAllocationTicket.totalAmount || 0).toLocaleString()} {confirmAllocationTicket.currency}</strong>
+                </div>
               </div>
             )}
 
@@ -1480,68 +1759,46 @@ function FlightDetailContent() {
         </div>
       )}
 
-      {confirmBatchModalOpen && (
+      {rejectAllocationModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-sm p-6">
-            <h3 className="text-xl font-bold text-foreground mb-2">{tr('Confirm tickets', 'Chiptalarni tasdiqlash')}</h3>
+            <h3 className="text-xl font-bold text-foreground mb-2">{tr('Reject allocation', 'Ajratmani rad etish')}</h3>
             <p className="text-sm text-muted">
-              {tr('Confirm', 'Tasdiqlash')}{' '}
-              <span className="text-foreground font-semibold">N</span>{' '}
               {tr(
-                'pending allocations for this flight. This will create PAYABLE transactions.',
-                'ushbu reys uchun kutilayotgan ajratmalarni. Bu PAYABLE tranzaksiyalarini yaratadi.'
+                'After rejection, these tickets return to the sender inventory. Do you want to continue?',
+                'Ajratma rad etilgandan keyin ushbu chiptalar yuboruvchi firma zaxirasiga qaytariladi. Ushbu amalni davom ettirmoqchimisiz?'
               )}
             </p>
-
-            <div className="mt-4">
-              <label className="block text-sm font-medium text-muted mb-2">{tr('Quantity', 'Miqdor')}</label>
-              <input
-                type="number"
-                min={1}
-                step={1}
-                required
-                className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground outline-none focus:border-primary transition"
-                value={confirmBatchQuantity}
-                onChange={(e) => setConfirmBatchQuantity(e.target.value)}
-                disabled={confirmBatchBusy}
-              />
-              <p className="mt-1 text-xs text-muted">
-                {tr('Uses the earliest pending tickets for this flight.', 'Ushbu reys uchun eng erta kutilayotgan chiptalardan foydalanadi.')}
-              </p>
+            <div className="mt-4 grid grid-cols-2 gap-2 rounded-lg bg-surface-2 p-3 text-sm">
+              <span className="text-muted">{tr('Tickets', 'Bilet soni')}</span><strong className="text-right">{rejectAllocationModal.allocatedQuantity} ta</strong>
+              <span className="text-muted">{tr('Total', 'Jami summa')}</span><strong className="text-right">{Number(rejectAllocationModal.totalAmount || 0).toLocaleString()} {rejectAllocationModal.currency}</strong>
             </div>
-
-            {confirmBatchCurrency !== 'UZS' && (
-              <div className="mt-4">
-                <label className="block text-sm font-medium text-muted mb-1">
-                  {tr('Rate to UZS', 'UZS kursi')} ({confirmBatchCurrency})
-                </label>
-                <input
-                  inputMode="decimal"
-                  value={confirmBatchExchangeRate}
-                  onChange={(e) => setConfirmBatchExchangeRate(e.target.value)}
-                  disabled={confirmBatchBusy}
-                  className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
-                  placeholder="12600"
-                />
-              </div>
-            )}
-
+            <label className="mt-4 block text-sm font-medium text-muted">{tr('Rejection reason', 'Rad etish sababi')}</label>
+            <textarea
+              value={rejectionReason}
+              onChange={(event) => setRejectionReason(event.target.value.slice(0, 500))}
+              rows={4}
+              disabled={rejectAllocationBusy}
+              className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-foreground outline-none focus:border-primary"
+              placeholder={tr('Write at least 5 characters', 'Kamida 5 ta belgi yozing')}
+            />
+            <div className="mt-1 text-right text-xs text-muted">{rejectionReason.length}/500</div>
             <div className="mt-6 flex justify-end gap-3">
               <button
                 type="button"
-                onClick={closeConfirmBatchModal}
-                disabled={confirmBatchBusy}
+                onClick={() => { if (!rejectAllocationBusy) { setRejectAllocationModal(null); setRejectionReason(''); } }}
+                disabled={rejectAllocationBusy}
                 className="px-4 py-2 bg-surface-2 hover:bg-surface text-foreground rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {tr('Cancel', 'Bekor qilish')}
               </button>
               <button
                 type="button"
-                onClick={confirmBatchAllocation}
-                disabled={confirmBatchBusy}
-                className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 text-white rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={rejectAllocation}
+                disabled={rejectAllocationBusy || rejectionReason.trim().length < 5}
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {confirmBatchBusy ? tr('Confirming…', 'Tasdiqlanmoqda…') : tr('Confirm', 'Tasdiqlash')}
+                {rejectAllocationBusy ? tr('Rejecting…', 'Rad etilmoqda…') : tr('Confirm rejection', 'Rad etishni tasdiqlash')}
               </button>
             </div>
           </div>
@@ -1726,6 +1983,12 @@ function FlightDetailContent() {
             </div>
 
             <div className="mt-4 space-y-3">
+              <div className="rounded-lg border border-border bg-surface-2 p-3">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label><span className="compact-label">{tr('Ticket product', 'Bilet mahsuloti')}</span><select className="compact-control" value={sellBatchProductType} onChange={(e) => setSellBatchProductType(e.target.value as any)} disabled={sellBatchBusy}><option value="ROUND_TRIP">RT — borish–kelish</option><option value="ONE_WAY">OW — segment</option></select></label>
+                  {sellBatchProductType === 'ONE_WAY' && <label><span className="compact-label">{tr('Direction', 'Yo‘nalish')}</span><select className="compact-control" value={sellBatchDirection} onChange={(e) => setSellBatchDirection(e.target.value as any)} disabled={sellBatchBusy}><option value="OUTBOUND">OUTBOUND</option><option value="RETURN">RETURN</option></select></label>}
+                </div>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-muted mb-1">{tr('Sale price (per ticket)', 'Sotuv narxi (har chipta uchun)')}</label>
                 <input

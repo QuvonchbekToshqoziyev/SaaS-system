@@ -9,6 +9,7 @@ import { Plus, Save, Trash2, X } from 'lucide-react';
 import type { AxiosError } from 'axios';
 import Link from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import ExportActions from '@/components/ui/ExportActions';
 
 type ApiErrorResponse = {
   error?: string;
@@ -118,7 +119,7 @@ export default function FirmsPage() {
   };
 
   const { data: firms, isLoading: loadingFirms } = useQuery<FirmRow[]>({
-    queryKey: ['firms'],
+    queryKey: ['firms', user?.id || user?.email || 'anonymous'],
     queryFn: async () => {
       if (!canManage) return [];
       const res = await api.get('/firms');
@@ -475,7 +476,7 @@ export default function FirmsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <h2 className="text-3xl font-bold text-foreground">{tr('Firms', 'Firmalar')}</h2>
           <p className="mt-1 text-sm text-muted">
@@ -486,6 +487,11 @@ export default function FirmsPage() {
                 : tr('Add firms and view firms assigned to your admin access.', 'Firmalar qo\'shing va admin accessingizga biriktirilgan firmalarni ko\'ring.')}
           </p>
         </div>
+        <ExportActions filename="ado-firmalar" sheet={{
+          name: 'Firmalar',
+          columns: [{ header: 'Firma', key: 'name' }, { header: 'Mas’ul shaxs', key: 'contact' }, { header: 'Telefon', key: 'phone' }, { header: 'Turi', key: 'kind' }, { header: 'Balans', key: 'balance' }, { header: 'Qarzdorlik', key: 'outstanding' }, { header: 'Valyuta', key: 'currency' }, { header: 'Status', key: 'status' }],
+          rows: (firms || []).map((firm) => ({ name: firm.name, contact: firm.contactFullName || '', phone: firm.phone || '', kind: firm.kind || '', balance: Number(firm.balance || 0), outstanding: Number(firm.outstanding || 0), currency: firm.currency || '', status: firm.status || '' })),
+        }} />
       </div>
 
       <div className="glass-panel p-6 max-w-xl">
@@ -668,7 +674,7 @@ export default function FirmsPage() {
         </div>
       )}
 
-      <div className="glass-panel">
+      <div id="firm-list" className="scroll-mt-24 glass-panel">
         <div className="grid grid-cols-1 gap-2 border-b border-border px-3 py-2 md:grid-cols-[1fr_auto] md:items-end">
           <div>
             <label htmlFor="firmSearch" className="compact-label">{tr('Search firms', 'Firmalarni qidirish')}</label>

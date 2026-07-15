@@ -36,12 +36,12 @@ function fmt(value: unknown, suffix = ' UZS') {
 }
 
 function pct(value: unknown) {
-  if (value == null || !Number.isFinite(Number(value))) return 'N/A';
+  if (value == null || !Number.isFinite(Number(value))) return 'Ma’lumot yo‘q';
   return `${Number(value).toFixed(1)}%`;
 }
 
 function ratioValue(value: unknown) {
-  if (value == null || !Number.isFinite(Number(value))) return 'N/A';
+  if (value == null || !Number.isFinite(Number(value))) return 'Ma’lumot yo‘q';
   return Number(value).toFixed(2);
 }
 
@@ -57,7 +57,7 @@ function KpiCard({ label, value, detail, trend, status = 'neutral' }: { label: s
     <div className="rounded-lg border border-border bg-surface p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <p className="text-xs font-semibold uppercase tracking-wider text-muted">{label}</p>
-        <span className={`rounded border border-border px-2 py-0.5 text-[10px] uppercase ${tone}`}>neutral</span>
+        <span className={`rounded border border-border px-2 py-0.5 text-[10px] uppercase ${tone}`}>{status === 'good' ? 'yaxshi' : status === 'warn' ? 'ehtiyot' : status === 'bad' ? 'xavf' : 'me’yorda'}</span>
       </div>
       <div className="mt-3 text-2xl font-bold tracking-tight text-foreground">{value}</div>
       {detail && <p className="mt-1 text-xs text-muted">{detail}</p>}
@@ -143,7 +143,7 @@ function DebtStructure({ rows }: { rows: any[] }) {
   const total = rows.reduce((sum, row) => sum + Math.max(0, Number(row.value || 0)), 0) || 1;
   return (
     <div className="rounded-lg border border-border bg-surface p-4">
-      <h3 className="text-sm font-bold text-foreground">Debt Structure</h3>
+      <h3 className="text-sm font-bold text-foreground">Qarzlar tarkibi</h3>
       <div className="mt-4 space-y-3">
         {rows.map((row) => {
           const width = `${Math.max(1, (Math.max(0, Number(row.value || 0)) / total) * 100)}%`;
@@ -169,9 +169,10 @@ export default function ReportsPage() {
   const role = String(user?.role || '').toLowerCase();
   const isAdmin = role === 'admin' || role === 'superadmin';
   const canAccess = role === 'firm' || isAdmin;
+  const canReconcile = isAdmin || (role === 'firm' && String((user as any)?.firmRole || 'MANAGER').toUpperCase() !== 'KASSIR');
 
   const now = new Date();
-  const [activeTab, setActiveTab] = useState<TabKey>('health');
+  const [activeTab, setActiveTab] = useState<TabKey>(searchParams.get('flightId') ? 'flight-profitability' : 'health');
   const [firms, setFirms] = useState<FirmOption[]>([]);
   const [branches, setBranches] = useState<BranchOption[]>([]);
   const [flights, setFlights] = useState<FlightOption[]>([]);
@@ -184,8 +185,11 @@ export default function ReportsPage() {
   const [dateTo, setDateTo] = useState(normalizeDateParam(searchParams.get('dateTo') || ''));
   const [currency, setCurrency] = useState(searchParams.get('currency') || '');
   const [report, setReport] = useState<any>(null);
+  const [flightInventory, setFlightInventory] = useState<any>(null);
+  const [flightReport, setFlightReport] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMeta, setLoadingMeta] = useState(true);
+  const [reconciling, setReconciling] = useState(false);
 
   useEffect(() => {
     if (!canAccess) return;
@@ -226,14 +230,41 @@ export default function ReportsPage() {
     if (!canAccess) return;
     try {
       setLoading(true);
-      const res = await api.get(`/reports/analytics?${queryString}`);
+      const flightParams = new URLSearchParams();
+      if (flightId) flightParams.set('flight_id', flightId);
+      if (isAdmin && companyId) flightParams.set('firm_id', companyId);
+      const [res, flightRes] = await Promise.all([
+        api.get(`/reports/analytics?${queryString}`),
+        flightId ? api.get(`/reports/flight?${flightParams.toString()}`) : Promise.resolve({ data: null }),
+      ]);
       setReport(res.data);
+      setFlightReport(flightRes.data || null);
+      setFlightInventory(flightRes.data?.inventorySummary || null);
     } catch (error: any) {
       toast.error(error?.response?.data?.error || tr('Failed to load reports', 'Hisobotlarni yuklab bo\'lmadi'));
     } finally {
       setLoading(false);
     }
-  }, [canAccess, queryString, tr]);
+  }, [canAccess, companyId, flightId, isAdmin, queryString, tr]);
+
+  const runReconciliation = useCallback(async () => {
+    if (!flightId || !canReconcile) return;
+    try {
+      setReconciling(true);
+      const response = await api.post('/reports/flight/reconcile', { flightId, ...(isAdmin && companyId ? { firmId: companyId } : {}) });
+      setFlightReport((current: any) => ({
+        ...(current || {}),
+        reconciliation: { ...response.data, issues: response.data?.discrepancies || [] },
+      }));
+      toast.success(response.data?.required
+        ? tr('Reconciliation completed: discrepancies found', 'Tekshiruv tugadi: farqlar topildi')
+        : tr('Reconciliation completed: no discrepancies', 'Tekshiruv tugadi: farq topilmadi'));
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Reconciliation failed', 'Hisobni tekshirib bo‘lmadi'));
+    } finally {
+      setReconciling(false);
+    }
+  }, [canReconcile, companyId, flightId, isAdmin, tr]);
 
   useEffect(() => {
     if (!loadingMeta) loadReport();
@@ -252,7 +283,7 @@ export default function ReportsPage() {
   if (!canAccess) {
     return (
       <div className="text-foreground">
-        <h2 className="text-3xl font-bold">{tr('Reports', 'Hisobotlar')}</h2>
+        <h2 className="text-3xl font-bold">{tr('Financial Report', 'Moliyaviy Hisobot')}</h2>
         <p className="mt-2 text-muted">{tr('You do not have access to reports.', 'Hisobotlarga kirish huquqingiz yo\'q.')}</p>
       </div>
     );
@@ -261,23 +292,23 @@ export default function ReportsPage() {
   const renderHealth = () => (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <KpiCard label="ROA" value={pct(p.roa)} detail={`Net Profit: ${fmt(p.netProfit)} · Avg Assets: ${fmt(p.supportingValues?.averageAssets)}`} trend={`${delta(p.netProfit, p.previous?.netProfit).toLocaleString()} vs previous period`} />
-        <KpiCard label="ROE" value={pct(p.roe)} detail={`Net Profit: ${fmt(p.netProfit)} · Avg Equity: ${fmt(p.supportingValues?.averageEquity)}`} />
-        <KpiCard label="Current Ratio" value={ratioValue(l.currentRatio)} detail={`Current assets: ${fmt(l.currentAssets)}`} />
-        <KpiCard label="Quick Ratio" value={ratioValue(l.quickRatio)} detail={`Cash + receivables / liabilities`} />
-        <KpiCard label="Debt to Assets" value={pct(d.debtToAssets)} detail={`Liabilities: ${fmt(d.totalLiabilities)}`} />
-        <KpiCard label="Debt to Equity" value={ratioValue(d.debtToEquity)} detail="ROE leverage check" />
-        <KpiCard label="Net Working Capital" value={fmt(l.workingCapital)} detail="Current assets - current liabilities" />
-        <KpiCard label="Net Debt" value={fmt(d.netDebt)} detail="Interest-bearing debt - cash" />
+        <KpiCard label="Aktivlar rentabelligi (ROA)" value={pct(p.roa)} detail={`Sof foyda: ${fmt(p.netProfit)} · O‘rtacha aktivlar: ${fmt(p.supportingValues?.averageAssets)}`} trend={`${delta(p.netProfit, p.previous?.netProfit).toLocaleString()} oldingi davrga nisbatan`} />
+        <KpiCard label="O‘z mablag‘i rentabelligi (ROE)" value={pct(p.roe)} detail={`Sof foyda: ${fmt(p.netProfit)} · O‘rtacha o‘z mablag‘i: ${fmt(p.supportingValues?.averageEquity)}`} />
+        <KpiCard label="Joriy likvidlik" value={ratioValue(l.currentRatio)} detail={`Joriy aktivlar: ${fmt(l.currentAssets)}`} />
+        <KpiCard label="Tezkor likvidlik" value={ratioValue(l.quickRatio)} detail="Pul + olinadigan qarzlar / majburiyatlar" />
+        <KpiCard label="Qarzning aktivlarga nisbati" value={pct(d.debtToAssets)} detail={`Majburiyatlar: ${fmt(d.totalLiabilities)}`} />
+        <KpiCard label="Qarzning o‘z mablag‘iga nisbati" value={ratioValue(d.debtToEquity)} />
+        <KpiCard label="Sof aylanma mablag‘" value={fmt(l.workingCapital)} detail="Joriy aktivlar − joriy majburiyatlar" />
+        <KpiCard label="Sof qarz" value={fmt(d.netDebt)} detail="Foizli qarz − pul mablag‘i" />
       </div>
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         {[
-          ['PROFITABILITY', [['Gross Margin', pct(p.grossMargin)], ['Operating Margin', pct(p.operatingMargin)], ['Net Margin', pct(p.netMargin)], ['ROA', pct(p.roa)], ['ROE', pct(p.roe)]]],
-          ['LIQUIDITY', [['Current Ratio', ratioValue(l.currentRatio)], ['Quick Ratio', ratioValue(l.quickRatio)], ['Working Capital', fmt(l.workingCapital)], ['Cash Balance', fmt(l.cash)]]],
-          ['DEBT', [['Debt to Assets', pct(d.debtToAssets)], ['Debt to Equity', ratioValue(d.debtToEquity)], ['Net Debt', fmt(d.netDebt)], ['Trade Payables', fmt(d.tradePayables)], ['Founder Debt', fmt(d.founderDebt)], ['Bank Debt', fmt(d.bankDebt)]]],
-          ['CASH FLOW', [['Operating CF', fmt(cf.operating)], ['Investing CF', fmt(cf.investing)], ['Financing CF', fmt(cf.financing)], ['Net CF', fmt(cf.netCashFlow)], ['Free Cash Flow', fmt(cf.freeCashFlow)]]],
-          ['RECEIVABLES / PAYABLES', [['Total Receivables', fmt(rcv.total)], ['Overdue Receivables', fmt(rcv.overdue)], ['Total Payables', fmt(pay.total)], ['Overdue Payables', fmt(pay.overdue)]]],
-          ['EFFICIENCY', [['Ticket Sell-through', pct(eff.ticketSellThrough)], ['Package Sell-through', pct(eff.packageSellThrough)], ['Revenue per Passenger', fmt(eff.revenuePerPassenger)], ['Profit per Passenger', fmt(eff.profitPerPassenger)]]],
+          ['FOYDA VA RENTABELLIK', [['Yalpi foyda marjasi', pct(p.grossMargin)], ['Operatsion marja', pct(p.operatingMargin)], ['Sof foyda marjasi', pct(p.netMargin)], ['Aktivlar rentabelligi', pct(p.roa)], ['O‘z mablag‘i rentabelligi', pct(p.roe)]]],
+          ['LIKVIDLIK', [['Joriy likvidlik', ratioValue(l.currentRatio)], ['Tezkor likvidlik', ratioValue(l.quickRatio)], ['Aylanma mablag‘', fmt(l.workingCapital)], ['Pul qoldig‘i', fmt(l.cash)]]],
+          ['QARZLAR', [['Qarz / aktivlar', pct(d.debtToAssets)], ['Qarz / o‘z mablag‘i', ratioValue(d.debtToEquity)], ['Sof qarz', fmt(d.netDebt)], ['Ta’minotchilarga qarz', fmt(d.tradePayables)], ['Ta’sischidan qarz', fmt(d.founderDebt)], ['Bank qarzi', fmt(d.bankDebt)]]],
+          ['PUL OQIMI', [['Asosiy faoliyat', fmt(cf.operating)], ['Investitsiya', fmt(cf.investing)], ['Moliyalashtirish', fmt(cf.financing)], ['Sof pul oqimi', fmt(cf.netCashFlow)], ['Erkin pul oqimi', fmt(cf.freeCashFlow)]]],
+          ['OLINADIGAN / TO‘LANADIGAN QARZLAR', [['Jami olinadigan qarz', fmt(rcv.total)], ['Muddati o‘tgan olinadigan qarz', fmt(rcv.overdue)], ['Jami to‘lanadigan qarz', fmt(pay.total)], ['Muddati o‘tgan to‘lanadigan qarz', fmt(pay.overdue)]]],
+          ['SAMARADORLIK', [['Bilet sotilish darajasi', pct(eff.ticketSellThrough)], ['Turpaket sotilish darajasi', pct(eff.packageSellThrough)], ['Bir yo‘lovchidan tushum', fmt(eff.revenuePerPassenger)], ['Bir yo‘lovchidan foyda', fmt(eff.profitPerPassenger)]]],
         ].map(([title, rows]: any) => (
           <div key={title} className="rounded-lg border border-border bg-surface p-4">
             <h3 className="text-sm font-bold text-foreground">{title}</h3>
@@ -294,52 +325,52 @@ export default function ReportsPage() {
   const renderProfitability = () => (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <KpiCard label="Revenue" value={fmt(p.revenue)} trend={`${delta(p.revenue, p.previous?.revenue).toLocaleString()} vs previous`} />
-        <KpiCard label="COGS" value={fmt(p.cogs)} />
-        <KpiCard label="Gross Profit" value={fmt(p.grossProfit)} />
-        <KpiCard label="Gross Margin" value={pct(p.grossMargin)} />
-        <KpiCard label="Operating Profit" value={fmt(p.operatingProfit)} />
-        <KpiCard label="Operating Margin" value={pct(p.operatingMargin)} />
-        <KpiCard label="Net Profit" value={fmt(p.netProfit)} />
-        <KpiCard label="Net Margin" value={pct(p.netMargin)} />
+        <KpiCard label="Tushum" value={fmt(p.revenue)} trend={`${delta(p.revenue, p.previous?.revenue).toLocaleString()} oldingi davrga nisbatan`} />
+        <KpiCard label="Sotilgan xizmatlar tannarxi" value={fmt(p.cogs)} />
+        <KpiCard label="Yalpi foyda" value={fmt(p.grossProfit)} />
+        <KpiCard label="Yalpi foyda marjasi" value={pct(p.grossMargin)} />
+        <KpiCard label="Operatsion foyda" value={fmt(p.operatingProfit)} />
+        <KpiCard label="Operatsion marja" value={pct(p.operatingMargin)} />
+        <KpiCard label="Sof foyda" value={fmt(p.netProfit)} />
+        <KpiCard label="Sof foyda marjasi" value={pct(p.netMargin)} />
       </div>
-      <Bars title="Revenue vs COGS vs Gross Profit" data={monthly} keys={[{ key: 'revenue', label: 'Revenue', color: '#34d399' }, { key: 'cogs', label: 'COGS', color: '#f87171' }, { key: 'grossProfit', label: 'Gross Profit', color: '#facc15' }]} />
-      <MultiLineChart title="Margins trend" data={monthly} series={[{ key: 'grossMargin', label: 'Gross', color: '#34d399' }, { key: 'operatingMargin', label: 'Operating', color: '#60a5fa' }, { key: 'netMargin', label: 'Net', color: '#facc15' }]} />
-      <MultiLineChart title="Monthly Net Profit Trend" data={monthly} series={[{ key: 'netProfit', label: 'Net Profit', color: '#34d399' }]} />
+      <Bars title="Tushum, tannarx va yalpi foyda" data={monthly} keys={[{ key: 'revenue', label: 'Tushum', color: '#34d399' }, { key: 'cogs', label: 'Tannarx', color: '#f87171' }, { key: 'grossProfit', label: 'Yalpi foyda', color: '#facc15' }]} />
+      <MultiLineChart title="Foyda marjasi o‘zgarishi" data={monthly} series={[{ key: 'grossMargin', label: 'Yalpi', color: '#34d399' }, { key: 'operatingMargin', label: 'Operatsion', color: '#60a5fa' }, { key: 'netMargin', label: 'Sof', color: '#facc15' }]} />
+      <MultiLineChart title="Oylik sof foyda" data={monthly} series={[{ key: 'netProfit', label: 'Sof foyda', color: '#34d399' }]} />
     </div>
   );
 
   const renderCashFlow = () => (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <KpiCard label="Opening Cash" value={fmt(cf.openingCash)} />
-        <KpiCard label="Operating Cash Flow" value={fmt(cf.operating)} />
-        <KpiCard label="Investing Cash Flow" value={fmt(cf.investing)} />
-        <KpiCard label="Financing Cash Flow" value={fmt(cf.financing)} />
-        <KpiCard label="Net Cash Flow" value={fmt(cf.netCashFlow)} />
-        <KpiCard label="Closing Cash" value={fmt(cf.closingCash)} />
-        <KpiCard label="Free Cash Flow" value={fmt(cf.freeCashFlow)} />
+        <KpiCard label="Boshlang‘ich pul qoldig‘i" value={fmt(cf.openingCash)} />
+        <KpiCard label="Asosiy faoliyat pul oqimi" value={fmt(cf.operating)} />
+        <KpiCard label="Investitsiya pul oqimi" value={fmt(cf.investing)} />
+        <KpiCard label="Moliyalashtirish pul oqimi" value={fmt(cf.financing)} />
+        <KpiCard label="Sof pul oqimi" value={fmt(cf.netCashFlow)} />
+        <KpiCard label="Yakuniy pul qoldig‘i" value={fmt(cf.closingCash)} />
+        <KpiCard label="Erkin pul oqimi" value={fmt(cf.freeCashFlow)} />
       </div>
-      <MultiLineChart title="12-month cash flow" data={monthly} series={[{ key: 'operatingCashFlow', label: 'Operating CF', color: '#34d399' }, { key: 'investingCashFlow', label: 'Investing CF', color: '#60a5fa' }, { key: 'financingCashFlow', label: 'Financing CF', color: '#facc15' }, { key: 'netCashFlow', label: 'Net CF', color: '#f87171' }]} />
-      <MultiLineChart title="Cash Balance Trend" data={monthly} series={[{ key: 'closingCash', label: 'Closing Cash', color: '#34d399' }]} />
+      <MultiLineChart title="12 oylik pul oqimi" data={monthly} series={[{ key: 'operatingCashFlow', label: 'Asosiy faoliyat', color: '#34d399' }, { key: 'investingCashFlow', label: 'Investitsiya', color: '#60a5fa' }, { key: 'financingCashFlow', label: 'Moliyalashtirish', color: '#facc15' }, { key: 'netCashFlow', label: 'Sof oqim', color: '#f87171' }]} />
+      <MultiLineChart title="Pul qoldig‘i o‘zgarishi" data={monthly} series={[{ key: 'closingCash', label: 'Yakuniy qoldiq', color: '#34d399' }]} />
     </div>
   );
 
   const renderDebt = () => (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <KpiCard label="Total Receivables" value={fmt(rcv.total)} />
-        <KpiCard label="Overdue Receivables" value={fmt(rcv.overdue)} />
-        <KpiCard label="Due Soon" value={fmt(rcv.dueSoon)} />
-        <KpiCard label="Collection Rate" value={pct(rcv.collectionRate)} />
-        <KpiCard label="Total Payables" value={fmt(pay.total)} />
-        <KpiCard label="Overdue Payables" value={fmt(pay.overdue)} />
-        <KpiCard label="Due This Week" value={fmt(pay.dueSoon)} />
-        <KpiCard label="Supplier Concentration" value={pay.rows?.[0]?.supplier ? pay.rows[0].supplier : 'N/A'} />
+        <KpiCard label="Jami olinadigan qarz" value={fmt(rcv.total)} />
+        <KpiCard label="Muddati o‘tgan olinadigan qarz" value={fmt(rcv.overdue)} />
+        <KpiCard label="Yaqinda olinadi" value={fmt(rcv.dueSoon)} />
+        <KpiCard label="Undirish darajasi" value={pct(rcv.collectionRate)} />
+        <KpiCard label="Jami to‘lanadigan qarz" value={fmt(pay.total)} />
+        <KpiCard label="Muddati o‘tgan to‘lanadigan qarz" value={fmt(pay.overdue)} />
+        <KpiCard label="Shu hafta to‘lanadi" value={fmt(pay.dueSoon)} />
+        <KpiCard label="Asosiy ta’minotchi" value={pay.rows?.[0]?.supplier ? pay.rows[0].supplier : 'Ma’lumot yo‘q'} />
       </div>
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <DebtTable title="Receivables Aging" rows={rcv.rows || []} kind="receivable" />
-        <DebtTable title="Payables Aging" rows={pay.rows || []} kind="payable" />
+        <DebtTable title="Olinadigan qarzlar muddati" rows={rcv.rows || []} kind="receivable" />
+        <DebtTable title="To‘lanadigan qarzlar muddati" rows={pay.rows || []} kind="payable" />
       </div>
     </div>
   );
@@ -350,7 +381,7 @@ export default function ReportsPage() {
         <table className="excel-table">
           <thead>
             <tr>
-              {['Flight', 'Airline', 'Route', 'Departure', 'Tickets', 'Ticket %', 'Packages', 'Package %', 'Revenue', 'COGS', 'Gross Profit', 'Direct Exp.', 'Overhead', 'Result', 'Margin', 'Receivables', 'Payables', 'Rev/Pax', 'Profit/Pax'].map((h) => <th key={h}>{h}</th>)}
+              {['Reys', 'Aviakompaniya', 'Yo‘nalish', 'Jo‘nash', 'Biletlar', 'Bilet sotilishi', 'Turpaketlar', 'Turpaket sotilishi', 'Tushum', 'Tannarx', 'Yalpi foyda', 'Bevosita xarajat', 'Umumiy xarajat', 'Natija', 'Marja', 'Olinadigan qarz', 'To‘lanadigan qarz', 'Yo‘lovchidan tushum', 'Yo‘lovchidan foyda'].map((h) => <th key={h}>{h}</th>)}
             </tr>
           </thead>
           <tbody>
@@ -389,8 +420,8 @@ export default function ReportsPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h2 className="text-3xl font-bold text-foreground">{tr('Reports', 'Hisobotlar')}</h2>
-          <p className="mt-1 text-sm text-muted">{tr('Professional financial analytics center based on live ledger data.', 'Real ledger ma\'lumotlari asosidagi professional moliyaviy analytics markazi.')}</p>
+          <h2 className="text-3xl font-bold text-foreground">{tr('Financial Report', 'Moliyaviy Hisobot')}</h2>
+          <p className="mt-1 text-sm text-muted">{tr('Financial analysis based on current accounting records.', 'Amaldagi hisob ma\'lumotlari asosidagi moliyaviy tahlil.')}</p>
         </div>
         <button type="button" onClick={loadReport} className="inline-flex items-center justify-center gap-2 rounded-md border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-surface-2">
           <RefreshCw size={16} />
@@ -436,7 +467,7 @@ export default function ReportsPage() {
             <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="compact-control" />
           </div>
           <div>
-            <label className="compact-label">{tr('Flight / Reys', 'Flight / Reys')}</label>
+            <label className="compact-label">{tr('Flight', 'Reys')}</label>
             <select value={flightId} onChange={(e) => setFlightId(e.target.value)} className="compact-control min-w-[170px]">
               <option value="">{tr('All flights', 'Barcha reyslar')}</option>
               {flights.map((flight) => <option key={flight.id} value={flight.id}>{flight.flightNumber}</option>)}
@@ -448,11 +479,41 @@ export default function ReportsPage() {
               <option value="">{tr('Base', 'Bazaviy')}</option>
               <option value="UZS">UZS</option>
               <option value="USD">USD</option>
-              <option value="EUR">EUR</option>
             </select>
           </div>
         </div>
       </div>
+
+      {flightId && flightInventory && <div className="space-y-4 rounded-lg border border-border bg-surface p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-lg font-bold">{tr('Flight ticket balance', 'Reys bilet balansi')}</h3><p className="text-xs text-muted">{flightReport?.flight?.flightNumber} · {flightReport?.flight?.tripType === 'ROUND_TRIP' ? 'RT' : 'OW'} · {flightInventory.reportType}</p></div>{canReconcile && <button type="button" onClick={runReconciliation} disabled={reconciling} className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-semibold hover:bg-surface-2 disabled:opacity-50"><RefreshCw size={15} className={reconciling ? 'animate-spin' : ''} />{reconciling ? tr('Checking...', 'Tekshirilmoqda...') : tr('Reconcile account', 'Hisobni qayta tekshirish')}</button>}</div>
+        {flightReport?.reconciliation?.required && <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-500"><strong>{tr('Manual reconciliation required', 'Qo‘lda tekshirish talab qilinadi')}.</strong> {(flightReport.reconciliation.issues || []).map((issue: any) => issue.code).join(', ')}</div>}
+        {flightReport?.reconciliation?.checkedAt && <div className="rounded-lg border border-border bg-surface-2 p-3 text-xs text-muted">{tr('Last reconciliation', 'Oxirgi tekshiruv')}: {new Date(flightReport.reconciliation.checkedAt).toLocaleString()} · {tr('Acquired segments', 'Olingan segmentlar')}: {flightReport.reconciliation.comparisons?.acquiredSegments || 0} · {tr('Available segments', 'Mavjud segmentlar')}: {flightReport.reconciliation.comparisons?.currentAvailableSegments || 0} · {tr('Discrepancies', 'Farqlar')}: {(flightReport.reconciliation.discrepancies || []).length}</div>}
+        <div className="grid gap-3 md:grid-cols-3">
+          {[
+            [tr('Total received', 'Jami olingan bilet'), flightInventory.received],
+            [tr('Sold / allocated', 'Jami sotilgan / ajratilgan bilet'), flightInventory.soldOrAllocated],
+            [tr('Remaining', 'Qolgan bilet'), flightInventory.remaining],
+          ].map(([label, metric]: any) => <div key={label} className="rounded-lg border border-border bg-surface-2 p-4"><div className="text-sm text-muted">{label}</div><div className="mt-1 text-2xl font-bold">{Number(metric?.count || 0)} ta</div>{(metric?.amounts || []).map((amount: any) => <div key={amount.currency} className="mt-1 flex justify-between text-sm"><span>{amount.count} ta</span><strong>{Number(amount.total || 0).toLocaleString()} {amount.currency}</strong></div>)}</div>)}
+        </div>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
+          {[
+            ['RT', flightInventory.rtOw?.availableRoundTripCount], ['OUTBOUND', flightInventory.rtOw?.availableOutboundLegCount], ['RETURN', flightInventory.rtOw?.availableReturnLegCount],
+            [tr('Pending allocation', 'Kutilayotgan ajratma'), flightInventory.pendingAllocationCount], [tr('Tour reserved', 'Turga band'), flightInventory.reservedForTourCount],
+            [tr('Direct sales', 'To‘g‘ridan sotuv'), flightInventory.directSoldTicketCount], [tr('Partial', 'Qisman'), flightInventory.rtOw?.partiallyUsedTicketCount],
+          ].map(([label, value]) => <div key={String(label)} className="rounded-lg border border-border bg-surface-2 p-3 text-center"><div className="text-xl font-bold">{Number(value || 0)}</div><div className="text-xs text-muted">{label}</div></div>)}
+        </div>
+        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+          {[
+            [tr('Accepted revenue', 'Tasdiqlangan tushum'), flightInventory.acceptedAllocationRevenueByCurrency],
+            [tr('Allocated cost', 'Ajratilgan tannarx'), flightInventory.allocatedCostByCurrency],
+            [tr('Gross profit', 'Yalpi foyda'), flightInventory.allocationGrossProfitByCurrency],
+            [tr('Outstanding debt', 'Qoldiq qarz'), flightInventory.outstandingDebtByCurrency],
+          ].map(([label, rows]: any) => <div key={label} className="rounded-lg border border-border bg-surface-2 p-3"><div className="text-xs text-muted">{label}</div>{(rows || []).length ? rows.map((row: any) => <div key={row.currency} className="mt-1 font-bold">{Number(row.total || 0).toLocaleString()} {row.currency}</div>) : <div className="mt-1 font-bold">0</div>}</div>)}
+        </div>
+        {(flightInventory.allocations || []).length > 0 && <div className="overflow-x-auto"><table className="excel-table"><thead><tr><th>{tr('Sender → Receiver', 'Yuboruvchi → Qabul qiluvchi')}</th><th>RT / OW</th><th>{tr('Status', 'Holat')}</th><th className="text-right">{tr('Quantity / segments', 'Bilet / segment')}</th><th className="text-right">{tr('Total', 'Jami')}</th><th>{tr('Paid / debt', 'To‘langan / qarz')}</th></tr></thead><tbody>{flightInventory.allocations.map((row: any) => <tr key={row.id}><td className="font-semibold">{row.fromFirm?.name || '—'} → {row.toFirm?.name || '—'}</td><td>{row.productType === 'ONE_WAY' ? `OW · ${row.direction}` : 'RT'}</td><td>{row.status}</td><td className="text-right">{row.quantity} / {row.segmentCount}</td><td className="text-right">{Number(row.totalAmount || 0).toLocaleString()} {row.currency}</td><td>{(row.paidAmounts || []).map((amount: any) => <div key={`p-${amount.currency}`} className="text-xs text-green-500">{tr('Paid', 'To‘landi')}: {Number(amount.total || 0).toLocaleString()} {amount.currency}</div>)}{(row.outstandingDebt || []).map((amount: any) => Number(amount.total || 0) > 0 && <div key={`d-${amount.currency}`} className="text-xs text-red-500">{tr('Debt', 'Qarz')}: {Number(amount.total).toLocaleString()} {amount.currency}</div>)}</td></tr>)}</tbody></table></div>}
+        {(flightInventory.recipients || []).length > 0 && <div className="overflow-x-auto"><table className="excel-table"><thead><tr><th>{tr('Recipient', 'Kimga')}</th><th>{tr('Type', 'Turi')}</th><th className="text-right">{tr('Tickets', 'Bilet')}</th><th className="text-right">{tr('Amount', 'Summa')}</th><th>{tr('Status', 'Holat')}</th></tr></thead><tbody>{flightInventory.recipients.map((row: any, index: number) => <tr key={`${row.allocationId || row.ticketId || row.name}-${index}`}><td className="font-semibold">{row.name}</td><td>{row.type === 'FIRM' ? tr('Firm', 'Firma') : tr('Customer', 'Mijoz')}</td><td className="text-right">{row.quantity} ta</td><td className="text-right">{Number(row.totalAmount || 0).toLocaleString()} {row.currency}</td><td>{row.status}</td></tr>)}</tbody></table></div>}
+        {(flightReport?.transactions || []).length > 0 && <details className="rounded-lg border border-border bg-surface-2 p-3"><summary className="cursor-pointer font-semibold">{tr('Related transactions', 'Bog‘liq tranzaksiyalar')} ({flightReport.transactions.length})</summary><div className="mt-3 overflow-x-auto"><table className="excel-table"><thead><tr><th>{tr('Date', 'Sana')}</th><th>{tr('Source', 'Manba')}</th><th>{tr('Type', 'Turi')}</th><th className="text-right">{tr('Amount', 'Summa')}</th><th>{tr('Status', 'Holat')}</th></tr></thead><tbody>{flightReport.transactions.map((row: any) => <tr key={row.id}><td>{new Date(row.createdAt).toLocaleString()}</td><td>{row.sourceMode || 'MANUAL'}</td><td>{row.type}</td><td className="text-right">{Number(row.originalAmount || 0).toLocaleString()} {row.currency}</td><td>{row.status}</td></tr>)}</tbody></table></div></details>}
+      </div>}
 
       <div className="flex gap-2 overflow-x-auto rounded-lg border border-border bg-surface p-2">
         {tabs.map((tab) => {
@@ -499,14 +560,14 @@ function DebtTable({ title, rows, kind }: { title: string; rows: any[]; kind: 'r
         <thead>
           <tr>
             {(kind === 'receivable'
-              ? ['Customer', 'Sale / Invoice', 'Flight', 'Sale Manager', 'Document Date', 'Due Date', 'Original Amount', 'Paid Amount', 'Outstanding Amount', 'Days Overdue', 'Aging Bucket', 'Status']
-              : ['Supplier', 'Supplier Type', 'Flight', 'Document Date', 'Due Date', 'Invoice Amount', 'Paid Amount', 'Outstanding', 'Days Overdue', 'Status']
+              ? ['Mijoz', 'Sotuv / hisob-faktura', 'Reys', 'Sotuv mas’uli', 'Hujjat sanasi', 'To‘lov muddati', 'Boshlang‘ich summa', 'To‘langan', 'Qoldiq', 'Kechikkan kun', 'Muddat guruhi', 'Holati']
+              : ['Ta’minotchi', 'Ta’minotchi turi', 'Reys', 'Hujjat sanasi', 'To‘lov muddati', 'Hisob-faktura summasi', 'To‘langan', 'Qoldiq', 'Kechikkan kun', 'Holati']
             ).map((h) => <th key={h}>{h}</th>)}
           </tr>
         </thead>
         <tbody>
           {rows.length === 0 ? (
-            <tr><td colSpan={kind === 'receivable' ? 12 : 10} className="text-center text-muted">Tanlangan davr uchun ma'lumot mavjud emas</td></tr>
+            <tr><td colSpan={kind === 'receivable' ? 12 : 10} className="text-center text-muted">Tanlangan davr uchun ma’lumot mavjud emas</td></tr>
           ) : rows.map((row, index) => kind === 'receivable' ? (
             <tr key={`${row.saleOrInvoice}-${index}`}>
               <td>{row.customer || '-'}</td>

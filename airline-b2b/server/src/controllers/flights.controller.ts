@@ -6,7 +6,13 @@ import { AppError, mapKnownError } from '../errors/app-error';
 import { ERROR_CODES } from '../errors/catalog';
 import { sendApiError } from '../errors/http';
 import { canManageFirmWork } from '../utils/firm-user-roles';
-import type { Prisma } from '@prisma/client';
+import { getAccessibleFirmIds } from '../utils/access';
+import { TicketProductType, type Prisma } from '@prisma/client';
+import { canManageFlight } from '../domains/flights/flight-permissions';
+import { activeFlightWhere, firmFlightParticipationWhere } from '../domains/flights/flight-scope';
+import { writeAuditLog } from '../utils/audit';
+import { buildTicketInventorySummary } from '../domains/tickets/inventory-summary';
+import { createTicketLegInventory, normalizeTicketProductType, validateLegCosts } from '../domains/tickets/ticket-leg-inventory';
 
 export interface AuthenticatedRequest extends Request {
   user?: any;
@@ -40,14 +46,15 @@ function normalizeCurrencyCode(value: unknown): string {
   return /^[A-Z]{3}$/.test(code) ? code : '';
 }
 
-function activeFlightWhere(): Prisma.FlightWhereInput {
-  return {
-    deletedAt: null,
-    AND: [
-      { OR: [{ status: null }, { status: { not: 'DELETED' } }] },
-      { OR: [{ status: null }, { status: { not: 'CANCELLED' } }] },
-    ],
-  };
+function routeParts(value: unknown) {
+  return String(value || '').split(/\s*(?:→|->|–|—|-)\s*/).map((part) => part.trim()).filter(Boolean);
+}
+
+function validDate(value: unknown, label: string, required = true): Date | null {
+  if (!value && !required) return null;
+  const date = new Date(String(value || ''));
+  if (Number.isNaN(date.getTime())) throw new AppError(ERROR_CODES.VALIDATION_FAILED, `${label} is required`);
+  return date;
 }
 
 async function resolveAirlineIdForFlight(
@@ -114,30 +121,75 @@ export const getAllFlights = async (req: AuthenticatedRequest, res: Response) =>
   try {
     const role = normalizeRole(req.user?.role);
     const firmId = req.user?.firmId ? String(req.user.firmId) : '';
-    const txWhere = role === 'FIRM'
-      ? (firmId ? { firmId } : undefined)
+    if (role === 'FIRM' && !firmId) return sendApiError(res, new AppError(ERROR_CODES.FIRM_ACCOUNT_MISSING));
+    const scopedFirmIds = role === 'FIRM'
+      ? [firmId]
+      : role === 'ADMIN'
+        ? await getAccessibleFirmIds(req.user || {}) || []
+        : undefined;
+    const txWhere: Prisma.TransactionWhereInput | undefined = role === 'FIRM'
+      ? (firmId ? { OR: [{ firmId }, { payerFirmId: firmId }, { receiverFirmId: firmId }] } : undefined)
       : undefined;
-    const where = activeFlightWhere();
+    const where: Prisma.FlightWhereInput = {
+      AND: [
+        activeFlightWhere(),
+        ...(scopedFirmIds ? [firmFlightParticipationWhere(scopedFirmIds)] : []),
+      ],
+    };
 
     const flights = await prisma.flight.findMany({
       where,
       orderBy: { departure: 'asc' },
       include: {
-        _count: {
-          select: { tickets: true },
-        },
         transactions: {
           ...(txWhere ? { where: txWhere } : {}),
           select: {
             type: true,
-            baseAmount: true
+            baseAmount: true,
+            id: true,
+            firmId: true,
+            payerFirmId: true,
+            receiverFirmId: true,
+            subjectType: true,
+            subjectId: true,
+            originalAmount: true,
+            currency: true,
+            sourceMode: true,
+            status: true,
+            reversedTransactionId: true,
+            deletedAt: true,
+            metadata: true,
           }
         },
+        ownerFirm: { select: { id: true, name: true } },
         airline: { select: { id: true, name: true, code: true, firmId: true } },
         tickets: {
           where: { deletedAt: null, status: { not: 'DELETED' } },
-          select: { basePrice: true, currency: true, status: true, deletedAt: true },
+          select: {
+            id: true, basePrice: true, originPrice: true, currency: true, status: true, ticketType: true,
+            assignedFirmId: true, originalOwnerFirmId: true, allocationSourceFirmId: true,
+            soldPrice: true, soldCurrency: true, purchaserInfo: true, deletedAt: true,
+            legs: { select: { id: true, ticketId: true, direction: true, status: true, currentOwnerFirmId: true, acquisitionCostSnapshot: true, originalCostSnapshot: true, allocationPriceSnapshot: true, currencySnapshot: true } },
+          },
         },
+        ticketAllocations: {
+          select: {
+            id: true, fromFirmId: true, toFirmId: true, status: true, productType: true, direction: true,
+            parentTicketCount: true, segmentCount: true, currency: true, totalAmount: true, createdAt: true, acceptedAt: true,
+            fromFirm: { select: { id: true, name: true } },
+            toFirm: { select: { id: true, name: true } },
+            priceRows: { select: { quantity: true, unitPrice: true, totalAmount: true } },
+            legItems: { select: { ticketLegId: true, status: true, direction: true, acquisitionCostSnapshot: true, allocationPriceSnapshot: true, currencySnapshot: true, acquisitionCurrencySnapshot: true, allocationCurrencySnapshot: true } },
+          },
+        },
+        ticketSales: {
+          select: {
+            id: true, sellerFirmId: true, status: true, productType: true, direction: true, quantity: true,
+            segmentCount: true, unitPrice: true, totalAmount: true, currency: true, purchaserInfo: true, createdAt: true,
+            items: { select: { ticketLegId: true, status: true, acquisitionCostSnapshot: true, salePriceSnapshot: true, currencySnapshot: true, acquisitionCurrencySnapshot: true, saleCurrencySnapshot: true } },
+          },
+        },
+        _count: { select: { ticketLegMigrationIssues: { where: { resolvedAt: null } } } },
       }
     });
     const flightData = flights.map(flight => {
@@ -149,18 +201,39 @@ export const getAllFlights = async (req: AuthenticatedRequest, res: Response) =>
             if (t.type === 'SALE') total_sales += Number(t.baseAmount);
             if (t.type === 'PAYMENT') total_payments += Number(t.baseAmount);
         });
-        const { transactions, ...rest } = flight;
-        const activeTickets = (flight as any).tickets || [];
+        const { transactions, tickets: inventoryTickets, ticketAllocations, ticketSales, _count, ...rest } = flight;
+        const ownsFlight = Boolean(scopedFirmIds?.some((id) => id === flight.ownerFirmId || (!flight.ownerFirmId && id === flight.airline?.firmId)));
+        const activeTickets = inventoryTickets.filter((ticket: any) =>
+          !scopedFirmIds
+          || ownsFlight
+          || scopedFirmIds.includes(String(ticket.assignedFirmId || ''))
+          || (ticket.status === 'PENDING' && scopedFirmIds.includes(String(ticket.allocationSourceFirmId || '')))
+        );
         const referenceTicket = activeTickets.find((ticket: any) => ticket.status !== 'SOLD') || activeTickets[0];
+        const referenceOutboundLeg = referenceTicket?.legs?.find((leg: any) => leg.direction === 'OUTBOUND');
+        const referenceReturnLeg = referenceTicket?.legs?.find((leg: any) => leg.direction === 'RETURN');
+        const inventorySummary = buildTicketInventorySummary({
+          tickets: inventoryTickets,
+          allocations: ticketAllocations,
+          sales: ticketSales,
+          transactions,
+          sourceFirmId: role === 'FIRM' ? firmId : (flight.ownerFirmId || flight.airline?.firmId),
+          originOwnerFirmId: flight.ownerFirmId || flight.airline?.firmId,
+          migrationIssueCount: _count.ticketLegMigrationIssues,
+        });
         return {
             ...rest,
-            tickets: undefined,
-            ticketCount: activeTickets.length,
+            ticketCount: ownsFlight ? inventoryTickets.length : inventorySummary.remaining.count,
             ticketPrice: referenceTicket ? Number(referenceTicket.basePrice) : 0,
+            outboundCost: referenceOutboundLeg ? Number(referenceOutboundLeg.originalCostSnapshot) : 0,
+            returnCost: referenceReturnLeg ? Number(referenceReturnLeg.originalCostSnapshot) : 0,
             currency: referenceTicket?.currency || flight.currency,
+            canEdit: canManageFlight(role, ownsFlight, canManageFirmWork(req.user || {})),
+            canDelete: canManageFlight(role, ownsFlight, canManageFirmWork(req.user || {})),
             total_allocated,
             total_sales,
-            total_payments
+            total_payments,
+            inventorySummary,
         };
     });
     res.json(flightData);
@@ -179,29 +252,46 @@ export const getFlightById = async (req: Request, res: Response) => {
     if (role === 'FIRM' && !firmId) {
       return sendApiError(res, new AppError(ERROR_CODES.FIRM_ACCOUNT_MISSING));
     }
+    const scopedFirmIds = role === 'FIRM'
+      ? [firmId]
+      : role === 'ADMIN'
+        ? await getAccessibleFirmIds((req as any).user || {}) || []
+        : undefined;
 
-    const flight = await prisma.flight.findUnique({
-      where: { id },
+    const flight = await prisma.flight.findFirst({
+      where: {
+        id,
+        AND: [
+          activeFlightWhere(),
+          ...(scopedFirmIds ? [firmFlightParticipationWhere(scopedFirmIds)] : []),
+        ],
+      },
       include: {
         tickets: {
           where: {
             status: { not: 'DELETED' },
             deletedAt: null,
-            ...(role === 'FIRM' ? { assignedFirmId: firmId } : {}),
           },
           include: {
             assignedFirm: {
               select: { id: true, name: true }
-            }
+            },
+            allocationSourceFirm: { select: { id: true, name: true } },
           }
         },
+        ownerFirm: { select: { id: true, name: true } },
         airline: { select: { id: true, name: true, code: true, firmId: true } },
       }
     });
     if (!flight || flight.status === 'DELETED' || flight.deletedAt) {
       return sendApiError(res, new AppError(ERROR_CODES.FLIGHT_NOT_FOUND));
     }
-    res.json(flight);
+    const ownsFlight = Boolean(scopedFirmIds?.some((firmScopeId) => firmScopeId === flight.ownerFirmId || (!flight.ownerFirmId && firmScopeId === flight.airline?.firmId)));
+    const tickets = flight.tickets
+      .filter((ticket) => !scopedFirmIds || ownsFlight || scopedFirmIds.includes(String(ticket.assignedFirmId || '')) || (ticket.status === 'PENDING' && scopedFirmIds.includes(String(ticket.allocationSourceFirmId || ''))))
+      .map((ticket) => ({ ...ticket, price: Number(ticket.basePrice), basePrice: Number(ticket.basePrice) }));
+    const canManage = canManageFlight(role, ownsFlight, canManageFirmWork((req as any).user || {}));
+    res.json({ ...flight, tickets, canEdit: canManage, canDelete: canManage });
   } catch (error) {
     logger.error({ err: error, flightId: id }, 'Failed to get flight');
     sendApiError(res, mapKnownError(error, ERROR_CODES.DATABASE_ERROR));
@@ -221,6 +311,16 @@ export const createFlight = async (req: Request, res: Response) => {
     airlineId,
     airlineName,
     airlineCode,
+    tripType,
+    ticketType,
+    outboundOrigin,
+    outboundDestination,
+    returnOrigin,
+    returnDestination,
+    returnDeparture,
+    returnArrival,
+    outboundCost,
+    returnCost,
   } = req.body;
   try {
     const authUser = ((req as any).user || {}) as any;
@@ -243,6 +343,29 @@ export const createFlight = async (req: Request, res: Response) => {
     if (!Number.isFinite(resolvedTicketPrice) || resolvedTicketPrice < 0) {
       return sendApiError(res, new AppError(ERROR_CODES.VALIDATION_FAILED, 'Ticket price must be zero or greater'));
     }
+    const productType = normalizeTicketProductType(tripType ?? ticketType, TicketProductType.ONE_WAY);
+    const departureDate = validDate(departure, 'Outbound departure')!;
+    const arrivalDate = validDate(arrival, 'Outbound arrival')!;
+    if (arrivalDate <= departureDate) {
+      return sendApiError(res, new AppError(ERROR_CODES.VALIDATION_FAILED, 'Arrival must be after departure'));
+    }
+    const returnDepartureDate = validDate(returnDeparture, 'Return departure', productType === TicketProductType.ROUND_TRIP);
+    const returnArrivalDate = validDate(returnArrival, 'Return arrival', productType === TicketProductType.ROUND_TRIP);
+    if (returnDepartureDate && returnArrivalDate && returnArrivalDate <= returnDepartureDate) {
+      return sendApiError(res, new AppError(ERROR_CODES.VALIDATION_FAILED, 'Return arrival must be after return departure'));
+    }
+    const parts = routeParts(route);
+    const resolvedOutboundOrigin = normalizeOptionalString(outboundOrigin) || parts[0];
+    const resolvedOutboundDestination = normalizeOptionalString(outboundDestination) || parts[1];
+    const resolvedReturnOrigin = productType === TicketProductType.ROUND_TRIP
+      ? normalizeOptionalString(returnOrigin) || parts.at(-2) || resolvedOutboundDestination
+      : undefined;
+    const resolvedReturnDestination = productType === TicketProductType.ROUND_TRIP
+      ? normalizeOptionalString(returnDestination) || parts.at(-1) || resolvedOutboundOrigin
+      : undefined;
+    if (!resolvedOutboundOrigin || !resolvedOutboundDestination) {
+      return sendApiError(res, new AppError(ERROR_CODES.VALIDATION_FAILED, 'Outbound origin and destination are required'));
+    }
 
     const firm = await prisma.firm.findUnique({
       where: { id: firmId },
@@ -250,33 +373,43 @@ export const createFlight = async (req: Request, res: Response) => {
     });
     if (!firm) return sendApiError(res, new AppError(ERROR_CODES.FIRM_NOT_FOUND));
 
-    const resolvedAirlineId = await prisma.$transaction(async (tx) => {
-      const resolved = await resolveAirlineIdForFlight(tx, { airlineId, airlineName, airlineCode }, { role, firmId });
-      if (!resolved) throw new Error('Airline is required');
-      return resolved;
-    });
-
-    const newFlight = await prisma.flight.create({
-      data: {
-        flightNumber: String(flightNumber).trim(),
-        route: route || 'UNKNOWN',
-        airlineId: resolvedAirlineId,
-        departure: new Date(departure),
-        arrival: new Date(arrival),
-        currency: currency || 'UZS',
-        tickets: {
-          create: Array.from({ length: resolvedTicketCount }, () => ({
-            basePrice: resolvedTicketPrice,
-            currency: currency || 'UZS',
-            status: 'ASSIGNED',
-            assignedFirmId: firmId,
-          })),
+    const resolvedCurrency = normalizeCurrencyCode(currency || 'UZS');
+    if (!resolvedCurrency) return sendApiError(res, new AppError(ERROR_CODES.VALIDATION_FAILED, 'Invalid currency code'));
+    const newFlight = await prisma.$transaction(async (tx) => {
+      const resolvedAirlineId = await resolveAirlineIdForFlight(tx, { airlineId, airlineName, airlineCode }, { role, firmId });
+      if (!resolvedAirlineId) throw new Error('Airline is required');
+      const created = await tx.flight.create({
+        data: {
+          flightNumber: String(flightNumber).trim(),
+          route: normalizeOptionalString(route) || (productType === TicketProductType.ROUND_TRIP
+            ? `${resolvedOutboundOrigin} → ${resolvedOutboundDestination} → ${resolvedReturnDestination}`
+            : `${resolvedOutboundOrigin} → ${resolvedOutboundDestination}`),
+          airlineId: resolvedAirlineId,
+          ownerFirmId: firmId,
+          departure: departureDate,
+          arrival: arrivalDate,
+          tripType: productType,
+          outboundOrigin: resolvedOutboundOrigin,
+          outboundDestination: resolvedOutboundDestination,
+          returnOrigin: resolvedReturnOrigin,
+          returnDestination: resolvedReturnDestination,
+          returnDeparture: returnDepartureDate,
+          returnArrival: returnArrivalDate,
+          currency: resolvedCurrency,
         },
-      },
-      include: {
-        tickets: true,
-        airline: { select: { id: true, name: true, code: true, firmId: true } },
-      }
+      });
+      await createTicketLegInventory(tx, {
+        flightId: created.id, ownerFirmId: firmId, productType, quantity: resolvedTicketCount,
+        totalCost: resolvedTicketPrice, outboundCost, returnCost, currency: resolvedCurrency,
+        outboundOrigin: resolvedOutboundOrigin, outboundDestination: resolvedOutboundDestination,
+        outboundDeparture: departureDate, outboundArrival: arrivalDate,
+        returnOrigin: resolvedReturnOrigin, returnDestination: resolvedReturnDestination,
+        returnDeparture: returnDepartureDate, returnArrival: returnArrivalDate,
+      });
+      return tx.flight.findUniqueOrThrow({
+        where: { id: created.id },
+        include: { tickets: { include: { legs: true } }, airline: { select: { id: true, name: true, code: true, firmId: true } } },
+      });
     });
     res.status(201).json(newFlight);
   } catch (error) {
@@ -299,14 +432,22 @@ export const updateFlight = async (req: Request, res: Response) => {
     airlineId,
     airlineName,
     airlineCode,
+    tripType,
+    ticketType,
+    outboundOrigin,
+    outboundDestination,
+    returnOrigin,
+    returnDestination,
+    returnDeparture,
+    returnArrival,
+    outboundCost,
+    returnCost,
   } = req.body;
   try {
     const authUser = ((req as any).user || {}) as any;
     const role = normalizeRole(authUser.role);
     const firmId = authUser.firmId ? String(authUser.firmId) : '';
-    if (role === 'FIRM' && (!firmId || !canManageFirmWork(authUser))) {
-      return sendApiError(res, new AppError(ERROR_CODES.AUTH_FORBIDDEN, 'Only firm admins and managers can edit flights'));
-    }
+    const accessibleFirmIds = role === 'ADMIN' ? await getAccessibleFirmIds(authUser) || [] : [];
 
     const updatedFlight = await prisma.$transaction(async (tx) => {
       const flight = await tx.flight.findUnique({
@@ -315,7 +456,7 @@ export const updateFlight = async (req: Request, res: Response) => {
           airline: { select: { id: true, name: true, firmId: true } },
           tickets: {
             where: { deletedAt: null, status: { not: 'DELETED' } },
-            select: { id: true, status: true, assignedFirmId: true, deletedAt: true, soldPrice: true, purchaserInfo: true, createdAt: true },
+            include: { legs: { orderBy: { direction: 'asc' } } },
             orderBy: { createdAt: 'desc' },
           },
         },
@@ -323,8 +464,10 @@ export const updateFlight = async (req: Request, res: Response) => {
       if (!flight || flight.status === 'DELETED' || flight.deletedAt) {
         throw new AppError(ERROR_CODES.FLIGHT_NOT_FOUND);
       }
-      if (role === 'FIRM' && !flight.tickets.some((ticket) => ticket.assignedFirmId === firmId)) {
-        throw new AppError(ERROR_CODES.AUTH_FORBIDDEN, 'You can edit only flights in your firm inventory');
+      const ownerFirmId = flight.ownerFirmId || flight.airline?.firmId || '';
+      const ownsFlight = role === 'ADMIN' ? accessibleFirmIds.includes(ownerFirmId) : ownerFirmId === firmId;
+      if (!canManageFlight(role, ownsFlight, canManageFirmWork(authUser))) {
+        throw new AppError(ERROR_CODES.AUTH_FORBIDDEN, 'You can edit only flights managed by your role and firm scope');
       }
 
       const nextTicketCount = ticketCount == null || String(ticketCount).trim() === ''
@@ -347,13 +490,57 @@ export const updateFlight = async (req: Request, res: Response) => {
       if (currency != null && !nextCurrency) {
         throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Invalid currency code');
       }
+      const nextDeparture = departure ? new Date(departure) : flight.departure;
+      const nextArrival = arrival ? new Date(arrival) : flight.arrival;
+      if (Number.isNaN(nextDeparture.getTime()) || (nextArrival && Number.isNaN(nextArrival.getTime()))) {
+        throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Valid departure and arrival times are required');
+      }
+      if (nextArrival && nextArrival <= nextDeparture) {
+        throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Arrival must be after departure');
+      }
+      const productType = normalizeTicketProductType(tripType ?? ticketType, flight.tripType);
+      if (productType !== flight.tripType && flight.tickets.length) {
+        throw new AppError(ERROR_CODES.TICKET_INVALID_STATE, 'Mavjud biletli reysning RT/OW turini o‘zgartirib bo‘lmaydi. Yangi reys yarating.');
+      }
+      const nextReturnDeparture = returnDeparture ? new Date(returnDeparture) : flight.returnDeparture;
+      const nextReturnArrival = returnArrival ? new Date(returnArrival) : flight.returnArrival;
+      if (productType === TicketProductType.ROUND_TRIP) {
+        if (!nextReturnDeparture || !nextReturnArrival || Number.isNaN(nextReturnDeparture.getTime()) || Number.isNaN(nextReturnArrival.getTime())) {
+          throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'ROUND TRIP uchun qaytish vaqtlari majburiy');
+        }
+        if (nextReturnArrival <= nextReturnDeparture) {
+          throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Qaytish yetib kelish vaqti jo‘nash vaqtidan keyin bo‘lishi kerak');
+        }
+      }
+      const routeTokens = routeParts(route ?? flight.route);
+      const nextOutboundOrigin = normalizeOptionalString(outboundOrigin) || flight.outboundOrigin || routeTokens[0];
+      const nextOutboundDestination = normalizeOptionalString(outboundDestination) || flight.outboundDestination || routeTokens[1];
+      const nextReturnOrigin = productType === TicketProductType.ROUND_TRIP
+        ? normalizeOptionalString(returnOrigin) || flight.returnOrigin || nextOutboundDestination
+        : undefined;
+      const nextReturnDestination = productType === TicketProductType.ROUND_TRIP
+        ? normalizeOptionalString(returnDestination) || flight.returnDestination || nextOutboundOrigin
+        : undefined;
+      if (!nextOutboundOrigin || !nextOutboundDestination || (productType === TicketProductType.ROUND_TRIP && (!nextReturnOrigin || !nextReturnDestination))) {
+        throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Reys yo‘nalishlari to‘liq kiritilishi kerak');
+      }
 
       const resolvedAirlineId = airlineId || normalizeOptionalString(airlineName)
         ? await resolveAirlineIdForFlight(tx, { airlineId, airlineName, airlineCode }, { role, firmId })
         : undefined;
 
       const currentCount = flight.tickets.length;
-      const editableTickets = flight.tickets.filter(isEditableTicket);
+      const inventoryOwnerFirmId = flight.ownerFirmId || flight.airline?.firmId || null;
+      const editableTickets = flight.tickets.filter((ticket) =>
+        ticket.originalOwnerFirmId === inventoryOwnerFirmId
+        && ticket.legs.length === (productType === TicketProductType.ROUND_TRIP ? 2 : 1)
+        && ticket.legs.every((leg) => leg.currentOwnerFirmId === inventoryOwnerFirmId
+          && leg.status === 'AVAILABLE'
+          && !leg.pendingAllocationId
+          && !leg.acceptedAllocationId
+          && !leg.tourPackageId)
+      );
+      const removedTicketIds = new Set<string>();
       if (nextTicketCount !== undefined && nextTicketCount < currentCount) {
         const removeCount = currentCount - nextTicketCount;
         if (editableTickets.length < removeCount) {
@@ -362,56 +549,121 @@ export const updateFlight = async (req: Request, res: Response) => {
             `Cannot reduce ticket count to ${nextTicketCount}; only ${editableTickets.length} unsold tickets can be removed`,
           );
         }
+        const ticketIdsToRemove = editableTickets.slice(0, removeCount).map((ticket) => ticket.id);
+        ticketIdsToRemove.forEach((ticketId) => removedTicketIds.add(ticketId));
         await tx.ticket.updateMany({
-          where: { id: { in: editableTickets.slice(0, removeCount).map((ticket) => ticket.id) } },
+          where: { id: { in: ticketIdsToRemove } },
           data: { status: 'DELETED', deletedAt: new Date(), deleteReason: 'Removed by flight edit' },
+        });
+        await tx.ticketLeg.updateMany({
+          where: { ticketId: { in: ticketIdsToRemove } },
+          data: { status: 'DELETED' },
         });
       } else if (nextTicketCount !== undefined && nextTicketCount > currentCount) {
         const addCount = nextTicketCount - currentCount;
-        const assignedFirmIds = Array.from(new Set(flight.tickets.map((ticket) => ticket.assignedFirmId).filter(Boolean) as string[]));
-        const newAssignedFirmId = role === 'FIRM'
-          ? firmId
-          : assignedFirmIds.length === 1
-            ? assignedFirmIds[0]
-            : null;
-        await tx.ticket.createMany({
-          data: Array.from({ length: addCount }, () => ({
-            flightId: id,
-            basePrice: nextTicketPrice ?? 0,
-            currency: nextCurrency || flight.currency,
-            status: newAssignedFirmId ? 'ASSIGNED' : 'AVAILABLE',
-            assignedFirmId: newAssignedFirmId,
-          })),
+        if (!inventoryOwnerFirmId) throw new AppError(ERROR_CODES.TICKET_INVALID_STATE, 'Bilet egasi firma topilmadi');
+        const fallbackTotal = nextTicketPrice ?? Number(flight.tickets[0]?.originPrice || flight.tickets[0]?.basePrice || 0);
+        await createTicketLegInventory(tx, {
+          flightId: id,
+          ownerFirmId: inventoryOwnerFirmId,
+          productType,
+          quantity: addCount,
+          totalCost: fallbackTotal,
+          outboundCost,
+          returnCost,
+          currency: nextCurrency || flight.currency,
+          outboundOrigin: nextOutboundOrigin,
+          outboundDestination: nextOutboundDestination,
+          outboundDeparture: nextDeparture,
+          outboundArrival: nextArrival,
+          returnOrigin: nextReturnOrigin,
+          returnDestination: nextReturnDestination,
+          returnDeparture: nextReturnDeparture,
+          returnArrival: nextReturnArrival,
         });
       }
 
       if (nextTicketPrice !== undefined || nextCurrency !== undefined) {
-        await tx.ticket.updateMany({
-          where: {
-            id: { in: editableTickets.map((ticket) => ticket.id) },
-          },
-          data: {
-            ...(nextTicketPrice !== undefined ? { basePrice: nextTicketPrice } : {}),
-            ...(nextCurrency ? { currency: nextCurrency } : {}),
-          },
-        });
+        for (const ticket of editableTickets.filter((row) => !removedTicketIds.has(row.id))) {
+          const totalCost = nextTicketPrice ?? ticket.originPrice;
+          const oldOutbound = ticket.legs.find((leg) => leg.direction === 'OUTBOUND')?.originalCostSnapshot;
+          const oldReturn = ticket.legs.find((leg) => leg.direction === 'RETURN')?.originalCostSnapshot;
+          const costs = validateLegCosts({
+            productType,
+            totalCost,
+            outboundCost: outboundCost ?? (nextTicketPrice === undefined ? oldOutbound : undefined),
+            returnCost: returnCost ?? (nextTicketPrice === undefined ? oldReturn : undefined),
+          });
+          await tx.ticket.update({
+            where: { id: ticket.id },
+            data: {
+              ...(nextTicketPrice !== undefined ? { basePrice: costs.totalCost, originPrice: costs.totalCost } : {}),
+              ...(nextCurrency ? { currency: nextCurrency } : {}),
+            },
+          });
+          for (const leg of ticket.legs) {
+            const legCost = leg.direction === 'OUTBOUND' ? costs.outboundCost : costs.returnCost;
+            await tx.ticketLeg.update({
+              where: { id: leg.id },
+              data: {
+                ...(nextTicketPrice !== undefined || outboundCost != null || returnCost != null
+                  ? { acquisitionCostSnapshot: legCost, originalCostSnapshot: legCost }
+                  : {}),
+                ...(nextCurrency ? { currencySnapshot: nextCurrency } : {}),
+              },
+            });
+          }
+        }
       }
 
-      return tx.flight.update({
+      const retainedEditableTicketIds = editableTickets
+        .filter((ticket) => !removedTicketIds.has(ticket.id))
+        .map((ticket) => ticket.id);
+      if (retainedEditableTicketIds.length) {
+        await tx.ticketLeg.updateMany({
+          where: { ticketId: { in: retainedEditableTicketIds }, direction: 'OUTBOUND' },
+          data: { origin: nextOutboundOrigin, destination: nextOutboundDestination, departureAt: nextDeparture, arrivalAt: nextArrival },
+        });
+        if (productType === TicketProductType.ROUND_TRIP) {
+          await tx.ticketLeg.updateMany({
+            where: { ticketId: { in: retainedEditableTicketIds }, direction: 'RETURN' },
+            data: { origin: nextReturnOrigin!, destination: nextReturnDestination!, departureAt: nextReturnDeparture!, arrivalAt: nextReturnArrival! },
+          });
+        }
+      }
+
+      const updated = await tx.flight.update({
         where: { id },
         data: {
           ...(normalizeOptionalString(flightNumber) ? { flightNumber: String(flightNumber).trim() } : {}),
           ...(route != null ? { route: String(route || '').trim() || 'UNKNOWN' } : {}),
-          ...(departure ? { departure: new Date(departure) } : {}),
-          ...(arrival ? { arrival: new Date(arrival) } : {}),
+          ...(departure ? { departure: nextDeparture } : {}),
+          ...(arrival ? { arrival: nextArrival } : {}),
+          tripType: productType,
+          outboundOrigin: nextOutboundOrigin,
+          outboundDestination: nextOutboundDestination,
+          returnOrigin: nextReturnOrigin || null,
+          returnDestination: nextReturnDestination || null,
+          returnDeparture: productType === TicketProductType.ROUND_TRIP ? nextReturnDeparture : null,
+          returnArrival: productType === TicketProductType.ROUND_TRIP ? nextReturnArrival : null,
           ...(nextCurrency ? { currency: nextCurrency } : {}),
           ...(resolvedAirlineId ? { airlineId: resolvedAirlineId } : {}),
         },
         include: {
           airline: { select: { id: true, name: true, code: true, firmId: true } },
-          tickets: { where: { deletedAt: null, status: { not: 'DELETED' } } },
+          tickets: { where: { deletedAt: null, status: { not: 'DELETED' } }, include: { legs: true } },
         },
       });
+      await writeAuditLog(req, {
+        action: 'UPDATE',
+        entityType: 'flight',
+        entityId: id,
+        entityLabel: updated.flightNumber,
+        summary: `Updated flight ${updated.flightNumber}`,
+        before: { flightNumber: flight.flightNumber, route: flight.route, departure: flight.departure, arrival: flight.arrival, currency: flight.currency, airlineId: flight.airlineId, ticketCount: currentCount },
+        after: { flightNumber: updated.flightNumber, route: updated.route, departure: updated.departure, arrival: updated.arrival, currency: updated.currency, airlineId: updated.airlineId, ticketCount: updated.tickets.length },
+      }, tx);
+      return updated;
     });
     res.json(updatedFlight);
   } catch (error) {
@@ -424,21 +676,50 @@ export const updateFlight = async (req: Request, res: Response) => {
 export const deleteFlight = async (req: Request, res: Response) => {
   const id = req.params.id as string;
   try {
-    const flight = await prisma.flight.findUnique({ where: { id }, select: { id: true, status: true } });
-    if (!flight) {
-      return sendApiError(res, new AppError(ERROR_CODES.FLIGHT_NOT_FOUND));
-    }
-
-    if (flight.status !== 'DELETED') {
-      await prisma.flight.update({
+    const authUser = ((req as any).user || {}) as any;
+    const role = normalizeRole(authUser.role);
+    const firmId = authUser.firmId ? String(authUser.firmId) : '';
+    const accessibleFirmIds = role === 'ADMIN' ? await getAccessibleFirmIds(authUser) || [] : [];
+    await prisma.$transaction(async (tx) => {
+      const flight = await tx.flight.findUnique({
+        where: { id },
+        include: {
+          airline: { select: { firmId: true } },
+          tickets: { where: { deletedAt: null, status: { not: 'DELETED' } }, select: { status: true, assignedFirmId: true, deletedAt: true, soldPrice: true, purchaserInfo: true } },
+          _count: { select: { transactions: true } },
+        },
+      });
+      if (!flight || flight.status === 'DELETED' || flight.deletedAt) throw new AppError(ERROR_CODES.FLIGHT_NOT_FOUND);
+      const ownerFirmId = flight.ownerFirmId || flight.airline?.firmId || '';
+      const ownsFlight = role === 'ADMIN' ? accessibleFirmIds.includes(ownerFirmId) : ownerFirmId === firmId;
+      if (!canManageFlight(role, ownsFlight, canManageFirmWork(authUser))) {
+        throw new AppError(ERROR_CODES.AUTH_FORBIDDEN, 'You can delete only flights managed by your role and firm scope');
+      }
+      const protectedActivity = flight._count.transactions > 0 || flight.tickets.some((ticket) =>
+        ticket.assignedFirmId !== ownerFirmId || !isEditableTicket(ticket)
+      );
+      if (role !== 'SUPERADMIN' && protectedActivity) {
+        throw new AppError(ERROR_CODES.CONFLICT, 'Allocated, sold, or financially active flights can be deleted only by superadmin');
+      }
+      const deleted = await tx.flight.update({
         where: { id },
         data: {
           status: 'DELETED',
           deletedAt: new Date(),
-          deletedByUserId: String((req as any).user?.userId || '') || undefined,
+          deletedByUserId: String(authUser.userId || '') || undefined,
+          deleteReason: normalizeOptionalString(req.body?.reason) || 'Deleted by authorized user',
         },
       });
-    }
+      await writeAuditLog(req, {
+        action: 'DELETE',
+        entityType: 'flight',
+        entityId: id,
+        entityLabel: flight.flightNumber,
+        summary: `Deleted flight ${flight.flightNumber}`,
+        before: { flightNumber: flight.flightNumber, status: flight.status, ownerFirmId, ticketCount: flight.tickets.length, transactionCount: flight._count.transactions },
+        after: { status: deleted.status, deletedAt: deleted.deletedAt, deletedByUserId: deleted.deletedByUserId },
+      }, tx);
+    });
 
     return res.status(204).send();
   } catch (error) {

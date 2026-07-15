@@ -21,6 +21,31 @@ This is the release gate for `SaaS-system/airline-b2b`. Do not deploy until ever
 
 Run from repo root unless a command says otherwise.
 
+Every release and bug fix must first have:
+
+- a SemVer value in `VERSION` matching both client/server package files and lockfiles;
+- a matching entry in `CHANGELOG.md`;
+- an endpoint contract for every mounted server route;
+- no unmatched static frontend API call.
+
+Run the consolidated gate:
+
+```bash
+node scripts/release-audit.mjs
+```
+
+After deploying the same source to dev, run the five-actor live gate:
+
+```bash
+node scripts/release-audit.mjs --dev
+```
+
+The live audits must report zero failures. They check every endpoint for authentication, route RBAC, safe controller behavior, read-path runtime/schema failures, firm/admin tenant-data isolation across transactions, accounts, employees, notifications, kassa desks, and payment cards, plus five-role browser login/navigation/page-load smoke. Destructive allowed-role mutations remain manual workflow checks.
+
+The release audit also blocks recurring regressions: duplicated active-flight predicates, tenant cache that survives account changes, login/subscription-dependent kassa desk visibility, missing service-owner isolation, and missing one-allocation/one-payable database enforcement.
+
+The individual commands below remain the authoritative components of that gate.
+
 ```bash
 cd airline-b2b/server
 npx prisma validate
@@ -41,7 +66,9 @@ Required result:
 - No TypeScript errors.
 - No Prisma validation errors.
 - No failing tests.
+- No high-severity runtime dependency advisories (`npm audit --omit=dev --audit-level=high`).
 - No generated build artifacts are accidentally staged.
+- `npm run audit:business-invariants` passes after every dev and production backend deploy.
 
 ## 3. Manual Smoke Gate
 
@@ -148,6 +175,8 @@ If schema migration is destructive:
 - Create a safe Prisma migration manually.
 - Back up production DB before applying.
 
+`deploy.sh --schema` creates and verifies a production `pg_dump` before schema work, then runs `prisma db push` without `--accept-data-loss`. If Prisma requires destructive acceptance, the deploy must stop for manual migration review.
+
 ## 7. Release Done Definition
 
 Release is done only when:
@@ -158,3 +187,6 @@ Release is done only when:
 - Superadmin can use the login page editor.
 - Admin/firm cannot use the login page editor save endpoint.
 - Kassa and financial pages open without console/API errors.
+- `VERSION`, package versions, and `CHANGELOG.md` name the same release.
+- `node scripts/api-surface-audit.mjs` reports complete endpoint contracts and no unmatched frontend calls.
+- `node scripts/release-audit.mjs --dev` passes before production deployment.

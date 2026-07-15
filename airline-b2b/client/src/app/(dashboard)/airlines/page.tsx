@@ -106,7 +106,6 @@ export default function AirlinesPage() {
           <select className="compact-control" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>
             <option value="USD">USD</option>
             <option value="UZS">UZS</option>
-            <option value="EUR">EUR</option>
           </select>
           <button type="submit" disabled={submitting} className="inline-flex items-center justify-center gap-2 bg-primary px-4 py-2 text-sm font-bold uppercase tracking-wide text-ink disabled:opacity-60">
             <Save size={16} />

@@ -66,10 +66,13 @@ prisma/dev.db
 
 # Testing
 /e2e-tests/
+airline-b2b/client/test-results/
+airline-b2b/client/playwright-report/
 
 # Documentation / Agent context
 **/AGENTS.md
 **/CLAUDE.md
+report-by-5.6-sol.md
 
 # Keep .github configurations
 !/.github/agents/

@@ -30,6 +30,11 @@ describe('AppError serialization', () => {
     });
   });
 
+  it('maps an absent selected kassa session to a user-facing conflict', () => {
+    const body = toApiErrorBody(mapKnownError(Object.assign(new Error('No kassa session exists for the selected desk and date'), { statusCode: 409 })));
+    expect(body).toMatchObject({ code: ERROR_CODES.KASSA_NOT_OPEN, statusCode: 409, severity: 'warning' });
+  });
+
   it('maps report fallback errors to the requested fallback code', () => {
     const body = toApiErrorBody(mapKnownError(new Error('SQL aggregate failed'), ERROR_CODES.REPORT_BUILD_FAILED));
     expect(body).toMatchObject({
@@ -37,5 +42,27 @@ describe('AppError serialization', () => {
       statusCode: 500,
       message: 'Failed to build report',
     });
+  });
+
+  it('turns Prisma unique conflicts into a safe user-facing response', () => {
+    const prismaError = Object.assign(new Error('Invalid prisma.financialAccount.upsert() invocation'), {
+      name: 'PrismaClientKnownRequestError',
+      code: 'P2002',
+      meta: { target: ['paymentCardId', 'currency'] },
+    });
+    const body = toApiErrorBody(prismaError);
+    expect(body).toMatchObject({
+      code: ERROR_CODES.CONFLICT,
+      statusCode: 409,
+      message: 'Bu ma’lumot allaqachon mavjud.',
+    });
+    expect(body.message).not.toContain('prisma');
+  });
+
+  it('never exposes Prisma validation or schema errors', () => {
+    const body = toApiErrorBody(Object.assign(new Error('Invalid `prisma.payment.create()` invocation'), {
+      name: 'PrismaClientValidationError',
+    }));
+    expect(body).toMatchObject({ code: ERROR_CODES.DATABASE_ERROR, statusCode: 500, message: 'Database operation failed' });
   });
 });

@@ -1,10 +1,13 @@
 import { Router } from 'express';
 import { authMiddleware } from '../middleware/auth';
-import { assignService, createService, listServices, updateServiceStatus } from '../controllers/services.controller';
+import { roleMiddleware } from '../middleware/role';
+import { assignService, createService, deleteService, listServices, updateService, updateServiceStatus } from '../controllers/services.controller';
 const router = Router();
 router.use(authMiddleware);
 router.get('/', listServices);
-router.post('/', createService);
+router.post('/', roleMiddleware(['FIRM']), createService);
+router.patch('/:id', roleMiddleware(['SUPERADMIN', 'FIRM']), updateService);
+router.delete('/:id', roleMiddleware(['SUPERADMIN', 'FIRM']), deleteService);
 router.post('/:id/assign', assignService);
 router.patch('/assignments/:id/status', updateServiceStatus);
 export default router;

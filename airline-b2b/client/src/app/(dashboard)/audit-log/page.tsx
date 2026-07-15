@@ -52,6 +52,16 @@ function actionClass(action: string) {
   return 'bg-primary/10 text-primary border-primary/20';
 }
 
+const actionLabels: Record<string, string> = { CREATE: 'Yaratildi', UPDATE: 'O‘zgartirildi', DELETE: 'O‘chirildi', SOFT_DELETE: 'Arxivlandi', OPEN: 'Ochildi', CLOSE: 'Yopildi' };
+const entityLabels: Record<string, string> = { transaction: 'Pul operatsiyasi', kassaDay: 'Kassa kuni', firm: 'Firma', flight: 'Reys', ticket: 'Bilet', paymentCard: 'To‘lov kartasi', employee: 'Hodim', tourPackage: 'Tur paket', serviceOffering: 'Xizmat', financialAccount: 'Moliyaviy hisob' };
+
+function businessSummary(row: AuditRow) {
+  const action = actionLabels[row.action.toUpperCase()] || row.action;
+  const entity = entityLabels[row.entityType] || row.entityType;
+  const reason = row.metadata && typeof row.metadata === 'object' ? String((row.metadata as Record<string, unknown>).reason || (row.metadata as Record<string, unknown>).correctionReason || '') : '';
+  return `${entity}: ${action}${row.entityLabel ? ` — ${row.entityLabel}` : ''}${reason ? ` · Sabab: ${reason}` : ''}`;
+}
+
 export default function AuditLogPage() {
   const { user } = useAuth();
   const { tr } = useLanguage();
@@ -60,6 +70,7 @@ export default function AuditLogPage() {
   const [entityType, setEntityType] = useState('');
   const [page, setPage] = useState(1);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [sinceYesterday, setSinceYesterday] = useState(false);
   const isSuperAdmin = String(user?.role || '').toUpperCase() === 'SUPERADMIN';
 
   const query = useMemo(() => ({
@@ -68,7 +79,8 @@ export default function AuditLogPage() {
     search: search.trim() || undefined,
     action: action || undefined,
     entityType: entityType || undefined,
-  }), [action, entityType, page, search]);
+    since: sinceYesterday ? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() : undefined,
+  }), [action, entityType, page, search, sinceYesterday]);
 
   const { data, isLoading } = useQuery<AuditResponse>({
     queryKey: ['audit-log', query],
@@ -99,9 +111,12 @@ export default function AuditLogPage() {
             {tr('See who changed or deleted data across the beta release surfaces.', 'Kim nimani o‘zgartirdi yoki o‘chirdi - hammasi shu yerda ko‘rinadi.')}
           </p>
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={() => { setSinceYesterday((value) => !value); setPage(1); }} className={`rounded-md border px-3 py-2 text-sm font-semibold ${sinceYesterday ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-surface-2 text-muted'}`}>{tr('Changes since yesterday', 'Kechadan beri o‘zgarishlar')}</button>
         <div className="inline-flex items-center gap-2 rounded-md border border-border bg-surface-2 px-3 py-2 text-sm font-semibold text-muted">
           <ShieldCheck size={17} />
           {meta.total} {tr('records', 'yozuv')}
+        </div>
         </div>
       </div>
 
@@ -117,12 +132,12 @@ export default function AuditLogPage() {
             />
           </label>
           <select value={action} onChange={(event) => { setAction(event.target.value); setPage(1); }} className="compact-control">
-            <option value="">{tr('All actions', 'Barcha action')}</option>
-            {actions.map((item) => <option key={item} value={item}>{item}</option>)}
+            <option value="">{tr('All actions', 'Barcha amallar')}</option>
+            {actions.map((item) => <option key={item} value={item}>{actionLabels[item.toUpperCase()] || item}</option>)}
           </select>
           <select value={entityType} onChange={(event) => { setEntityType(event.target.value); setPage(1); }} className="compact-control">
-            <option value="">{tr('All entities', 'Barcha entity')}</option>
-            {entityTypes.map((item) => <option key={item} value={item}>{item}</option>)}
+            <option value="">{tr('All entities', 'Barcha ma’lumotlar')}</option>
+            {entityTypes.map((item) => <option key={item} value={item}>{entityLabels[item] || item}</option>)}
           </select>
           <div className="inline-flex items-center gap-2 text-sm text-muted">
             <History size={18} />
@@ -155,15 +170,15 @@ export default function AuditLogPage() {
                       <div className="text-xs text-muted">{row.actorRole || '-'}</div>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`inline-flex rounded-full border px-2 py-1 text-xs font-bold ${actionClass(row.action)}`}>{row.action}</span>
+                      <span className={`inline-flex rounded-full border px-2 py-1 text-xs font-bold ${actionClass(row.action)}`}>{actionLabels[row.action.toUpperCase()] || row.action}</span>
                     </td>
                     <td className="px-4 py-3">
-                      <div className="font-semibold text-foreground">{row.entityType}</div>
+                      <div className="font-semibold text-foreground">{entityLabels[row.entityType] || row.entityType}</div>
                       <div className="max-w-[220px] truncate text-xs text-muted">{row.entityLabel || row.entityId || '-'}</div>
                     </td>
                     <td className="px-4 py-3 min-w-[320px]">
                       <button type="button" onClick={() => setExpandedId(expanded ? null : row.id)} className="text-left font-medium text-foreground hover:text-primary">
-                        {row.summary}
+                        {businessSummary(row)}
                       </button>
                       {expanded && (
                         <div className="mt-3 grid gap-3 lg:grid-cols-3">

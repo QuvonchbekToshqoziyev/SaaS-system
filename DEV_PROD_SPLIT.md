@@ -104,21 +104,17 @@ For code-only redeploys:
 ./deploy.sh
 ```
 
-## Docker Compatibility
+These are the only supported server deployment paths. Run production deployment
+only after an explicit release decision and the checks in `FINAL_RELEASE_PLAN.md`.
 
-Docker is available for local/containerized runs only. It does not replace the current production or dev deployment scripts.
+## Daily PostgreSQL Backup
 
-From the app directory:
+The maintained backup command is `scripts/backup-postgres.sh`. It creates a
+permission-restricted custom-format dump, verifies that PostgreSQL can read its
+catalog, and retains 14 days by default. `BACKUP_COPY_CMD` can copy the resulting
+`$BACKUP_FILE` to off-server storage. Use `scripts/test-postgres-restore.sh` with a
+dedicated database whose URL ends in `_restore_test` for a real restore test.
 
-```bash
-cd airline-b2b
-docker compose up --build
-```
-
-Defaults:
-
-- Client: `http://localhost:3000`
-- Server: `http://localhost:5000`
-- PostgreSQL host port: `5433`
-
-Keep production deploys on `./deploy.sh` and dev deploys on `./deploy-dev.sh` unless the release plan is intentionally changed.
+Production scheduling is intentionally not installed by application deploys. Add
+the daily cron/systemd schedule only during an explicitly approved production
+operations change.

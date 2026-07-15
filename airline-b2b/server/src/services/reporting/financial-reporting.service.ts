@@ -2,6 +2,7 @@ import { Prisma, TransactionType } from '@prisma/client';
 import { prisma } from '../../db';
 import { canAccessFirm, getAccessibleFirmIds, normalizeRole, ScopedAuthUser } from '../../utils/access';
 import { isPayableDebtType } from '../../utils/transaction-types';
+import { activeFlightWhere } from '../../domains/flights/flight-scope';
 import {
   calcClosingCash,
   calcCurrentRatio,
@@ -145,7 +146,7 @@ function buildTxWhere(scope: Awaited<ReturnType<typeof resolveScope>>, period: {
     ...(scope.currency ? { currency: scope.currency } : {}),
     OR: [
       { flightId: null },
-      { flight: { deletedAt: null, OR: [{ status: null }, { status: { notIn: ['DELETED', 'CANCELLED'] } }] } },
+      { flight: activeFlightWhere() },
     ],
   };
 }
@@ -360,8 +361,7 @@ function buildCashFlow(summary: ReturnType<typeof summarizeTransactions>, openin
 async function buildFlightProfitability(transactions: TxRow[], scope: Awaited<ReturnType<typeof resolveScope>>) {
   const txFlightIds = transactions.map((tx) => tx.flightId).filter((id): id is string => Boolean(id));
   const flightWhere: Prisma.FlightWhereInput = {
-    deletedAt: null,
-    OR: [{ status: null }, { status: { notIn: ['DELETED', 'CANCELLED'] } }],
+    ...activeFlightWhere(),
     ...(scope.flightId ? { id: scope.flightId } : txFlightIds.length ? { id: { in: Array.from(new Set(txFlightIds)) } } : {}),
   };
   const flights = await prisma.flight.findMany({

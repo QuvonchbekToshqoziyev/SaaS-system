@@ -60,9 +60,13 @@ export function getTransactionBusinessDateKey(tx: {
   return formatBusinessDateKey(startOfDayUtc(createdAt));
 }
 
-export async function findKassaForDate(businessDate: Date) {
-  return prisma.kassaDay.findUnique({
-    where: { businessDate: normalizeBusinessDate(businessDate) },
+export function kassaSessionWhere(businessDate: Date, cashDeskId?: string | null) {
+  return { businessDate: normalizeBusinessDate(businessDate), cashDeskId: cashDeskId || '__no_cash_desk__' };
+}
+
+export async function findKassaForDate(businessDate: Date, cashDeskId?: string | null) {
+  return prisma.kassaDay.findFirst({
+    where: kassaSessionWhere(businessDate, cashDeskId),
     include: {
       openedBy: { select: { id: true, email: true } },
       closedBy: { select: { id: true, email: true } },
@@ -70,8 +74,8 @@ export async function findKassaForDate(businessDate: Date) {
   });
 }
 
-export async function assertKassaOpenForDate(businessDate: Date): Promise<void> {
-  const kassa = await findKassaForDate(businessDate);
+export async function assertKassaOpenForDate(businessDate: Date, cashDeskId?: string | null): Promise<void> {
+  const kassa = await findKassaForDate(businessDate, cashDeskId);
   const dayKey = formatBusinessDateKey(businessDate);
 
   if (!kassa) {

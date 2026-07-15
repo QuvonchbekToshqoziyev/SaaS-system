@@ -134,33 +134,23 @@ cd airline-b2b/server
 npm test
 ```
 
-## Optional Docker Run
+## Deployment
 
-Docker support is additive. The current production deployment still uses `deploy.sh`, nginx, and PM2 as documented in `FINAL_RELEASE_PLAN.md`.
+The supported deployment targets are the dev and production environments on the
+Ubuntu server. Use `deploy-dev.sh` for ongoing testing. Run `deploy.sh` only for
+an explicitly approved production release. Both paths use PostgreSQL, PM2, nginx,
+and the maintained server environment files.
 
-Run the app in containers from the repository root:
-
-```bash
-cd airline-b2b
-docker compose up --build
-```
-
-Default local container URLs:
-
-- Web: `http://localhost:3000`
-- API: `http://localhost:5000`
-- PostgreSQL host port: `5433`
-
-The Docker client serves the static Next.js export with nginx and proxies `/api/*` to the server container. The server runs Prisma `db push` on container startup when `DOCKER_APPLY_SCHEMA=true`, which is the compose default for local container use.
-
-Override defaults with environment variables:
-
-```bash
-CLIENT_HOST_PORT=3002 SERVER_HOST_PORT=5002 POSTGRES_HOST_PORT=5434 docker compose up --build
-```
-
-Set a real `JWT_SECRET` for any shared or long-running Docker environment.
 Set a stable, secret `CHAT_ENCRYPTION_KEY` to encrypt new chat messages and attachment metadata at rest. Use a 32-byte random base64 value, keep it backed up in the password manager, and do not rotate or lose it without a migration plan.
+
+Telegram notifications are optional. Add the existing company bot credentials to the server environment and restart the backend:
+
+```bash
+TELEGRAM_BOT_TOKEN=<BotFather token>
+TELEGRAM_BOT_USERNAME=<bot username without @>
+```
+
+Users can then connect their own Telegram chat from Settings. The token stays server-side; account links are single-use and expire after ten minutes.
 
 ## Maintained Documentation
 

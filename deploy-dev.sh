@@ -161,11 +161,15 @@ REMOTE_ENV
 
   if [[ "$RUN_SCHEMA" == "1" ]]; then
     info "Running prisma db push on dev database..."
-    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db push"
+    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db push --accept-data-loss"
+    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260715_ticket_allocation_changes/migration.sql --schema prisma/schema.prisma"
+    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260715_rt_ow_ticket_legs/migration.sql --schema prisma/schema.prisma"
+    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260715_unique_allocation_payable/migration.sql --schema prisma/schema.prisma"
     success "Dev schema pushed"
   fi
 
   remote "cd '$REMOTE_BACKEND_DIR' && npm run build"
+  remote "cd '$REMOTE_BACKEND_DIR' && npm run audit:business-invariants"
   success "Build complete"
 
   header "Dev backend - restart PM2"

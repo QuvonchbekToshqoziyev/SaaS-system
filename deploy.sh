@@ -185,12 +185,21 @@ REMOTE_ENV
   remote "cd '$REMOTE_BACKEND_DIR' && npx prisma generate"
 
   if [[ "$RUN_SCHEMA" == "1" ]]; then
-    info "Running prisma db push..."
-    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db push --accept-data-loss"
-    success "Schema pushed"
+    header "Backend — production database backup"
+    rsync_cmd -av "$REPO_ROOT/scripts/backup-postgres.sh" "$REMOTE_HOST:/tmp/ado-b2b-backup-postgres.sh"
+    remote "chmod 700 /tmp/ado-b2b-backup-postgres.sh && BACKUP_DIR=/var/backups/ado-b2b/postgres /tmp/ado-b2b-backup-postgres.sh '$REMOTE_BACKEND_DIR/.env'"
+    success "Verified production database backup created"
+
+    info "Running non-destructive prisma db push..."
+    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db push"
+    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260715_ticket_allocation_changes/migration.sql --schema prisma/schema.prisma"
+    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260715_rt_ow_ticket_legs/migration.sql --schema prisma/schema.prisma"
+    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260715_unique_allocation_payable/migration.sql --schema prisma/schema.prisma"
+    success "Schema pushed without accepting destructive changes"
   fi
 
   remote "cd '$REMOTE_BACKEND_DIR' && npm run build"
+  remote "cd '$REMOTE_BACKEND_DIR' && npm run audit:business-invariants"
   success "Build complete"
 
   header "Backend — restart PM2"

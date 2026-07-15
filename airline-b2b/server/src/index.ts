@@ -19,12 +19,14 @@ import kassaRoutes from './routes/kassa';
 import tourPackageRoutes from './routes/tour-packages';
 import employeeRoutes from './routes/employees';
 import siteContentRoutes from './routes/site-content';
-import maintenanceRoutes from './routes/maintenance';
 import chatRoutes from './routes/chat';
 import serviceRoutes from './routes/services';
 import auditLogRoutes from './routes/audit-log';
 import airlineRoutes from './routes/airlines';
 import notificationRoutes from './routes/notifications';
+import accountRoutes from './routes/accounts';
+import telegramRoutes from './routes/telegram';
+import { startTelegramBot } from './services/telegram.service';
 
 const jwtSecret = process.env.JWT_SECRET;
 if (!jwtSecret || !jwtSecret.trim()) {
@@ -121,14 +123,16 @@ app.use('/employees', employeeRoutes);
 app.use('/site-content', siteContentRoutes);
 app.use('/chat', chatRoutes);
 app.use('/services', serviceRoutes);
+app.use('/accounts', accountRoutes);
 app.use('/audit-log', auditLogRoutes);
 app.use('/airlines', airlineRoutes);
 app.use('/notifications', notificationRoutes);
-app.use('/admin', maintenanceRoutes);
+app.use('/telegram', telegramRoutes);
 
 app.use(errorHandler);
 
 const PORT = parseInt(process.env.PORT || '5000', 10);
 app.listen(PORT, '0.0.0.0', () => {
   logger.info({ port: PORT }, 'Server running');
+  startTelegramBot();
 });

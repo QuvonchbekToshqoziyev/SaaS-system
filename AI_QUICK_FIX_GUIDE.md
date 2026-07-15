@@ -1,5 +1,7 @@
 # AI Quick Fix Guide
 
+Current release identity is stored in `VERSION`. Every fix must update `VERSION`, both client/server package versions and lockfiles, and `CHANGELOG.md` according to SemVer. Before dev or production deployment run `node scripts/release-audit.mjs`; after dev deployment run `node scripts/release-audit.mjs --dev`. Consult `memories/repo/mistakes.md` before changing roles, visibility, schema, flights, tickets, kassa, transactions, reports, tours, services, firms, or employees.
+
 Use this file first when asking any AI model for a quick website fix. It keeps the model focused and avoids wasting tokens.
 
 ## Correct Project

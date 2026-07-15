@@ -119,7 +119,7 @@ export const login = async (req: Request, res: Response) => {
     jwtSecret,
     { expiresIn: '1d' },
   );
-  res.json({ token, user: { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, role: user.role, firmRole: user.firmRole, firmId: user.firmId, firmKind: user.firm?.kind || null } });
+  res.json({ token, user: { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, role: user.role, firmRole: user.firmRole, firmId: user.firmId, firmKind: user.firm?.kind || null, subscriptionEndsAt: user.firm?.subscriptionEndsAt || null } });
 };
 
 export const changePassword = async (req: Request, res: Response) => {

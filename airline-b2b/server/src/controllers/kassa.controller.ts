@@ -11,6 +11,7 @@ import {
   openKassaService,
   reopenKassaService,
   updatePaymentCardService,
+  updateKassaDeskService,
   type AuthUser,
 } from '../services/kassa.service';
 import { writeAuditLog } from '../utils/audit';
@@ -30,6 +31,7 @@ export const getKassaDay = async (req: Request, res: Response) => {
     const rawDate = req.query.date ?? req.body?.businessDate ?? req.body?.date;
     const result = await getKassaDayService(getAuthUser(req), rawDate, {
       kassaDeskId: req.query.kassaDeskId ?? req.body?.kassaDeskId,
+      firmId: req.query.firmId ?? req.body?.firmId,
     });
     return res.json(result);
   } catch (err) {
@@ -41,15 +43,10 @@ export const openKassa = async (req: Request, res: Response) => {
   try {
     const result = await openKassaService(getAuthUser(req), {
       businessDate: req.body?.businessDate,
+      kassaDeskId: req.body?.kassaDeskId,
       openingBalance: req.body?.openingBalance,
-    });
-    await writeAuditLog(req, {
-      action: 'OPEN',
-      entityType: 'kassaDay',
-      entityId: result.kassa.id,
-      entityLabel: result.kassa.businessDate,
-      summary: `Opened kassa for ${result.kassa.businessDate}`,
-      after: result.kassa,
+      openingBalanceUsd: req.body?.openingBalanceUsd,
+      openingAdjustmentReason: req.body?.openingAdjustmentReason,
     });
     return res.status(201).json(result);
   } catch (err) {
@@ -61,7 +58,9 @@ export const closeKassa = async (req: Request, res: Response) => {
   try {
     const result = await closeKassaService(getAuthUser(req), {
       businessDate: req.body?.businessDate,
+      kassaDeskId: req.body?.kassaDeskId,
       closingBalance: req.body?.closingBalance,
+      closingBalanceUsd: req.body?.closingBalanceUsd,
       notes: req.body?.notes,
     });
     await writeAuditLog(req, {
@@ -82,6 +81,7 @@ export const reopenKassa = async (req: Request, res: Response) => {
   try {
     const result = await reopenKassaService(getAuthUser(req), {
       businessDate: req.body?.businessDate,
+      kassaDeskId: req.body?.kassaDeskId,
       notes: req.body?.notes,
     });
     await writeAuditLog(req, {
@@ -121,7 +121,7 @@ export const listPaymentCards = async (req: Request, res: Response) => {
 
 export const listKassaDesks = async (req: Request, res: Response) => {
   try {
-    const result = await listKassaDesksService(getAuthUser(req));
+    const result = await listKassaDesksService(getAuthUser(req), { firmId: req.query.firmId });
     return res.json(result);
   } catch (err) {
     return sendError(res, err);
@@ -135,6 +135,7 @@ export const createKassaDesk = async (req: Request, res: Response) => {
       name: req.body?.name,
       code: req.body?.code,
       status: req.body?.status,
+      assignedCashierUserId: req.body?.assignedCashierUserId,
     });
     await writeAuditLog(req, {
       action: 'CREATE',
@@ -150,6 +151,16 @@ export const createKassaDesk = async (req: Request, res: Response) => {
   }
 };
 
+export const updateKassaDesk = async (req: Request, res: Response) => {
+  try {
+    const result = await updateKassaDeskService(getAuthUser(req), String(req.params.id || ''), req.body || {});
+    await writeAuditLog(req, { action: 'UPDATE', entityType: 'kassaDesk', entityId: result.desk.id, entityLabel: result.desk.displayName, summary: `Updated kassa desk ${result.desk.displayName}`, before: result.before, after: result.desk });
+    return res.json(result.desk);
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
 export const createPaymentCard = async (req: Request, res: Response) => {
   try {
     const result = await createPaymentCardService(getAuthUser(req), {
@@ -157,6 +168,7 @@ export const createPaymentCard = async (req: Request, res: Response) => {
       cardNumber: req.body?.cardNumber,
       currency: req.body?.currency,
       firmId: req.body?.firmId,
+      cashDeskId: req.body?.cashDeskId,
       openingBalance: req.body?.openingBalance,
     });
     await writeAuditLog(req, {

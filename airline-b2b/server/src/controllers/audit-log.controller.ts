@@ -9,6 +9,7 @@ export const listAuditLogs = async (req: Request, res: Response) => {
       search: req.query.search,
       action: req.query.action,
       entityType: req.query.entityType,
+      since: req.query.since,
     });
     return res.json(result);
   } catch (err) {

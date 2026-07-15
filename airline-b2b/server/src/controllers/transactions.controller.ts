@@ -1,11 +1,14 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
-import { Prisma } from '@prisma/client';
+import { FinancialAccountType, Prisma } from '@prisma/client';
 import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
-import { assertKassaOpenForDate, parseBusinessDate } from '../utils/kassa';
+import { assertKassaOpenForDate, findKassaForDate, getTransactionBusinessDateKey, parseBusinessDate } from '../utils/kassa';
 import { writeAuditLog } from '../utils/audit';
+import { requireCorrectionReason } from '../domains/transactions/correction';
 import { assertActiveKassaDesk, assertKassaDeskForFirmSetSelection } from '../utils/kassa-desk-policy';
 import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
+import { assertKassirDeskAccess, getBoundKassaDeskId, isKassirUser } from '../utils/kassa-desk-access';
+import { ensureFinancialAccount } from '../utils/financial-accounts';
 
 type AuthUser = {
   userId?: string;
@@ -24,6 +27,14 @@ function normalizeRole(role: unknown): string {
 
 function normalizeCurrency(value: unknown): string {
   return String(value || '').trim().toUpperCase();
+}
+
+export function canDeleteFirmTransaction(authUser: AuthUser, transactionFirmId: string) {
+  const userRole = normalizeRole(authUser.role);
+  return userRole === 'SUPERADMIN' || (userRole === 'FIRM'
+    && String(authUser.firmRole || '').toUpperCase() === 'FIRM_ADMIN'
+    && Boolean(authUser.firmId)
+    && transactionFirmId === String(authUser.firmId));
 }
 
 async function resolveKassaDesk(authUser: AuthUser, rawKassaDeskId: unknown) {
@@ -62,6 +73,15 @@ async function assertKassaDeskBelongsToOneOf(
 
 const DEFAULT_CURRENCY = 'UZS';
 
+class TransactionConflictError extends Error {}
+
+async function assertTransactionKassaEditable(row: { type: string; paymentMethod?: string | null; metadata?: unknown; createdAt: Date; kassaDeskId?: string | null }) {
+  if (!row.kassaDeskId) return;
+  const day = parseBusinessDate(getTransactionBusinessDateKey(row));
+  const session = day ? await findKassaForDate(day, row.kassaDeskId) : null;
+  if (!session || session.status !== 'OPEN') throw new TransactionConflictError('Reopen the exact kassa session before changing its transactions');
+}
+
 function parseDecimal(value: unknown): Prisma.Decimal | undefined {
   try {
     if (value instanceof Prisma.Decimal) return value;
@@ -77,8 +97,9 @@ export const getTransactions = async (req: Request, res: Response) => {
   const authUser = getAuthUser(req);
   const role = normalizeRole(authUser.role);
 
-  const { dateFrom, dateTo, firmId, flightId, kassaDeskId, type, currency, page = '1', limit = '10' } = req.query;
-  const where: Prisma.TransactionWhereInput = {};
+  const { dateFrom, dateTo, firmId, flightId, allocationId, kassaDeskId, paymentCardId, paymentMethod, sourceMode, status, confirmedOnly, type, currency, page = '1', limit = '10' } = req.query;
+  const where: Prisma.TransactionWhereInput = { deletedAt: null };
+  const conditions: Prisma.TransactionWhereInput[] = [];
 
   if (dateFrom || dateTo) {
     where.createdAt = {};
@@ -92,43 +113,57 @@ export const getTransactions = async (req: Request, res: Response) => {
     if (accessibleFirmIds && !accessibleFirmIds.includes(scopedFirmId)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
-    where.OR = [
+    conditions.push({ OR: [
       { firmId: scopedFirmId },
       { payerFirmId: scopedFirmId },
       { receiverFirmId: scopedFirmId },
-    ];
+    ] });
   } else if (accessibleFirmIds) {
     if (!accessibleFirmIds.length) {
       return res.json({ data: [], meta: { total: 0, page: 1, limit: 10, totalPages: 0 } });
     }
-    where.OR = [
+    conditions.push({ OR: [
       { firmId: { in: accessibleFirmIds } },
       { payerFirmId: { in: accessibleFirmIds } },
       { receiverFirmId: { in: accessibleFirmIds } },
-    ];
+    ] });
   }
   if (flightId) where.flightId = String(flightId);
+  if (allocationId) conditions.push({ OR: [
+    { subjectType: 'TICKET_ALLOCATION', subjectId: String(allocationId) },
+    { metadata: { path: ['allocationId'], equals: String(allocationId) } },
+  ] });
   if (kassaDeskId) where.kassaDeskId = String(kassaDeskId);
+  if (paymentCardId) where.paymentCardId = String(paymentCardId);
+  if (isKassirUser(authUser)) where.kassaDeskId = (await getBoundKassaDeskId(authUser)) || '__unassigned_kassir__';
   if (type) where.type = String(type).toUpperCase() as any;
   if (currency) where.currency = String(currency);
+  if (paymentMethod) where.paymentMethod = String(paymentMethod).toLowerCase();
+  if (sourceMode) where.sourceMode = String(sourceMode).toUpperCase();
+  if (status) where.status = String(status).toUpperCase();
+  if (String(confirmedOnly || '').toLowerCase() === 'true') where.status = 'CONFIRMED';
+  if (conditions.length) where.AND = conditions;
 
   const pageNum = Math.max(1, parseInt(String(page)) || 1);
   const limitNum = Math.max(1, parseInt(String(limit)) || 10);
   const skip = (pageNum - 1) * limitNum;
 
-  const [total, data] = await Promise.all([
+  const [total, data, summaryRows] = await Promise.all([
     prisma.transaction.count({ where }),
     prisma.transaction.findMany({
       where,
-      include: { firm: true, flight: true, payerFirm: true, receiverFirm: true, kassaDesk: { include: { firm: true } } },
+      include: { firm: true, flight: true, payerFirm: true, receiverFirm: true, paymentCard: true, createdBy: { select: { id: true, email: true, fullName: true } }, kassaDesk: { include: { firm: true } } },
       orderBy: { createdAt: 'desc' },
       skip,
       take: limitNum
-    })
+    }),
+    prisma.transaction.groupBy({ by: ['currency', 'type'], where, _sum: { originalAmount: true }, _count: { _all: true } }),
   ]);
   
   res.json({
     data,
+    summaryByCurrency: summaryRows.map((row) => ({ currency: row.currency, type: row.type, count: row._count._all, total: Number(row._sum.originalAmount || 0) })),
+    reversals: data.filter((row) => row.sourceMode === 'REVERSAL' || Boolean(row.reversedTransactionId)),
     meta: {
       total,
       page: pageNum,
@@ -182,15 +217,15 @@ async function getOwnedDailyCashTransaction(req: Request, id: string) {
   const businessDay = String(metadata.date || row.createdAt.toISOString().slice(0, 10));
   const today = new Date().toISOString().slice(0, 10);
   if (businessDay !== today) throw new Error('Only today\'s transactions can be changed');
+  await assertTransactionKassaEditable(row);
   return { row, metadata, isCreator };
 }
 
 export const updateOwnDailyCashTransaction = async (req: Request, res: Response) => {
   try {
-    const { row, metadata, isCreator } = await getOwnedDailyCashTransaction(req, String(req.params.id || ''));
+    const { row, metadata } = await getOwnedDailyCashTransaction(req, String(req.params.id || ''));
     const note = String(req.body?.note || '').trim().slice(0, 500);
-    const correctionReason = String(req.body?.correctionReason || '').trim().slice(0, 500);
-    if (!isCreator && !correctionReason) return res.status(400).json({ error: 'Correction reason is required' });
+    const correctionReason = requireCorrectionReason(req.body?.correctionReason);
     const originalAmount = req.body?.amount == null ? row.originalAmount : Number(req.body.amount);
     if (!Number.isFinite(Number(originalAmount)) || Number(originalAmount) <= 0) {
       return res.status(400).json({ error: 'Amount must be greater than zero' });
@@ -200,30 +235,58 @@ export const updateOwnDailyCashTransaction = async (req: Request, res: Response)
       where: { id: row.id },
       data: { originalAmount, baseAmount, metadata: { ...metadata, note, ...(correctionReason ? { correctionReason } : {}) } },
     });
-    await writeAuditLog(req, { action: 'UPDATE', entityType: 'transaction', entityId: row.id, summary: correctionReason ? `Firm admin correction: ${correctionReason}` : 'Updated own daily cash transaction', before: row, after: updated });
+    await writeAuditLog(req, { action: 'UPDATE', entityType: 'transaction', entityId: row.id, summary: `Cash correction: ${correctionReason}`, before: row, after: updated, metadata: { correctionReason } });
     return res.json(updated);
   } catch (err: any) {
-    return res.status(err?.message === 'Transaction not found' ? 404 : 400).json({ error: err?.message || 'Failed to update transaction' });
+    return res.status(err instanceof TransactionConflictError ? 409 : err?.message === 'Transaction not found' ? 404 : 400).json({ error: err?.message || 'Failed to update transaction' });
   }
 };
 
 export const deleteOwnDailyCashTransaction = async (req: Request, res: Response) => {
   try {
-    const { row, isCreator } = await getOwnedDailyCashTransaction(req, String(req.params.id || ''));
-    const correctionReason = String(req.body?.correctionReason || req.body?.reason || '').trim().slice(0, 500);
-    if (!isCreator && !correctionReason) return res.status(400).json({ error: 'Correction reason is required' });
+    const { row } = await getOwnedDailyCashTransaction(req, String(req.params.id || ''));
+    const correctionReason = requireCorrectionReason(req.body?.correctionReason || req.body?.reason);
     await prisma.transaction.delete({ where: { id: row.id } });
-    await writeAuditLog(req, { action: 'DELETE', entityType: 'transaction', entityId: row.id, summary: correctionReason ? `Firm admin correction: ${correctionReason}` : 'Deleted own daily cash transaction', before: row });
+    await writeAuditLog(req, { action: 'DELETE', entityType: 'transaction', entityId: row.id, summary: `Cash entry removed: ${correctionReason}`, before: row, metadata: { correctionReason } });
     return res.json({ ok: true });
   } catch (err: any) {
-    return res.status(err?.message === 'Transaction not found' ? 404 : 400).json({ error: err?.message || 'Failed to delete transaction' });
+    return res.status(err instanceof TransactionConflictError ? 409 : err?.message === 'Transaction not found' ? 404 : 400).json({ error: err?.message || 'Failed to delete transaction' });
   }
+};
+
+export const deleteTransaction = async (req: Request, res: Response) => {
+  const authUser = getAuthUser(req);
+  const id = String(req.params.id || '');
+  const reason = String(req.body?.reason || '').trim().slice(0, 500);
+  if (!reason) return res.status(400).json({ error: 'Delete reason is required' });
+
+  const row = await prisma.transaction.findUnique({ where: { id } });
+  if (!row) return res.status(404).json({ error: 'Transaction not found' });
+  if (!canDeleteFirmTransaction(authUser, row.firmId)) return res.status(403).json({ error: 'Only superadmin or the owning firm admin can delete this transaction' });
+  try {
+    await assertTransactionKassaEditable(row);
+  } catch (err: any) {
+    return res.status(409).json({ error: err?.message || 'Kassa session must be open' });
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.serviceOffering.updateMany({ where: { transactionId: id }, data: { transactionId: null, paymentStatus: 'DELETED' } });
+    await tx.tourPackageSale.updateMany({ where: { transactionId: id }, data: { transactionId: null } });
+    await tx.paymentAllocation.deleteMany({ where: { paymentId: id } });
+    await tx.ledgerEntry.deleteMany({ where: { transactionId: id } });
+    await tx.transaction.delete({ where: { id } });
+  });
+  await writeAuditLog(req, { action: 'DELETE', entityType: 'transaction', entityId: id, summary: `Deleted transaction: ${reason}`, before: row, metadata: { reason } });
+  return res.json({ ok: true });
 };
 
 export const createDirectedTransaction = async (req: Request, res: Response) => {
   const authUser = getAuthUser(req);
   const role = normalizeRole(authUser.role);
   const body = req.body || {};
+  if (role === 'FIRM' && String(authUser.firmRole || '').toUpperCase() !== 'FIRM_ADMIN') {
+    return res.status(403).json({ error: 'Only firm admin can create direct transactions' });
+  }
 
   const type = String(body.type || '').trim().toUpperCase();
   const payerFirmId = String(body.payerFirmId || '').trim();
@@ -265,6 +328,7 @@ export const createDirectedTransaction = async (req: Request, res: Response) => 
 
   try {
     kassaDesk = await resolveKassaDesk(authUser, body.kassaDeskId);
+    await assertKassirDeskAccess(authUser, kassaDesk?.id);
     await assertKassaDeskBelongsToOneOf(kassaDesk, [payerFirmId, receiverFirmId]);
   } catch (err: any) {
     return res.status(400).json({ error: err.message || 'Invalid kassa desk' });
@@ -287,6 +351,10 @@ export const createDirectedTransaction = async (req: Request, res: Response) => 
       rateFirmId: role === 'FIRM' ? authUser.firmId : payerFirmId,
     });
     const baseAmount = amount.mul(exchangeRate).toDecimalPlaces(4);
+    const [sourceAccount, destinationAccount] = await Promise.all([
+      ensureFinancialAccount({ firmId: payerFirmId, currency, type: FinancialAccountType.BANK, createdByUserId: authUser.userId }),
+      ensureFinancialAccount({ firmId: receiverFirmId, currency, type: FinancialAccountType.BANK, createdByUserId: authUser.userId }),
+    ]);
     const created = await prisma.transaction.create({
       data: {
         firmId: receiverFirmId,
@@ -295,10 +363,14 @@ export const createDirectedTransaction = async (req: Request, res: Response) => 
         flightId,
         createdByUserId: authUser.userId ? String(authUser.userId) : undefined,
         type: type as any,
+        sourceMode: String(body.sourceMode || (body.paymentMethod === 'cash' ? 'MANUAL_CASH' : body.paymentMethod === 'card' ? 'MANUAL_CARD' : 'MANUAL_BANK')).toUpperCase(),
+        status: 'CONFIRMED',
         direction: 'FIRM_TO_FIRM',
         subjectType: flightId ? 'FLIGHT' : 'MANUAL',
         subjectId: flightId,
         kassaDeskId: kassaDesk?.id,
+        sourceAccountId: sourceAccount.id,
+        destinationAccountId: destinationAccount.id,
         originalAmount: amount.toDecimalPlaces(4),
         currency,
         exchangeRate: exchangeRate.toDecimalPlaces(6),
@@ -328,6 +400,27 @@ export const createDirectedTransaction = async (req: Request, res: Response) => 
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to create transaction' });
   }
+};
+
+export const createAccountTransaction = async (req: Request, res: Response) => {
+  const authUser = getAuthUser(req);
+  const role = normalizeRole(authUser.role);
+  if (role === 'FIRM' && String(authUser.firmRole || '').toUpperCase() !== 'FIRM_ADMIN') return res.status(403).json({ error: 'Only firm admin can create account transactions' });
+  const accountId = String(req.body?.accountId || '');
+  const counterpartyName = String(req.body?.counterpartyName || '').trim();
+  const flow = String(req.body?.flow || '').toUpperCase();
+  const amount = parseDecimal(req.body?.amount);
+  const category = String(req.body?.category || 'OTHER').trim().toUpperCase();
+  const note = String(req.body?.note || '').trim().slice(0, 500);
+  if (!accountId || !counterpartyName || !['IN', 'OUT'].includes(flow) || !amount?.gt(0)) return res.status(400).json({ error: 'Account, counterparty, IN/OUT flow and positive amount are required' });
+  const account = await prisma.financialAccount.findUnique({ where: { id: accountId } });
+  if (!account || account.status !== 'ACTIVE' || !(await canAccessFirm(authUser, account.firmId))) return res.status(403).json({ error: 'Account is not accessible' });
+  const exchangeRate = await resolveExchangeRateToUzs(authUser, { currency: account.currency, overrideRate: req.body?.exchangeRate, rateFirmId: account.firmId });
+  const created = await prisma.transaction.create({
+    data: { firmId: account.firmId, createdByUserId: authUser.userId, type: 'ADJUSTMENT', sourceMode: 'MANUAL_BANK', status: 'CONFIRMED', direction: flow === 'IN' ? 'ACCOUNT_IN' : 'ACCOUNT_OUT', subjectType: 'ACCOUNT', subjectId: account.id, sourceAccountId: flow === 'OUT' ? account.id : undefined, destinationAccountId: flow === 'IN' ? account.id : undefined, originalAmount: amount.toDecimalPlaces(4), currency: account.currency, exchangeRate, baseAmount: amount.mul(exchangeRate).toDecimalPlaces(4), metadata: { category, note, accountName: account.name, counterpartyName, fromLabel: flow === 'IN' ? counterpartyName : account.name, toLabel: flow === 'IN' ? account.name : counterpartyName } },
+  });
+  await writeAuditLog(req, { action: 'CREATE', entityType: 'transaction', entityId: created.id, entityLabel: `${flow} ${account.name}`, summary: `Created ${category} account transaction`, after: created });
+  return res.status(201).json(created);
 };
 
 export const createManualCashTransaction = async (req: Request, res: Response) => {
@@ -365,6 +458,7 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
   if (!firmId || !amount || !currency) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
+  if (!businessDate) return res.status(400).json({ error: 'Valid businessDate is required' });
   if (!amount.gt(0)) {
     return res.status(400).json({ error: 'Amount must be greater than 0' });
   }
@@ -379,12 +473,15 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
   }
   try {
     kassaDesk = await resolveKassaDesk(authUser, body.kassaDeskId);
+    await assertKassirDeskAccess(authUser, kassaDesk?.id);
     await assertKassaDeskBelongsToOneOf(kassaDesk, [firmId], firmId);
   } catch (err: any) {
     return res.status(400).json({ error: err.message || 'Invalid kassa desk' });
   }
-  if (businessDate) {
-    await assertKassaOpenForDate(businessDate);
+  try {
+    await assertKassaOpenForDate(businessDate, kassaDesk?.id);
+  } catch (err: any) {
+    return res.status(409).json({ error: err?.message || 'Kassa session is not open' });
   }
 
   try {
@@ -411,6 +508,13 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
       rateFirmId: firmId,
     });
     const baseAmount = amount.mul(exchangeRate).toDecimalPlaces(4);
+    const operationalAccount = await ensureFinancialAccount({
+      firmId, currency,
+      type: method === 'card' ? FinancialAccountType.CARD : FinancialAccountType.CASH,
+      kassaDeskId: method === 'cash' ? kassaDesk?.id : undefined,
+      paymentCardId: method === 'card' ? paymentCardId : undefined,
+      createdByUserId: authUser.userId,
+    });
     const created = await prisma.transaction.create({
       data: {
         firmId,
@@ -419,10 +523,14 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
         flightId,
         createdByUserId: authUser.userId ? String(authUser.userId) : undefined,
         type: 'ADJUSTMENT',
+        sourceMode: method === 'card' ? 'MANUAL_CARD' : 'MANUAL_CASH',
+        status: 'CONFIRMED',
         direction: flow === 'IN' ? 'KASSA_IN' : 'KASSA_OUT',
         subjectType: flightId ? 'FLIGHT' : 'KASSA',
         subjectId: flightId || firmId,
         kassaDeskId: kassaDesk?.id,
+        sourceAccountId: flow === 'OUT' ? operationalAccount.id : undefined,
+        destinationAccountId: flow === 'IN' ? operationalAccount.id : undefined,
         originalAmount: amount.toDecimalPlaces(4),
         currency,
         exchangeRate: exchangeRate.toDecimalPlaces(6),

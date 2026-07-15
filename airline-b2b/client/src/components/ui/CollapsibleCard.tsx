@@ -12,6 +12,7 @@ type CollapsibleCardProps = {
   contentClassName?: string;
   headerRight?: React.ReactNode;
   collapsible?: boolean;
+  id?: string;
 };
 
 export default function CollapsibleCard({
@@ -24,6 +25,7 @@ export default function CollapsibleCard({
   contentClassName,
   headerRight,
   collapsible = false,
+  id,
 }: CollapsibleCardProps) {
   const { tr } = useLanguage();
   const [open, setOpen] = useState(defaultOpen);
@@ -60,7 +62,7 @@ export default function CollapsibleCard({
   const isOpen = collapsible ? open : true;
 
   return (
-    <div className={`bg-surface shadow-sm border border-border rounded-lg transition-all duration-300 hover:shadow-[0_4px_24px_-8px_rgba(0,0,0,0.05)] ${className || ''}`}>
+    <div id={id} className={`scroll-mt-24 bg-surface shadow-sm border border-border rounded-lg transition-all duration-300 hover:shadow-[0_4px_24px_-8px_rgba(0,0,0,0.05)] ${className || ''}`}>
       <div
         className={`px-6 py-5 md:px-8 md:py-6 flex items-start justify-between gap-4 transition-colors ${
           isOpen && hasChildren ? 'border-b border-border' : ''

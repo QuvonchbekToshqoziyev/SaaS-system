@@ -7,51 +7,29 @@ import toast from 'react-hot-toast';
 import { Plane, Plus, Edit, Trash2, X } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
-import type { AxiosError } from 'axios';
 import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { getApiErrorMessage, isCancelledFlight, type AirlineOption, type LocalFlight } from '@/features/flights/model';
+
+type FlightFormData = {
+  flightNumber: string; route: string; airlineMode: string; airlineId: string; airlineName: string; airlineCode: string;
+  tripType: 'ROUND_TRIP' | 'ONE_WAY';
+  outboundOrigin: string; outboundDestination: string; returnOrigin: string; returnDestination: string;
+  departure: string; arrival: string; returnDeparture: string; returnArrival: string;
+  ticketCount: number; ticketPrice: number; outboundCost: number; returnCost: number; currency: string;
+};
+
+type FlightPayload = {
+  flightNumber: string; route?: string; airlineId?: string; airlineName?: string; airlineCode?: string;
+  tripType: 'ROUND_TRIP' | 'ONE_WAY'; outboundOrigin: string; outboundDestination: string;
+  returnOrigin?: string; returnDestination?: string; departure: string; arrival: string;
+  returnDeparture?: string; returnArrival?: string; ticketCount: number; ticketPrice: number;
+  outboundCost: number; returnCost?: number; currency: string; baseTotal: number;
+};
 
 // Assuming you exported from shared/types.ts earlier so let's import directly.
 // Actually, let's keep the internal type map for a moment, or use the global one.
 // Let's rely on internal one to avoid too many file replaces since we symlinked. Or I will just make it use useQuery.
-
-type ApiErrorResponse = {
-  error?: string;
-};
-
-type LocalFlight = {
-  id?: string;
-  flight_id?: string;
-  flightNumber?: string;
-  route?: string;
-  airlineId?: string | null;
-  airline?: { id: string; name: string; code?: string | null; firmId?: string | null } | null;
-  departure: string;
-  arrival: string;
-  status?: string;
-  ticketCount?: number;
-  ticketPrice?: number;
-  currency?: string;
-  total_allocated?: number | string;
-  total_sales?: number | string;
-  total_payments?: number | string;
-};
-
-type AirlineOption = {
-  id: string;
-  name: string;
-  code?: string | null;
-  firmId?: string | null;
-};
-
-function getApiErrorMessage(error: unknown): string | undefined {
-  const axiosError = error as AxiosError<ApiErrorResponse>;
-  return axiosError?.response?.data?.error;
-}
-
-function isCancelledFlight(status?: string): boolean {
-  return String(status || '').trim().toUpperCase() === 'CANCELLED';
-}
 
 export default function FlightsPage() {
   const router = useRouter();
@@ -61,20 +39,19 @@ export default function FlightsPage() {
   const role = user?.role?.toUpperCase() || '';
   const firmRole = String(user?.firmRole || 'FIRM_ADMIN').toUpperCase();
   const canCreateFlight = role === 'FIRM' && firmRole !== 'KASSIR';
-  const canEdit = role === 'SUPERADMIN' || canCreateFlight;
-  const showFlightActions = canCreateFlight || canEdit;
+  const showFlightActions = ['SUPERADMIN', 'ADMIN'].includes(role) || canCreateFlight;
   
   const { data: flights = [], isLoading: loading } = useQuery<LocalFlight[]>({
-    queryKey: ['flights'],
+    queryKey: ['flights', user?.id || user?.email || role],
     queryFn: async () => {
       const res = await api.get('/flights');
       return res.data;
     }
   });
   const { data: listedAirlines = [] } = useQuery<AirlineOption[]>({
-    queryKey: ['airlines', 'flight-options'],
+    queryKey: ['airlines', 'flight-options', user?.id || user?.email || role],
     queryFn: async () => (await api.get('/airlines')).data,
-    enabled: role === 'FIRM' || role === 'SUPERADMIN',
+    enabled: ['FIRM', 'ADMIN', 'SUPERADMIN'].includes(role),
   });
 
   const [flightsView, setFlightsView] = useState<'boxes' | 'list'>(() => {
@@ -90,19 +67,7 @@ export default function FlightsPage() {
     | null
     | {
         kind: 'create';
-        payload: {
-          flightNumber: string;
-          departure: string;
-          arrival: string;
-          ticketCount: number;
-          ticketPrice: number;
-          currency: string;
-          airlineId?: string;
-          airlineName?: string;
-          airlineCode?: string;
-          route?: string;
-          baseTotal: number;
-        };
+        payload: FlightPayload;
       }
     | { kind: 'cancel'; id: string; label: string }
   >(null);
@@ -112,17 +77,26 @@ export default function FlightsPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState<'create' | 'edit'>('create');
   const [currentFlightId, setCurrentFlightId] = useState<string | null>(null);
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<FlightFormData>({
     flightNumber: '',
     route: '',
     airlineMode: 'LISTED',
     airlineId: '',
     airlineName: '',
     airlineCode: '',
+    tripType: 'ROUND_TRIP',
+    outboundOrigin: '',
+    outboundDestination: '',
+    returnOrigin: '',
+    returnDestination: '',
     departure: '',
     arrival: '',
+    returnDeparture: '',
+    returnArrival: '',
     ticketCount: 10,
     ticketPrice: 500,
+    outboundCost: 250,
+    returnCost: 250,
     currency: 'UZS'
   });
   const createBaseTotal = Number(formData.ticketCount || 0) * Number(formData.ticketPrice || 0);
@@ -181,13 +155,61 @@ export default function FlightsPage() {
       airlineId: connectedListedAirlines[0]?.id || '',
       airlineName: '',
       airlineCode: '',
+      tripType: 'ROUND_TRIP',
+      outboundOrigin: '',
+      outboundDestination: '',
+      returnOrigin: '',
+      returnDestination: '',
       departure: new Date(Date.now() + 86400000).toISOString().slice(0, 16),
       arrival: new Date(Date.now() + 86400000 + 7200000).toISOString().slice(0, 16),
+      returnDeparture: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 16),
+      returnArrival: new Date(Date.now() + 7 * 86400000 + 7200000).toISOString().slice(0, 16),
       ticketCount: 10,
       ticketPrice: 500,
+      outboundCost: 250,
+      returnCost: 250,
       currency: 'UZS'
     });
   };
+
+  const validateFlightForm = () => {
+    if (!formData.flightNumber.trim()) return tr('Flight Number is required', 'Reys raqami kerak');
+    if (!formData.outboundOrigin.trim() || !formData.outboundDestination.trim()) return tr('Outbound route is required', 'Borish yo‘nalishini to‘liq kiriting');
+    if (!formData.departure || !formData.arrival) return tr('Outbound times are required', 'Borish vaqtlarini kiriting');
+    if (formData.tripType === 'ROUND_TRIP') {
+      if (!formData.returnOrigin.trim() || !formData.returnDestination.trim()) return tr('Return route is required', 'Qaytish yo‘nalishini to‘liq kiriting');
+      if (!formData.returnDeparture || !formData.returnArrival) return tr('Return times are required', 'Qaytish vaqtlarini kiriting');
+      if (Number(formData.outboundCost) + Number(formData.returnCost) !== Number(formData.ticketPrice)) {
+        return tr('Outbound + return cost must equal RT total cost', 'Borish + qaytish tannarxi RT jami tannarxiga teng bo‘lishi kerak');
+      }
+    }
+    return '';
+  };
+
+  const buildFlightPayload = (): FlightPayload => ({
+    flightNumber: formData.flightNumber.trim(),
+    route: formData.route.trim() || (formData.tripType === 'ROUND_TRIP'
+      ? `${formData.outboundOrigin} → ${formData.outboundDestination} → ${formData.returnDestination}`
+      : `${formData.outboundOrigin} → ${formData.outboundDestination}`),
+    ...(formData.airlineMode === 'LISTED'
+      ? { airlineId: formData.airlineId }
+      : { airlineName: formData.airlineName.trim(), airlineCode: formData.airlineCode.trim().toUpperCase() || undefined }),
+    tripType: formData.tripType,
+    outboundOrigin: formData.outboundOrigin.trim(),
+    outboundDestination: formData.outboundDestination.trim(),
+    ...(formData.tripType === 'ROUND_TRIP' ? {
+      returnOrigin: formData.returnOrigin.trim(), returnDestination: formData.returnDestination.trim(),
+      returnDeparture: new Date(formData.returnDeparture).toISOString(), returnArrival: new Date(formData.returnArrival).toISOString(),
+    } : {}),
+    departure: new Date(formData.departure).toISOString(),
+    arrival: new Date(formData.arrival).toISOString(),
+    ticketCount: Number(formData.ticketCount),
+    ticketPrice: Number(formData.ticketPrice),
+    outboundCost: formData.tripType === 'ROUND_TRIP' ? Number(formData.outboundCost) : Number(formData.ticketPrice),
+    ...(formData.tripType === 'ROUND_TRIP' ? { returnCost: Number(formData.returnCost) } : {}),
+    currency: formData.currency,
+    baseTotal: Number(formData.ticketCount) * Number(formData.ticketPrice),
+  });
 
   const openCreateRow = () => {
     resetCreateForm();
@@ -196,8 +218,9 @@ export default function FlightsPage() {
   };
 
   const submitCreateRow = () => {
-    if (!formData.flightNumber) {
-      toast.error(tr('Flight Number is required', 'Reys raqami kerak'));
+    const validationError = validateFlightForm();
+    if (validationError) {
+      toast.error(validationError);
       return;
     }
     if (formData.airlineMode === 'LISTED' && !formData.airlineId) {
@@ -210,19 +233,7 @@ export default function FlightsPage() {
     }
     setConfirm({
       kind: 'create',
-      payload: {
-        flightNumber: formData.flightNumber,
-        route: formData.route,
-        ...(formData.airlineMode === 'LISTED'
-          ? { airlineId: formData.airlineId }
-          : { airlineName: formData.airlineName.trim(), airlineCode: formData.airlineCode.trim().toUpperCase() || undefined }),
-        departure: new Date(formData.departure).toISOString(),
-        arrival: new Date(formData.arrival).toISOString(),
-        ticketCount: Number(formData.ticketCount),
-        ticketPrice: Number(formData.ticketPrice),
-        currency: formData.currency,
-        baseTotal: Number(formData.ticketCount) * Number(formData.ticketPrice),
-      },
+      payload: buildFlightPayload(),
     });
   };
 
@@ -243,10 +254,19 @@ export default function FlightsPage() {
       airlineId: flight.airline?.id || '',
       airlineName: flight.airline?.name || '',
       airlineCode: flight.airline?.code || '',
+      tripType: flight.tripType || 'ONE_WAY',
+      outboundOrigin: flight.outboundOrigin || (flight.route || '').split(/→|->/)[0]?.trim() || '',
+      outboundDestination: flight.outboundDestination || (flight.route || '').split(/→|->/)[1]?.trim() || '',
+      returnOrigin: flight.returnOrigin || flight.outboundDestination || '',
+      returnDestination: flight.returnDestination || flight.outboundOrigin || '',
       departure: new Date(flight.departure).toISOString().slice(0, 16),
       arrival: new Date(flight.arrival).toISOString().slice(0, 16),
+      returnDeparture: flight.returnDeparture ? new Date(flight.returnDeparture).toISOString().slice(0, 16) : '',
+      returnArrival: flight.returnArrival ? new Date(flight.returnArrival).toISOString().slice(0, 16) : '',
       ticketCount: flight.ticketCount || 10,
       ticketPrice: flight.ticketPrice || 500,
+      outboundCost: flight.outboundCost ?? (flight.ticketPrice ? flight.ticketPrice / (flight.tripType === 'ROUND_TRIP' ? 2 : 1) : 0),
+      returnCost: flight.returnCost ?? (flight.tripType === 'ROUND_TRIP' && flight.ticketPrice ? flight.ticketPrice / 2 : 0),
       currency: flight.currency || 'UZS'
     });
     setIsModalOpen(true);
@@ -254,42 +274,20 @@ export default function FlightsPage() {
 
   const handleModalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.flightNumber) {
-      toast.error(tr('Flight Number is required', 'Reys raqami kerak'));
+    const validationError = validateFlightForm();
+    if (validationError) {
+      toast.error(validationError);
       return;
     }
     
     try {
       if (modalMode === 'create') {
-        const payload = {
-          flightNumber: formData.flightNumber,
-          route: formData.route,
-          ...(formData.airlineMode === 'LISTED'
-            ? { airlineId: formData.airlineId }
-            : { airlineName: formData.airlineName.trim(), airlineCode: formData.airlineCode.trim().toUpperCase() || undefined }),
-          departure: new Date(formData.departure).toISOString(),
-          arrival: new Date(formData.arrival).toISOString(),
-          ticketCount: Number(formData.ticketCount),
-          ticketPrice: Number(formData.ticketPrice),
-          currency: formData.currency,
-          baseTotal: Number(formData.ticketCount) * Number(formData.ticketPrice),
-        };
+        const payload = buildFlightPayload();
         setIsModalOpen(false);
         setConfirm({ kind: 'create', payload });
         return;
       } else {
-        await api.put(`/flights/${currentFlightId}`, {
-          flightNumber: formData.flightNumber,
-          route: formData.route,
-          ...(formData.airlineMode === 'LISTED'
-            ? { airlineId: formData.airlineId }
-            : { airlineName: formData.airlineName.trim(), airlineCode: formData.airlineCode.trim().toUpperCase() || undefined }),
-          departure: new Date(formData.departure).toISOString(),
-          arrival: new Date(formData.arrival).toISOString(),
-          ticketCount: Number(formData.ticketCount),
-          ticketPrice: Number(formData.ticketPrice),
-          currency: formData.currency,
-        });
+        await api.put(`/flights/${currentFlightId}`, buildFlightPayload());
         toast.success(tr('Flight updated!', 'Reys yangilandi!'));
       }
       setIsModalOpen(false);
@@ -336,7 +334,7 @@ export default function FlightsPage() {
         setIsCreatingFlight(false);
       } else {
         await api.delete(`/flights/${confirm.id}`);
-        toast.success(tr('Flight cancelled!', 'Reys bekor qilindi!'));
+        toast.success(tr('Flight deleted!', 'Reys o‘chirildi!'));
       }
       setConfirm(null);
       queryClient.invalidateQueries({ queryKey: ["flights"] });
@@ -344,7 +342,7 @@ export default function FlightsPage() {
       if (confirm.kind === 'create') {
         toast.error(getApiErrorMessage(error) || tr('Failed to create flight.', 'Reysni yaratib bo\'lmadi.'));
       } else {
-        toast.error(getApiErrorMessage(error) || tr('Failed to cancel flight.', 'Reysni bekor qilib bo\'lmadi.'));
+        toast.error(getApiErrorMessage(error) || tr('Failed to delete flight.', 'Reysni o‘chirib bo\'lmadi.'));
       }
       setConfirmBusy(false);
     }
@@ -365,6 +363,15 @@ export default function FlightsPage() {
     if (normalized === 'SCHEDULED') return tr('SCHEDULED', 'REJALASHTIRILGAN');
     return normalized;
   };
+
+  const inventoryMetric = (metric?: { count?: number; amounts?: Array<{ currency: string; total: number }> }) => (
+    <div>
+      <div className="font-bold text-base text-foreground">{Number(metric?.count || 0).toLocaleString()} ta</div>
+      {(metric?.amounts || []).map((amount) => (
+        <div key={amount.currency} className="text-xs text-muted">{Number(amount.total || 0).toLocaleString()} {amount.currency}</div>
+      ))}
+    </div>
+  );
 
   return (
     <div className="space-y-8">
@@ -416,7 +423,7 @@ export default function FlightsPage() {
         </div>
       </div>
 
-      <div className="grid gap-3 rounded-lg border border-border bg-surface-2 p-3 md:grid-cols-[minmax(220px,1fr)_minmax(180px,240px)_minmax(150px,200px)_auto] md:items-end">
+      <div id="flight-list" className="scroll-mt-24 grid gap-3 rounded-lg border border-border bg-surface-2 p-3 md:grid-cols-[minmax(220px,1fr)_minmax(180px,240px)_minmax(150px,200px)_auto] md:items-end">
         <label className="block">
           <span className="compact-label">{tr('Search', 'Qidirish')}</span>
           <input
@@ -491,9 +498,9 @@ export default function FlightsPage() {
                         </p>
                       );
                     })()}
-                    {canEdit && (
+                    {(flight.canEdit || flight.canDelete) && (
                       <>
-                        <button
+                        {flight.canEdit && <button
                           type="button"
                           onClick={(e) => openEditModal(e, flight)}
                           disabled={isCancelledFlight(flight.status)}
@@ -501,8 +508,8 @@ export default function FlightsPage() {
                           title={tr('Edit', 'Tahrirlash')}
                         >
                           <Edit size={16} />
-                        </button>
-                        <button
+                        </button>}
+                        {flight.canDelete && <button
                           type="button"
                           onClick={(e) => {
                             const flightId = flight.id ?? flight.flight_id;
@@ -514,10 +521,10 @@ export default function FlightsPage() {
                           }}
                           disabled={isCancelledFlight(flight.status)}
                           className="text-muted hover:text-red-400 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                          title={tr('Cancel flight', 'Reysni bekor qilish')}
+                          title={tr('Delete flight', 'Reysni o‘chirish')}
                         >
                           <Trash2 size={16} />
-                        </button>
+                        </button>}
                       </>
                     )}
                   </div>
@@ -526,7 +533,7 @@ export default function FlightsPage() {
                 <div className="text-sm text-foreground space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="font-medium text-muted">{tr('Airline', 'Aviakompaniya')}:</span>
-                    <span>{flight.airline?.name || '-'}</span>
+                    <span className="flex items-center gap-2"><span className="rounded bg-primary/15 px-2 py-0.5 text-xs font-bold text-primary">{flight.tripType === 'ROUND_TRIP' ? 'RT' : 'OW'}</span>{flight.airline?.name || '-'}</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="font-medium text-muted">{tr('Departure', 'Jo\'nab ketish')}:</span>
@@ -540,16 +547,19 @@ export default function FlightsPage() {
 
                 <div className="mt-5 pt-4 border-t border-border grid grid-cols-3 gap-2 text-center">
                   <div className="text-muted">
-                    <p className="text-xs">{tr('Ticket count', 'Bilet soni')}</p>
-                    <p className="font-bold text-lg text-yellow-600">{Number(flight.ticketCount || 0).toLocaleString()}</p>
+                    <p className="mb-1 text-xs">{tr('Total acquired tickets / cost', 'Jami olingan bilet soni / summasi')}</p>
+                    {inventoryMetric(flight.inventorySummary?.received)}
+                    <p className="mt-1 text-[11px]">OUT {flight.inventorySummary?.rtOw?.originalOutboundLegs || 0} · RETURN {flight.inventorySummary?.rtOw?.originalReturnLegs || 0}</p>
                   </div>
                   <div className="text-muted">
-                    <p className="text-xs">{tr('Ticket amount', 'Bilet summasi')}</p>
-                    <p className="font-bold text-lg text-green-600">{Number(flight.total_sales || 0).toLocaleString()}</p>
+                    <p className="mb-1 text-xs">{tr('Sold / allocated tickets / amount', 'Sotilgan / ajratilgan bilet soni / summasi')}</p>
+                    {inventoryMetric(flight.inventorySummary?.soldOrAllocated)}
+                    <p className="mt-1 text-[11px]">{tr('Pending', 'Kutilmoqda')}: {flight.inventorySummary?.pendingAllocationCount || 0} · {tr('Direct', 'To‘g‘ridan')}: {flight.inventorySummary?.directSoldTicketCount || 0}</p>
                   </div>
                   <div className="text-muted">
-                    <p className="text-xs">{tr('Payments (UZS)', "To'lovlar (UZS)")}</p>
-                    <p className="font-bold text-lg text-primary">{Number(flight.total_payments || 0).toLocaleString()}</p>
+                    <p className="mb-1 text-xs">{tr('Remaining tickets / cost', 'Qolgan bilet soni / summasi')}</p>
+                    {inventoryMetric(flight.inventorySummary?.remaining)}
+                    <p className="mt-1 text-[11px]">RT {flight.inventorySummary?.rtOw?.availableRoundTripCount || 0} · OUT {flight.inventorySummary?.rtOw?.availableOutboundLegCount || 0} · RETURN {flight.inventorySummary?.rtOw?.availableReturnLegCount || 0}</p>
                   </div>
                 </div>
 
@@ -603,9 +613,9 @@ export default function FlightsPage() {
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Status', 'Holat')}</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Departure', 'Jo\'nab ketish')}</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Arrival', 'Yetib kelish')}</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Ticket count', 'Bilet soni')}</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Ticket amount', 'Bilet summasi')}</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Payments (UZS)', "To'lovlar (UZS)")}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Total acquired / cost', 'Jami olingan / summasi')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Sold / allocated / amount', 'Sotilgan-ajratilgan / summasi')}</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-muted uppercase">{tr('Remaining / cost', 'Qolgan / summasi')}</th>
                 {showFlightActions && (
                   <th className="px-4 py-3 text-right text-xs font-medium text-muted uppercase">{tr('Actions', 'Amallar')}</th>
                 )}
@@ -696,7 +706,11 @@ export default function FlightsPage() {
                         className="compact-control min-w-[140px]"
                         title={tr('Ticket amount', 'Bilet summasi')}
                         value={formData.ticketPrice}
-                        onChange={(e) => setFormData({ ...formData, ticketPrice: Number(e.target.value) })}
+                        onChange={(e) => {
+                          const value = Number(e.target.value);
+                          const outbound = formData.tripType === 'ROUND_TRIP' ? Number((value / 2).toFixed(4)) : value;
+                          setFormData({ ...formData, ticketPrice: value, outboundCost: outbound, returnCost: Number((value - outbound).toFixed(4)) });
+                        }}
                       />
                       <select
                         className="compact-control min-w-[96px]"
@@ -705,7 +719,6 @@ export default function FlightsPage() {
                       >
                         <option value="UZS">UZS</option>
                         <option value="USD">USD</option>
-                        <option value="EUR">EUR</option>
                       </select>
                     </div>
                   </td>
@@ -718,6 +731,32 @@ export default function FlightsPage() {
                       value={formData.route}
                       onChange={(e) => setFormData({ ...formData, route: e.target.value })}
                     />
+                    <details className="mt-2 min-w-[360px] rounded-lg border border-border bg-surface-2 p-2 text-left">
+                      <summary className="cursor-pointer text-xs font-semibold text-primary">{tr('RT / OW details', 'RT / OW tafsilotlari')}</summary>
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <label className="col-span-2">
+                          <span className="compact-label">{tr('Ticket type', 'Bilet turi')}</span>
+                          <select className="compact-control" value={formData.tripType} onChange={(e) => {
+                            const tripType = e.target.value as FlightFormData['tripType'];
+                            const outbound = tripType === 'ROUND_TRIP' ? Number((formData.ticketPrice / 2).toFixed(4)) : formData.ticketPrice;
+                            setFormData({ ...formData, tripType, outboundCost: outbound, returnCost: tripType === 'ROUND_TRIP' ? Number((formData.ticketPrice - outbound).toFixed(4)) : 0 });
+                          }}>
+                            <option value="ROUND_TRIP">RT — borish–kelish</option>
+                            <option value="ONE_WAY">OW — bir tomon</option>
+                          </select>
+                        </label>
+                        <input className="compact-control" placeholder="TAS" value={formData.outboundOrigin} onChange={(e) => setFormData({ ...formData, outboundOrigin: e.target.value.toUpperCase() })} />
+                        <input className="compact-control" placeholder="IST" value={formData.outboundDestination} onChange={(e) => setFormData({ ...formData, outboundDestination: e.target.value.toUpperCase() })} />
+                        {formData.tripType === 'ROUND_TRIP' && <>
+                          <input className="compact-control" placeholder="IST" value={formData.returnOrigin} onChange={(e) => setFormData({ ...formData, returnOrigin: e.target.value.toUpperCase() })} />
+                          <input className="compact-control" placeholder="TAS" value={formData.returnDestination} onChange={(e) => setFormData({ ...formData, returnDestination: e.target.value.toUpperCase() })} />
+                          <input type="datetime-local" className="compact-control" value={formData.returnDeparture} onChange={(e) => setFormData({ ...formData, returnDeparture: e.target.value })} />
+                          <input type="datetime-local" className="compact-control" value={formData.returnArrival} onChange={(e) => setFormData({ ...formData, returnArrival: e.target.value })} />
+                          <input type="number" min="0" className="compact-control" title={tr('Outbound cost', 'Borish tannarxi')} value={formData.outboundCost} onChange={(e) => setFormData({ ...formData, outboundCost: Number(e.target.value) })} />
+                          <input type="number" min="0" className="compact-control" title={tr('Return cost', 'Qaytish tannarxi')} value={formData.returnCost} onChange={(e) => setFormData({ ...formData, returnCost: Number(e.target.value) })} />
+                        </>}
+                      </div>
+                    </details>
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="inline-flex items-center gap-2">
@@ -745,7 +784,20 @@ export default function FlightsPage() {
               {visibleFlights.map((flight: LocalFlight) => {
                 const flightId = flight.flight_id || flight.id;
                 return (
-                  <tr key={flightId} className="hover:bg-surface transition">
+                  <tr
+                    key={flightId}
+                    role={flightId ? 'link' : undefined}
+                    tabIndex={flightId ? 0 : undefined}
+                    onClick={() => flightId && router.push(`/flights/detail?id=${flightId}`)}
+                    onKeyDown={(event) => {
+                      if (flightId && (event.key === 'Enter' || event.key === ' ')) {
+                        event.preventDefault();
+                        router.push(`/flights/detail?id=${flightId}`);
+                      }
+                    }}
+                    className={`hover:bg-surface transition ${flightId ? 'cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary' : ''}`}
+                    aria-label={flightId ? tr('Open flight details', 'Reys tafsilotlarini ochish') : undefined}
+                  >
                     <td className="px-4 py-3 text-sm text-foreground font-medium">
                       {flightId ? (
                         <div>
@@ -755,14 +807,14 @@ export default function FlightsPage() {
                           <div className="mt-2 flex items-center gap-2">
                             <button
                               type="button"
-                              onClick={() => router.push(`/transactions?flightId=${encodeURIComponent(flightId)}`)}
+                              onClick={(event) => { event.stopPropagation(); router.push(`/transactions?flightId=${encodeURIComponent(flightId)}`); }}
                               className="px-2 py-1 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition border border-border text-xs font-medium"
                             >
                               {tr('Transactions', 'Tranzaksiyalar')}
                             </button>
                             <button
                               type="button"
-                              onClick={() => router.push(`/reports?flightId=${encodeURIComponent(flightId)}`)}
+                              onClick={(event) => { event.stopPropagation(); router.push(`/reports?flightId=${encodeURIComponent(flightId)}`); }}
                               className="px-2 py-1 bg-surface hover:bg-surface-2 text-foreground rounded-lg transition border border-border text-xs font-medium"
                             >
                               {tr('Reports', 'Hisobotlar')}
@@ -787,22 +839,31 @@ export default function FlightsPage() {
                     </td>
                     <td className="px-4 py-3 text-sm text-muted whitespace-nowrap">{new Date(flight.departure).toLocaleString()}</td>
                     <td className="px-4 py-3 text-sm text-muted whitespace-nowrap">{new Date(flight.arrival).toLocaleString()}</td>
-                    <td className="px-4 py-3 text-sm text-yellow-600 font-medium whitespace-nowrap">{Number(flight.ticketCount || 0).toLocaleString()}</td>
-                    <td className="px-4 py-3 text-sm text-green-600 font-medium whitespace-nowrap">{Number(flight.total_sales || 0).toLocaleString()}</td>
-                    <td className="px-4 py-3 text-sm text-primary font-medium whitespace-nowrap">{Number(flight.total_payments || 0).toLocaleString()}</td>
+                    <td className="px-4 py-3 text-sm whitespace-nowrap">
+                      {inventoryMetric(flight.inventorySummary?.received)}
+                      <span className="text-[11px] text-muted">OUT {flight.inventorySummary?.rtOw?.originalOutboundLegs || 0} · RETURN {flight.inventorySummary?.rtOw?.originalReturnLegs || 0}</span>
+                    </td>
+                    <td className="px-4 py-3 text-sm whitespace-nowrap">
+                      {inventoryMetric(flight.inventorySummary?.soldOrAllocated)}
+                      <span className="text-[11px] text-muted">{tr('Pending', 'Kutilmoqda')} {flight.inventorySummary?.pendingAllocationCount || 0} · {tr('Direct', 'To‘g‘ridan')} {flight.inventorySummary?.directSoldTicketCount || 0}</span>
+                    </td>
+                    <td className="px-4 py-3 text-sm whitespace-nowrap">
+                      {inventoryMetric(flight.inventorySummary?.remaining)}
+                      <span className="text-[11px] text-muted">RT {flight.inventorySummary?.rtOw?.availableRoundTripCount || 0} · OUT {flight.inventorySummary?.rtOw?.availableOutboundLegCount || 0} · RETURN {flight.inventorySummary?.rtOw?.availableReturnLegCount || 0}</span>
+                    </td>
                     {showFlightActions && (
                       <td className="px-4 py-3 text-right text-sm">
-                        {canEdit && (
+                        {(flight.canEdit || flight.canDelete) && (
                           <div className="inline-flex items-center gap-3">
-                            <button
+                            {flight.canEdit && <button
                               onClick={(e) => openEditModal(e, flight)}
                               disabled={isCancelledFlight(flight.status)}
                               className="text-muted hover:text-primary transition disabled:opacity-50 disabled:cursor-not-allowed"
                               title={tr('Edit', 'Tahrirlash')}
                             >
                               <Edit size={16} />
-                            </button>
-                            <button
+                            </button>}
+                            {flight.canDelete && <button
                               onClick={(e) => {
                                 if (!flightId) {
                                   toast.error(tr('Invalid flight id', 'Reys ID xato'));
@@ -812,10 +873,10 @@ export default function FlightsPage() {
                               }}
                               disabled={isCancelledFlight(flight.status)}
                               className="text-muted hover:text-red-400 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                              title={tr('Cancel flight', 'Reysni bekor qilish')}
+                              title={tr('Delete flight', 'Reysni o‘chirish')}
                             >
                               <Trash2 size={16} />
-                            </button>
+                            </button>}
                           </div>
                         )}
                       </td>
@@ -921,9 +982,50 @@ export default function FlightsPage() {
                 />
               </div>
 
+              <div className="rounded-xl border border-border bg-surface-2 p-4 space-y-4">
+                <div className="grid gap-4 md:grid-cols-[180px_1fr_1fr]">
+                  <div>
+                    <label className="block text-sm font-medium text-muted mb-1">{tr('Ticket type', 'Bilet turi')}</label>
+                    <select
+                      className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition disabled:opacity-60"
+                      value={formData.tripType}
+                      disabled={modalMode === 'edit'}
+                      onChange={(e) => {
+                        const tripType = e.target.value as FlightFormData['tripType'];
+                        const outbound = tripType === 'ROUND_TRIP' ? Number((formData.ticketPrice / 2).toFixed(4)) : formData.ticketPrice;
+                        setFormData({ ...formData, tripType, outboundCost: outbound, returnCost: tripType === 'ROUND_TRIP' ? Number((formData.ticketPrice - outbound).toFixed(4)) : 0 });
+                      }}
+                    >
+                      <option value="ROUND_TRIP">RT — borish–kelish</option>
+                      <option value="ONE_WAY">OW — bir tomon</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-muted mb-1">OUTBOUND: {tr('origin', 'qayerdan')}</label>
+                    <input className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground" value={formData.outboundOrigin} onChange={(e) => setFormData({ ...formData, outboundOrigin: e.target.value.toUpperCase() })} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-muted mb-1">OUTBOUND: {tr('destination', 'qayerga')}</label>
+                    <input className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground" value={formData.outboundDestination} onChange={(e) => setFormData({ ...formData, outboundDestination: e.target.value.toUpperCase() })} />
+                  </div>
+                </div>
+                {formData.tripType === 'ROUND_TRIP' && (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="block text-sm font-medium text-muted mb-1">RETURN: {tr('origin', 'qayerdan')}</label>
+                      <input className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground" value={formData.returnOrigin} onChange={(e) => setFormData({ ...formData, returnOrigin: e.target.value.toUpperCase() })} />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-muted mb-1">RETURN: {tr('destination', 'qayerga')}</label>
+                      <input className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground" value={formData.returnDestination} onChange={(e) => setFormData({ ...formData, returnDestination: e.target.value.toUpperCase() })} />
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <div>
-                  <label className="block text-sm font-medium text-muted mb-1">{tr('Departure', 'Jo\'nab ketish')}</label>
+                  <label className="block text-sm font-medium text-muted mb-1">OUTBOUND — {tr('Departure', 'Jo\'nab ketish')}</label>
                   <input
                     type="datetime-local"
                     required
@@ -933,7 +1035,7 @@ export default function FlightsPage() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-muted mb-1">{tr('Arrival', 'Yetib kelish')}</label>
+                  <label className="block text-sm font-medium text-muted mb-1">OUTBOUND — {tr('Arrival', 'Yetib kelish')}</label>
                   <input
                     type="datetime-local"
                     required
@@ -943,6 +1045,19 @@ export default function FlightsPage() {
                   />
                 </div>
               </div>
+
+              {formData.tripType === 'ROUND_TRIP' && (
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="block text-sm font-medium text-muted mb-1">RETURN — {tr('Departure', 'Jo‘nab ketish')}</label>
+                    <input type="datetime-local" required className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground" value={formData.returnDeparture} onChange={(e) => setFormData({ ...formData, returnDeparture: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-muted mb-1">RETURN — {tr('Arrival', 'Yetib kelish')}</label>
+                    <input type="datetime-local" required className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground" value={formData.returnArrival} onChange={(e) => setFormData({ ...formData, returnArrival: e.target.value })} />
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_1fr_120px]">
                 <div>
@@ -964,7 +1079,11 @@ export default function FlightsPage() {
                     required
                     className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition"
                     value={formData.ticketPrice}
-                    onChange={(e) => setFormData({...formData, ticketPrice: Number(e.target.value)})}
+                    onChange={(e) => {
+                      const value = Number(e.target.value);
+                      const outbound = formData.tripType === 'ROUND_TRIP' ? Number((value / 2).toFixed(4)) : value;
+                      setFormData({ ...formData, ticketPrice: value, outboundCost: outbound, returnCost: Number((value - outbound).toFixed(4)) });
+                    }}
                   />
                 </div>
                 <div>
@@ -976,10 +1095,22 @@ export default function FlightsPage() {
                   >
                     <option value="UZS">UZS</option>
                     <option value="USD">USD</option>
-                    <option value="EUR">EUR</option>
                   </select>
                 </div>
               </div>
+
+              {formData.tripType === 'ROUND_TRIP' && (
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="block text-sm font-medium text-muted mb-1">{tr('Outbound cost', 'Borish tannarxi')}</label>
+                    <input type="number" min="0" required className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground" value={formData.outboundCost} onChange={(e) => setFormData({ ...formData, outboundCost: Number(e.target.value) })} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-muted mb-1">{tr('Return cost', 'Qaytish tannarxi')}</label>
+                    <input type="number" min="0" required className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground" value={formData.returnCost} onChange={(e) => setFormData({ ...formData, returnCost: Number(e.target.value) })} />
+                  </div>
+                </div>
+              )}
               
               <div className="mt-6 flex justify-end gap-3">
                 <button
@@ -1010,7 +1141,7 @@ export default function FlightsPage() {
               <h3 className="text-xl font-bold text-foreground">
                 {confirm.kind === 'create'
                   ? tr('Confirm flight creation', 'Reys yaratishni tasdiqlash')
-                  : tr('Confirm cancellation', 'Bekor qilishni tasdiqlash')}
+                  : tr('Confirm deletion', 'O‘chirishni tasdiqlash')}
               </h3>
               <button
                 onClick={closeConfirm}
@@ -1029,9 +1160,27 @@ export default function FlightsPage() {
                 </p>
                 <div className="bg-surface-2 border border-border rounded-lg p-3 space-y-2">
                   <div className="flex items-center justify-between">
+                    <span className="text-muted">{tr('Ticket type', 'Bilet turi')}</span>
+                    <strong>{confirm.payload.tripType === 'ROUND_TRIP' ? 'RT — borish–kelish' : 'OW — bir tomon'}</strong>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted">OUTBOUND</span>
+                    <span className="text-foreground">{confirm.payload.outboundOrigin} → {confirm.payload.outboundDestination}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
                     <span className="text-muted">{tr('Departure', 'Jo\'nab ketish')}</span>
                     <span className="text-foreground">{new Date(confirm.payload.departure).toLocaleString()}</span>
                   </div>
+                  {confirm.payload.tripType === 'ROUND_TRIP' && <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted">RETURN</span>
+                      <span className="text-foreground">{confirm.payload.returnOrigin} → {confirm.payload.returnDestination}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted">{tr('Return departure', 'Qaytish jo‘nashi')}</span>
+                      <span className="text-foreground">{confirm.payload.returnDeparture ? new Date(confirm.payload.returnDeparture).toLocaleString() : '—'}</span>
+                    </div>
+                  </>}
                   <div className="flex items-center justify-between">
                     <span className="text-muted">{tr('Arrival', 'Yetib kelish')}</span>
                     <span className="text-foreground">{new Date(confirm.payload.arrival).toLocaleString()}</span>
@@ -1046,6 +1195,10 @@ export default function FlightsPage() {
                       {confirm.payload.ticketPrice} {confirm.payload.currency}
                     </span>
                   </div>
+                  {confirm.payload.tripType === 'ROUND_TRIP' && <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted">{tr('Cost split', 'Tannarx taqsimoti')}</span>
+                    <span>{confirm.payload.outboundCost.toLocaleString()} + {Number(confirm.payload.returnCost || 0).toLocaleString()} {confirm.payload.currency}</span>
+                  </div>}
                   <div className="flex items-center justify-between border-t border-border pt-2">
                     <span className="text-muted">{tr('Base total', 'Bazaviy jami')}</span>
                     <span className="font-bold text-foreground">
@@ -1063,13 +1216,13 @@ export default function FlightsPage() {
             ) : (
               <div className="space-y-3 text-sm text-foreground">
                 <p className="text-foreground">
-                  {tr('Cancel', 'Bekor qilish')}{' '}
+                  {tr('Delete', 'O‘chirish')}{' '}
                   <span className="font-semibold text-foreground">{confirm.label}</span>?
                 </p>
                 <p className="text-muted">
                   {tr(
-                    'This marks the flight as CANCELLED and keeps historical tickets and transactions.',
-                    'Bu reysni CANCELLED deb belgilaydi va tarixiy chiptalar hamda tranzaksiyalarni saqlab qoladi.'
+                    'This removes the flight from active screens while keeping historical records.',
+                    'Bu reysni faol oynalardan olib tashlaydi va tarixiy ma’lumotlarni saqlab qoladi.'
                   )}
                 </p>
               </div>
@@ -1098,7 +1251,7 @@ export default function FlightsPage() {
                   ? tr('Please wait...', 'Iltimos kuting...')
                   : confirm.kind === 'create'
                     ? tr('Confirm create', 'Yaratishni tasdiqlash')
-                    : tr('Cancel flight', 'Reysni bekor qilish')}
+                    : tr('Delete flight', 'Reysni o‘chirish')}
               </button>
             </div>
           </div>

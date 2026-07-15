@@ -5,6 +5,7 @@ import { canOperateFirmKassa } from './firm-user-roles';
 export type KassaAuthUser = {
   userId?: string;
   role?: string | null;
+  firmRole?: string | null;
   firmId?: string | null;
 };
 
@@ -54,6 +55,6 @@ export async function canOperateKassa(authUser: KassaAuthUser): Promise<boolean>
 
 export async function assertCanOperateKassa(authUser: KassaAuthUser) {
   if (!(await canOperateKassa(authUser))) {
-    throw new Error('Only superadmin or an active kassir employee can operate kassa');
+    throw new Error('Only superadmin, firm admin, or an active kassir can operate kassa');
   }
 }

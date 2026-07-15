@@ -52,8 +52,31 @@ export function inferErrorCode(err: unknown): ErrorCode {
   return ERROR_CODES.INTERNAL_ERROR;
 }
 
+export function mapPrismaError(err: unknown): AppError | null {
+  const anyErr = err as any;
+  const prismaCode = typeof anyErr?.code === 'string' && /^P\d{4}$/.test(anyErr.code) ? anyErr.code : '';
+  if (prismaCode === 'P2002') {
+    return new AppError(ERROR_CODES.CONFLICT, 'Bu ma’lumot allaqachon mavjud.', { statusCode: 409, expose: true });
+  }
+  if (prismaCode === 'P2003' || prismaCode === 'P2014') {
+    return new AppError(ERROR_CODES.CONFLICT, 'Bu amal bog‘langan ma’lumotlar sababli bajarilmadi.', { statusCode: 409, expose: true });
+  }
+  if (prismaCode === 'P2025') {
+    return new AppError(ERROR_CODES.NOT_FOUND, 'Ma’lumot topilmadi yoki avval o‘zgartirilgan.', { statusCode: 404, expose: true });
+  }
+  if (['P2000', 'P2005', 'P2006', 'P2011', 'P2012', 'P2013', 'P2019', 'P2023'].includes(prismaCode)) {
+    return new AppError(ERROR_CODES.VALIDATION_FAILED, 'Kiritilgan ma’lumot formati noto‘g‘ri.', { statusCode: 400, expose: true });
+  }
+  if (prismaCode || String(anyErr?.name || '').startsWith('PrismaClient')) {
+    return new AppError(ERROR_CODES.DATABASE_ERROR, undefined, { expose: false });
+  }
+  return null;
+}
+
 export function mapKnownError(err: unknown, fallbackCode: ErrorCode = ERROR_CODES.INTERNAL_ERROR): AppError {
   if (isAppError(err)) return err;
+  const prismaError = mapPrismaError(err);
+  if (prismaError) return prismaError;
 
   const anyErr = err as any;
   const message = err instanceof Error ? err.message : String(err || ERROR_CATALOG[fallbackCode].message);
@@ -74,7 +97,7 @@ export function mapKnownError(err: unknown, fallbackCode: ErrorCode = ERROR_CODE
   else if (lower.includes('ticket') && (lower.includes('not available') || lower.includes('not pending') || lower.includes('not sold') || lower.includes('already allocated') || lower.includes('not allocated'))) code = ERROR_CODES.TICKET_INVALID_STATE;
   else if (lower.includes('kassa desk') && lower.includes('not found')) code = ERROR_CODES.KASSA_DESK_NOT_FOUND;
   else if (lower.includes('kassa desk') && lower.includes('required')) code = ERROR_CODES.KASSA_DESK_REQUIRED;
-  else if (lower.includes('kassa is not open')) code = ERROR_CODES.KASSA_NOT_OPEN;
+  else if (lower.includes('kassa is not open') || lower.includes('no kassa session exists')) code = ERROR_CODES.KASSA_NOT_OPEN;
   else if (lower.includes('kassa is already open')) code = ERROR_CODES.KASSA_ALREADY_OPEN;
   else if (lower.includes('kassa is already closed')) code = ERROR_CODES.KASSA_ALREADY_CLOSED;
   else if (lower.includes('only superadmin') || lower.includes('kassa') && lower.includes('forbidden')) code = ERROR_CODES.KASSA_PERMISSION_DENIED;
@@ -91,12 +114,13 @@ export function mapKnownError(err: unknown, fallbackCode: ErrorCode = ERROR_CODE
 }
 
 export function toApiErrorBody(err: unknown, errorId?: string): ApiErrorBody {
-  const code = inferErrorCode(err);
+  const resolvedError = mapPrismaError(err) || err;
+  const code = inferErrorCode(resolvedError);
   const catalog = ERROR_CATALOG[code];
-  const app = isAppError(err) ? err : null;
-  const statusCode = app?.statusCode || (typeof (err as any)?.statusCode === 'number' ? (err as any).statusCode : catalog.statusCode);
+  const app = isAppError(resolvedError) ? resolvedError : null;
+  const statusCode = app?.statusCode || (typeof (resolvedError as any)?.statusCode === 'number' ? (resolvedError as any).statusCode : catalog.statusCode);
   const expose = app?.expose ?? statusCode < 500;
-  const message = expose && err instanceof Error ? err.message : catalog.message;
+  const message = expose && resolvedError instanceof Error ? resolvedError.message : catalog.message;
   return {
     error: message,
     code,

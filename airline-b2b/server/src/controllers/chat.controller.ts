@@ -5,6 +5,7 @@ import { canAccessFirm, getAccessibleFirmIds, isAdmin, isSuperAdmin, normalizeRo
 import { writeAuditLog } from '../utils/audit';
 import { decryptChatMessageRow, encryptChatJson, encryptChatString } from '../utils/chat-crypto';
 import { isFirmAdminLike } from '../utils/firm-user-roles';
+import { createNotification } from '../utils/notifications';
 
 type AuthUser = {
   userId?: string;
@@ -90,7 +91,23 @@ async function canFirmsChat(firmAId?: string | null, firmBId?: string | null): P
 }
 
 function userSelect() {
-  return { id: true, email: true, fullName: true, role: true, firmId: true } as const;
+  return { id: true, email: true, fullName: true, role: true, firmRole: true, firmId: true } as const;
+}
+
+function mentionAliases(user: { email: string; fullName?: string | null }): string[] {
+  return [user.email, user.email.split('@')[0], user.fullName || '', (user.fullName || '').replace(/\s+/g, '.')]
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+async function resolveMentionedUsers(conversationId: string, senderUserId: string, rawMentions: string[]) {
+  if (!rawMentions.length) return [];
+  const users = await prisma.user.findMany({
+    where: { chatParticipants: { some: { conversationId } }, deletedAt: null, status: 'ACTIVE' },
+    select: { id: true, email: true, fullName: true },
+  });
+  const requested = new Set(rawMentions.map((value) => value.replace(/^@/, '').toLowerCase()));
+  return users.filter((user) => user.id !== senderUserId && mentionAliases(user).some((alias) => requested.has(alias)));
 }
 
 async function ensureDefaultConversations(authUser: AuthUser) {
@@ -558,6 +575,7 @@ export const sendMessage = async (req: Request, res: Response) => {
 
   if (!content && !attachment) return res.status(400).json({ error: 'Message text or attachment is required' });
 
+  const mentionedUsers = await resolveMentionedUsers(conversationId, userId, mentions);
   const message = await prisma.chatMessage.create({
     data: {
       conversationId,
@@ -565,7 +583,7 @@ export const sendMessage = async (req: Request, res: Response) => {
       kind,
       content: encryptChatString(content || null),
       attachment: encryptChatJson(attachment) as Prisma.InputJsonValue | undefined,
-      mentions,
+      mentions: mentionedUsers.map((user) => user.id),
       replyToMessageId: cleanString(req.body?.replyToMessageId) || null,
       forwardedFromId: cleanString(req.body?.forwardedFromId) || null,
     },
@@ -578,6 +596,20 @@ export const sendMessage = async (req: Request, res: Response) => {
     update: { lastReadAt: new Date() },
     create: { conversationId, userId, lastReadAt: new Date() },
   });
+
+  if (mentionedUsers.length) {
+    const sender = await prisma.user.findUnique({ where: { id: userId }, select: { fullName: true, email: true } });
+    const senderName = sender?.fullName || sender?.email || 'A user';
+    await Promise.all(mentionedUsers.map((mentionedUser) => createNotification(prisma, {
+      userId: mentionedUser.id,
+      title: 'You were mentioned in chat',
+      body: `${senderName} mentioned you in ${conversation.title}`,
+      type: 'CHAT_MENTION',
+      entityType: 'chatConversation',
+      entityId: conversationId,
+      metadata: { conversationId, messageId: message.id },
+    })));
+  }
 
   if (conversation.type === ChatType.AI) {
     await prisma.chatMessage.create({

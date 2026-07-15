@@ -9,7 +9,7 @@ router.use(authMiddleware);
 
 router.get('/', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), listFirms);
 router.post('/', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), createFirm);
-router.patch('/:id', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), updateFirm);
+router.patch('/:id', roleMiddleware(['SUPERADMIN', 'FIRM']), updateFirm);
 router.delete('/:id', roleMiddleware(['SUPERADMIN']), deleteFirm);
 router.get('/:id', getFirmById);
 

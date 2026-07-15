@@ -24,6 +24,7 @@ import {
   Search,
   Send,
   Settings,
+  Info,
   Sparkles,
   Smile,
   Trash2,
@@ -42,6 +43,7 @@ type ChatUser = {
   email: string;
   fullName?: string | null;
   role: string;
+  firmRole?: string | null;
   firmId?: string | null;
 };
 
@@ -164,6 +166,7 @@ export default function ChatPage() {
   const [firmAId, setFirmAId] = useState('');
   const [firmBId, setFirmBId] = useState('');
   const [savingPermission, setSavingPermission] = useState(false);
+  const [showGroupInfo, setShowGroupInfo] = useState(false);
 
   const { data: conversations = [], isLoading: conversationsLoading } = useQuery<Conversation[]>({
     queryKey: ['chat-conversations'],
@@ -233,6 +236,12 @@ export default function ChatPage() {
   }, [filteredConversations, tr]);
 
   const activeParticipants = selectedConversation?.participants || [];
+  const mentionQuery = message.match(/(?:^|\s)@([^\s@]*)$/)?.[1]?.toLowerCase();
+  const mentionSuggestions = mentionQuery === undefined ? [] : activeParticipants
+    .map((participant) => participant.user)
+    .filter((participant): participant is ChatUser => Boolean(participant && participant.id !== user?.id))
+    .filter((participant) => `${participant.fullName || ''} ${participant.email}`.toLowerCase().includes(mentionQuery))
+    .slice(0, 6);
   const selectedType = selectedConversation?.type;
   const canWriteSelected = Boolean(selectedConversation) && !(selectedType === 'COMPANY' && role !== 'SUPERADMIN');
   const SelectedHeaderIcon = selectedConversation ? typeIcon(selectedConversation.type) : MessageCircle;
@@ -245,7 +254,13 @@ export default function ChatPage() {
     setSelectedId(id);
     setReplyTo(null);
     setEditing(null);
+    setShowGroupInfo(false);
     if (id) api.post(`/chat/conversations/${id}/read`).catch(() => undefined);
+  };
+
+  const insertMention = (mentionedUser: ChatUser) => {
+    const alias = (mentionedUser.fullName || mentionedUser.email.split('@')[0]).trim().replace(/\s+/g, '.');
+    setMessage((current) => current.replace(/@[^\s@]*$/, `@${alias} `));
   };
 
   const resetComposer = () => {
@@ -382,6 +397,7 @@ export default function ChatPage() {
   };
 
   const canCreateSelectedType = newType === 'PERSONAL' || (newType === 'DEPARTMENT' && role !== 'FIRM') || (newType === 'SUPPORT' && isFirmAdminLike);
+  const canViewGroupInfo = isFirmAdminLike && Boolean(selectedConversation && ['DEPARTMENT', 'BRANCH', 'COMPANY', 'SUPPORT'].includes(selectedConversation.type));
   const firms = firmSettings?.firms || [];
   const permissions = firmSettings?.permissions || [];
   const firmName = (id: string) => firms.find((firm) => firm.id === id)?.name || id;
@@ -635,8 +651,33 @@ export default function ChatPage() {
               <div className="hidden md:flex items-center gap-2 text-xs text-muted">
                 {selectedConversation.type === 'AI' ? <Sparkles size={15} /> : selectedConversation.type === 'COMPANY' ? <Building2 size={15} /> : <AtSign size={15} />}
                 <span>{canWriteSelected ? tr('Reply, mention, forward, edit, delete, read status', 'Reply, mention, forward, edit, delete, read status') : tr('Read only', 'Faqat o\'qish')}</span>
+                {canViewGroupInfo && (
+                  <button type="button" onClick={() => setShowGroupInfo((value) => !value)} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-foreground hover:bg-surface-2">
+                    <Info size={14} /> {tr('Group info', 'Guruh ma\'lumoti')}
+                  </button>
+                )}
               </div>
             </header>
+
+            {showGroupInfo && canViewGroupInfo && (
+              <div className="border-b border-border bg-surface-2 p-4">
+                <h4 className="font-semibold text-foreground">{tr('Members and admins', 'A\'zolar va adminlar')}</h4>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {activeParticipants.map((participant) => {
+                    const member = participant.user;
+                    const memberRole = String(member?.role || '').toUpperCase();
+                    const memberFirmRole = String(member?.firmRole || '').toUpperCase();
+                    const admin = memberRole === 'SUPERADMIN' || memberRole === 'ADMIN' || memberFirmRole === 'FIRM_ADMIN';
+                    return (
+                      <div key={participant.id} className="rounded-md border border-border bg-surface px-3 py-2 text-sm">
+                        <div className="font-semibold text-foreground">{member?.fullName || member?.email}</div>
+                        <div className="text-xs text-muted">{admin ? tr('Admin', 'Admin') : tr('Member', 'A\'zo')} · {member?.email}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             <div className="flex-1 overflow-y-auto scroller-minimal p-3 md:p-4 space-y-3 bg-background/40">
               {messagesLoading && <p className="text-sm text-muted">{tr('Loading messages...', 'Xabarlar yuklanmoqda...')}</p>}
@@ -728,15 +769,27 @@ export default function ChatPage() {
                 })}
               </div>
               <div className="flex gap-2">
-                <textarea
-                  value={message}
-                  onFocus={() => setIsTyping(true)}
-                  onBlur={() => setIsTyping(false)}
-                  onChange={(e) => setMessage(e.target.value)}
-                  rows={2}
-                  placeholder={kind === 'TEXT' ? tr('Message...', 'Xabar...') : tr('Type caption or file name...', 'Izoh yoki fayl nomini yozing...')}
-                  className="compact-control min-h-[52px] resize-none"
-                />
+                <div className="relative min-w-0 flex-1">
+                  {mentionSuggestions.length > 0 && (
+                    <div className="absolute bottom-full left-0 right-0 z-20 mb-1 rounded-md border border-border bg-surface p-1 shadow-lg">
+                      {mentionSuggestions.map((mentionedUser) => (
+                        <button key={mentionedUser.id} type="button" onClick={() => insertMention(mentionedUser)} className="flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover:bg-surface-2">
+                          <span className="font-semibold text-foreground">{mentionedUser.fullName || mentionedUser.email}</span>
+                          <span className="text-xs text-muted">@{mentionedUser.email.split('@')[0]}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <textarea
+                    value={message}
+                    onFocus={() => setIsTyping(true)}
+                    onBlur={() => setIsTyping(false)}
+                    onChange={(e) => setMessage(e.target.value)}
+                    rows={2}
+                    placeholder={kind === 'TEXT' ? tr('Message... Use @ to mention', 'Xabar... Eslatish uchun @ yozing') : tr('Type caption or file name...', 'Izoh yoki fayl nomini yozing...')}
+                    className="compact-control min-h-[52px] w-full resize-none"
+                  />
+                </div>
                 <button type="submit" className="min-h-[52px] w-12 shrink-0 rounded-md bg-primary text-primary-foreground flex items-center justify-center">
                   <Send size={18} />
                 </button>

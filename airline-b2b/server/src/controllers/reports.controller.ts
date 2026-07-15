@@ -6,271 +6,271 @@ import { buildFinancialAnalyticsReport } from '../services/reporting/financial-r
 import { ERROR_CODES } from '../errors/catalog';
 import { mapKnownError } from '../errors/app-error';
 import { sendApiError } from '../errors/http';
+import { buildCreatedAtFilter, dateKeyUtc, normalizePaymentMethod, parseDateParam, parseMonthParam, resolveReportFirmIds, sumToNumber } from '../domains/reports/report-query';
+import { getAccessibleFirmIds } from '../utils/access';
+import { buildTicketInventorySummary } from '../domains/tickets/inventory-summary';
+import { canManageFirmWork } from '../utils/firm-user-roles';
+import { writeAuditLog } from '../utils/audit';
+import { activeFlightWhere } from '../domains/flights/flight-scope';
 
 type AuthUser = {
   userId?: string;
   role?: Role | string;
   firmId?: string | null;
+  firmRole?: string | null;
 };
 
 function getAuthUser(req: Request): AuthUser {
   return ((req as any).user || {}) as AuthUser;
 }
 
-function parseDateParam(value: unknown): Date | undefined {
-  if (!value || typeof value !== 'string') return undefined;
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return undefined;
-  return d;
-}
-
-function sumToNumber(value: unknown): number {
-  if (value === null || value === undefined) return 0;
-  if (typeof value === 'number') return value;
-  if (typeof value === 'string') {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-  // Prisma Decimal supports valueOf/toString
-  const parsed = Number(String(value));
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
 function normalizeRole(role: unknown): string {
   return String(role || '').toUpperCase();
-}
-
-function normalizePaymentMethod(method: unknown): string {
-  const m = String(method || '').trim().toLowerCase();
-  if (!m) return 'unknown';
-  return m;
-}
-
-const activeFlightRelation: Prisma.FlightWhereInput = {
-  deletedAt: null,
-  OR: [{ status: null }, { status: { notIn: ['DELETED', 'CANCELLED'] } }],
-};
-
-function buildCreatedAtFilter(dateFrom?: Date, dateTo?: Date): Prisma.DateTimeFilter | undefined {
-  if (!dateFrom && !dateTo) return undefined;
-  const filter: Prisma.DateTimeFilter = {};
-  if (dateFrom) filter.gte = dateFrom;
-  if (dateTo) filter.lte = dateTo;
-  return filter;
-}
-
-function parseMonthParam(value: unknown): { month: string; start: Date; end: Date } | undefined {
-  const now = new Date();
-  let year = now.getUTCFullYear();
-  let monthIndex = now.getUTCMonth();
-
-  if (typeof value === 'string' && value.trim()) {
-    const trimmed = value.trim();
-    const match = /^([0-9]{4})-([0-9]{2})$/.exec(trimmed);
-    if (!match) return undefined;
-    const parsedYear = Number(match[1]);
-    const parsedMonth = Number(match[2]);
-    if (!Number.isFinite(parsedYear) || !Number.isFinite(parsedMonth)) return undefined;
-    if (parsedMonth < 1 || parsedMonth > 12) return undefined;
-    year = parsedYear;
-    monthIndex = parsedMonth - 1;
-  }
-
-  const start = new Date(Date.UTC(year, monthIndex, 1, 0, 0, 0, 0));
-  const end = new Date(Date.UTC(year, monthIndex + 1, 1, 0, 0, 0, 0));
-  const month = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
-  return { month, start, end };
-}
-
-function dateKeyUtc(d: Date): string {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0))
-    .toISOString()
-    .slice(0, 10);
 }
 
 export const getFlightReport = async (req: Request, res: Response) => {
   const authUser = getAuthUser(req);
   const role = normalizeRole(authUser.role);
+  const resolvedFlightId = String(req.query.flightId || req.query.flight_id || '').trim();
+  if (!resolvedFlightId) return res.status(400).json({ error: 'flightId is required' });
+  const authFirmId = authUser.firmId ? String(authUser.firmId) : '';
+  if (role === 'FIRM' && !authFirmId) return res.status(400).json({ error: 'Firm account is missing firmId' });
 
-  const { flightId, flight_id } = req.query;
-  const id = flightId || flight_id;
-
-  const resolvedFlightId = id ? String(id) : undefined;
-
-  const firmScopeId = role === 'FIRM'
-    ? (authUser.firmId ? String(authUser.firmId) : undefined)
-    : undefined;
-
-  if (role === 'FIRM' && !firmScopeId) {
-    return res.status(400).json({ error: 'Firm account is missing firmId' });
-  }
-
-  const txWhere: Prisma.TransactionWhereInput = {};
-  if (resolvedFlightId) txWhere.flightId = resolvedFlightId;
-  if (firmScopeId) txWhere.firmId = firmScopeId;
-  txWhere.OR = [{ flightId: null }, { flight: activeFlightRelation }];
-
-  const [txByType, ticketCountsByStatus, txByFirmAndType, ticketCountsByFirmAndStatus, flight] = await Promise.all([
-    prisma.transaction.groupBy({
-      by: ['type'],
-      where: txWhere,
-      _sum: { baseAmount: true },
-      _count: { _all: true },
-    }),
-    resolvedFlightId
-      ? prisma.ticket.groupBy({
-          by: ['status'],
-          where: {
-            flightId: resolvedFlightId,
-            ...(firmScopeId ? { assignedFirmId: firmScopeId } : {}),
-          },
-          _count: { _all: true },
-        })
-      : Promise.resolve([] as Array<{ status: TicketStatus; _count: { _all: number } }>),
-    resolvedFlightId
-      ? prisma.transaction.groupBy({
-          by: ['firmId', 'type'],
-          where: txWhere,
-          _sum: { baseAmount: true },
-        })
-      : Promise.resolve([] as Array<{ firmId: string; type: TransactionType; _sum: { baseAmount: unknown } }>),
-    resolvedFlightId
-      ? prisma.ticket.groupBy({
-          by: ['assignedFirmId', 'status'],
-          where: {
-            flightId: resolvedFlightId,
-            ...(firmScopeId ? { assignedFirmId: firmScopeId } : { assignedFirmId: { not: null } }),
-          },
-          _count: { _all: true },
-        })
-      : Promise.resolve(
-          [] as Array<{ assignedFirmId: string | null; status: TicketStatus; _count: { _all: number } }>,
-        ),
-    resolvedFlightId
-      ? prisma.flight.findUnique({
-          where: { id: resolvedFlightId },
-          select: { id: true, flightNumber: true, departure: true, arrival: true, status: true },
-        })
-      : Promise.resolve(null),
-  ]);
-
-  const firmIdsForFlight = resolvedFlightId
-    ? Array.from(new Set(txByFirmAndType.map((g) => g.firmId)))
-    : [];
-  const firms = firmIdsForFlight.length
-    ? await prisma.firm.findMany({
-        where: { id: { in: firmIdsForFlight } },
-        select: { id: true, name: true },
-      })
-    : [];
-
-  let debt = 0;
-  let revenue = 0;
-  let paid = 0;
-
-  for (const row of txByType) {
-    const val = sumToNumber(row._sum?.baseAmount);
-    if (isPayableDebtType(row.type)) debt += val;
-    if (row.type === 'SALE') revenue += val;
-    if (row.type === 'PAYMENT') paid += val;
-  }
-
-  const profit = revenue - debt;
-  const outstanding = debt - paid;
-
-  const tickets = {
-    total: 0,
-    available: 0,
-    assigned: 0,
-    sold: 0,
-  };
-
-  if (ticketCountsByStatus.length > 0) {
-    for (const row of ticketCountsByStatus) {
-      const count = row._count?._all || 0;
-      tickets.total += count;
-      if (row.status === 'AVAILABLE') tickets.available += count;
-      if (row.status === 'ASSIGNED' || row.status === 'PENDING') tickets.assigned += count;
-      if (row.status === 'SOLD') tickets.sold += count;
-    }
-  }
-
-  const firmNameById = new Map<string, string>();
-  for (const f of firms) firmNameById.set(f.id, f.name);
-
-  const ticketByFirm = new Map<string, { assigned: number; sold: number }>();
-  for (const row of ticketCountsByFirmAndStatus) {
-    const firmIdVal = row.assignedFirmId;
-    if (!firmIdVal) continue;
-    const existing = ticketByFirm.get(firmIdVal) || { assigned: 0, sold: 0 };
-    const count = row._count?._all || 0;
-    if (row.status === 'PENDING' || row.status === 'ASSIGNED' || row.status === 'SOLD') existing.assigned += count;
-    if (row.status === 'SOLD') existing.sold += count;
-    ticketByFirm.set(firmIdVal, existing);
-  }
-
-  const firmMetricById = new Map<
-    string,
-    {
-      firmId: string;
-      firmName: string | null;
-      ticketsAssigned: number;
-      ticketsSold: number;
-      debt: number;
-      revenue: number;
-      paid: number;
-    }
-  >();
-
-  for (const row of txByFirmAndType) {
-    const existing =
-      firmMetricById.get(row.firmId) ||
-      {
-        firmId: row.firmId,
-        firmName: firmNameById.get(row.firmId) || null,
-        ticketsAssigned: 0,
-        ticketsSold: 0,
-        debt: 0,
-        revenue: 0,
-        paid: 0,
-      };
-
-    const val = sumToNumber((row as any)._sum?.baseAmount);
-    if (isPayableDebtType(row.type)) existing.debt += val;
-    if (row.type === 'SALE') existing.revenue += val;
-    if (row.type === 'PAYMENT') existing.paid += val;
-
-    const ticketCounts = ticketByFirm.get(row.firmId);
-    if (ticketCounts) {
-      existing.ticketsAssigned = ticketCounts.assigned;
-      existing.ticketsSold = ticketCounts.sold;
-    }
-
-    firmMetricById.set(row.firmId, existing);
-  }
-
-  const firmBreakdown = Array.from(firmMetricById.values())
-    .map((m) => ({
-      ...m,
-      outstanding: m.debt - m.paid,
-      profit: m.revenue - m.debt,
-    }))
-    .sort((a, b) => (a.firmName || a.firmId).localeCompare(b.firmName || b.firmId));
-
-  res.json({ 
-    flight: flight || null,
-    flightId: resolvedFlightId || null,
-    revenue, 
-    debt, 
-    paid, 
-    profit, 
-    outstanding, 
-    total_allocated: debt, 
-    total_sales: revenue, 
-    total_payments: paid,
-    tickets,
-    firms: firmBreakdown,
+  const accessibleFirmIds = role === 'ADMIN' ? await getAccessibleFirmIds(authUser) || [] : undefined;
+  const scopeWhere: Prisma.FlightWhereInput | undefined = role === 'FIRM' ? {
+    OR: [
+      { ownerFirmId: authFirmId },
+      { ownerFirmId: null, airline: { firmId: authFirmId } },
+      { ticketLegs: { some: { currentOwnerFirmId: authFirmId } } },
+      { ticketAllocations: { some: { OR: [{ fromFirmId: authFirmId }, { toFirmId: authFirmId }] } } },
+      { ticketSales: { some: { sellerFirmId: authFirmId } } },
+    ],
+  } : role === 'ADMIN' ? {
+    OR: [
+      { ownerFirmId: { in: accessibleFirmIds } },
+      { ownerFirmId: null, airline: { firmId: { in: accessibleFirmIds } } },
+      { ticketLegs: { some: { currentOwnerFirmId: { in: accessibleFirmIds } } } },
+      { ticketAllocations: { some: { OR: [{ fromFirmId: { in: accessibleFirmIds } }, { toFirmId: { in: accessibleFirmIds } }] } } },
+    ],
+  } : undefined;
+  const flight = await prisma.flight.findFirst({
+    where: {
+      id: resolvedFlightId,
+      AND: [activeFlightWhere(), ...(scopeWhere ? [scopeWhere] : [])],
+    },
+    select: {
+      id: true, flightNumber: true, route: true, departure: true, arrival: true, returnDeparture: true, returnArrival: true,
+      tripType: true, outboundOrigin: true, outboundDestination: true, returnOrigin: true, returnDestination: true,
+      currency: true, status: true, ownerFirmId: true, ownerFirm: { select: { id: true, name: true } },
+      airline: { select: { id: true, name: true, code: true, firmId: true } },
+      tickets: {
+        where: { deletedAt: null, status: { not: 'DELETED' } },
+        select: {
+          id: true, status: true, ticketType: true, assignedFirmId: true, originalOwnerFirmId: true,
+          basePrice: true, originPrice: true, currency: true, soldPrice: true, soldCurrency: true, purchaserInfo: true,
+          legs: { select: { id: true, ticketId: true, direction: true, status: true, currentOwnerFirmId: true, acquisitionCostSnapshot: true, originalCostSnapshot: true, allocationPriceSnapshot: true, currencySnapshot: true } },
+        },
+      },
+      ticketAllocations: {
+        select: {
+          id: true, fromFirmId: true, toFirmId: true, status: true, productType: true, direction: true,
+          parentTicketCount: true, segmentCount: true, currency: true, totalAmount: true, createdAt: true, acceptedAt: true,
+          fromFirm: { select: { id: true, name: true } }, toFirm: { select: { id: true, name: true } },
+          priceRows: { orderBy: { position: 'asc' }, select: { quantity: true, unitPrice: true, totalAmount: true } },
+          legItems: { select: { ticketLegId: true, status: true, direction: true, acquisitionCostSnapshot: true, allocationPriceSnapshot: true, currencySnapshot: true, acquisitionCurrencySnapshot: true, allocationCurrencySnapshot: true } },
+        },
+      },
+      ticketSales: {
+        select: {
+          id: true, sellerFirmId: true, status: true, productType: true, direction: true, quantity: true, segmentCount: true,
+          unitPrice: true, totalAmount: true, currency: true, purchaserInfo: true, createdAt: true,
+          items: { select: { ticketLegId: true, status: true, acquisitionCostSnapshot: true, salePriceSnapshot: true, currencySnapshot: true, acquisitionCurrencySnapshot: true, saleCurrencySnapshot: true } },
+        },
+      },
+      ticketLegMigrationIssues: { where: { resolvedAt: null }, select: { id: true, code: true, details: true, ticketId: true, createdAt: true } },
+    },
   });
+  if (!flight) return res.status(role === 'FIRM' || role === 'ADMIN' ? 403 : 404).json({ error: role === 'FIRM' || role === 'ADMIN' ? 'Forbidden' : 'Flight not found' });
+
+  const requestedFirmId = String(req.query.firmId || req.query.firm_id || '').trim();
+  let reportFirmId = role === 'FIRM' ? authFirmId : requestedFirmId || flight.ownerFirmId || flight.airline?.firmId || '';
+  if (role === 'ADMIN' && (!reportFirmId || !accessibleFirmIds?.includes(reportFirmId))) return res.status(403).json({ error: 'Forbidden' });
+  if (!reportFirmId) return res.status(400).json({ error: 'Report firm could not be resolved' });
+
+  const allocationIds = flight.ticketAllocations.map((allocation) => allocation.id);
+  const transactions = await prisma.transaction.findMany({
+    where: {
+      deletedAt: null,
+      AND: [
+        { OR: [{ flightId: flight.id }, ...(allocationIds.length ? [{ subjectType: 'TICKET_ALLOCATION', subjectId: { in: allocationIds } }] : [])] },
+        ...(role === 'FIRM' ? [{ OR: [{ firmId: authFirmId }, { payerFirmId: authFirmId }, { receiverFirmId: authFirmId }] }] : []),
+      ],
+    },
+    select: {
+      id: true, type: true, firmId: true, payerFirmId: true, receiverFirmId: true, subjectType: true, subjectId: true,
+      originalAmount: true, baseAmount: true, currency: true, sourceMode: true, status: true,
+      reversedTransactionId: true, deletedAt: true, metadata: true, createdAt: true,
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  const inventorySummary = buildTicketInventorySummary({
+    tickets: flight.tickets,
+    allocations: flight.ticketAllocations,
+    sales: flight.ticketSales,
+    transactions,
+    sourceFirmId: reportFirmId,
+    originOwnerFirmId: flight.ownerFirmId || flight.airline?.firmId,
+    migrationIssueCount: flight.ticketLegMigrationIssues.length,
+  });
+  const legacyDebt = transactions.filter((row) => isPayableDebtType(row.type)).reduce((sum, row) => sum + Number(row.baseAmount), 0);
+  const legacyRevenue = transactions.filter((row) => row.type === 'SALE').reduce((sum, row) => sum + Number(row.baseAmount), 0);
+  const legacyPaid = transactions.filter((row) => row.type === 'PAYMENT').reduce((sum, row) => sum + Number(row.baseAmount), 0);
+  const maySeeReconciliation = (inventorySummary as any).reportType === 'OWNER' || role === 'SUPERADMIN';
+
+  return res.json({
+    reportType: (inventorySummary as any).reportType,
+    flight: {
+      id: flight.id, flightNumber: flight.flightNumber, route: flight.route, tripType: flight.tripType,
+      departure: flight.departure, arrival: flight.arrival, returnDeparture: flight.returnDeparture, returnArrival: flight.returnArrival,
+      outboundOrigin: flight.outboundOrigin, outboundDestination: flight.outboundDestination,
+      returnOrigin: flight.returnOrigin, returnDestination: flight.returnDestination,
+      currency: flight.currency, status: flight.status, airline: flight.airline,
+      ...((inventorySummary as any).reportType === 'OWNER' ? { ownerFirm: flight.ownerFirm } : {}),
+    },
+    flightId: flight.id,
+    inventorySummary,
+    allocations: (inventorySummary as any).allocations || [],
+    transactions,
+    reconciliation: { required: maySeeReconciliation && flight.ticketLegMigrationIssues.length > 0, issues: maySeeReconciliation ? flight.ticketLegMigrationIssues : [] },
+    revenue: legacyRevenue,
+    debt: legacyDebt,
+    paid: legacyPaid,
+    profit: legacyRevenue - legacyDebt,
+    outstanding: Math.max(legacyDebt - legacyPaid, 0),
+    total_allocated: legacyDebt,
+    total_sales: legacyRevenue,
+    total_payments: legacyPaid,
+    tickets: {
+      total: (inventorySummary as any).totalAcquiredTicketCount || 0,
+      available: (inventorySummary as any).remainingAvailableTicketCount || 0,
+      assigned: (inventorySummary as any).acceptedAllocatedTicketCount || 0,
+      sold: (inventorySummary as any).directSoldTicketCount || 0,
+    },
+    firms: (inventorySummary as any).recipients || [],
+  });
+};
+
+export const reconcileFlightInventory = async (req: Request, res: Response) => {
+  const authUser = getAuthUser(req);
+  const role = normalizeRole(authUser.role);
+  if (!['FIRM', 'ADMIN', 'SUPERADMIN'].includes(role) || (role === 'FIRM' && !canManageFirmWork(authUser))) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  const flightId = String(req.body?.flightId || req.query.flightId || req.query.flight_id || '').trim();
+  if (!flightId) return res.status(400).json({ error: 'flightId is required' });
+  const authFirmId = String(authUser.firmId || '').trim();
+  const requestedFirmId = String(req.body?.firmId || req.query.firmId || req.query.firm_id || '').trim();
+  const accessibleFirmIds = role === 'ADMIN' ? await getAccessibleFirmIds(authUser) || [] : undefined;
+  const scopeWhere: Prisma.FlightWhereInput | undefined = role === 'FIRM' ? {
+    OR: [
+      { ownerFirmId: authFirmId }, { ownerFirmId: null, airline: { firmId: authFirmId } },
+      { ticketLegs: { some: { currentOwnerFirmId: authFirmId } } },
+      { ticketAllocations: { some: { OR: [{ fromFirmId: authFirmId }, { toFirmId: authFirmId }] } } },
+      { ticketSales: { some: { sellerFirmId: authFirmId } } },
+    ],
+  } : role === 'ADMIN' ? {
+    OR: [
+      { ownerFirmId: { in: accessibleFirmIds } }, { ownerFirmId: null, airline: { firmId: { in: accessibleFirmIds } } },
+      { ticketLegs: { some: { currentOwnerFirmId: { in: accessibleFirmIds } } } },
+      { ticketAllocations: { some: { OR: [{ fromFirmId: { in: accessibleFirmIds } }, { toFirmId: { in: accessibleFirmIds } }] } } },
+    ],
+  } : undefined;
+  const flight = await prisma.flight.findFirst({
+    where: { id: flightId, AND: [activeFlightWhere(), ...(scopeWhere ? [scopeWhere] : [])] },
+    select: {
+      id: true, flightNumber: true, ownerFirmId: true, airline: { select: { firmId: true } },
+      tickets: {
+        where: { deletedAt: null, status: { not: 'DELETED' } },
+        select: { id: true, ticketType: true, legs: { select: { id: true, ticketId: true, status: true, currentOwnerFirmId: true } } },
+      },
+      ticketAllocations: {
+        select: { id: true, fromFirmId: true, toFirmId: true, status: true, segmentCount: true, legItems: { where: { status: 'ACTIVE' }, select: { ticketLegId: true } } },
+      },
+      ticketSales: {
+        select: { id: true, sellerFirmId: true, status: true, segmentCount: true, items: { where: { status: 'CONFIRMED' }, select: { ticketLegId: true } } },
+      },
+      ticketLegMigrationIssues: { where: { resolvedAt: null }, select: { id: true, code: true } },
+    },
+  });
+  if (!flight) return res.status(role === 'SUPERADMIN' ? 404 : 403).json({ error: role === 'SUPERADMIN' ? 'Flight not found' : 'Forbidden' });
+
+  const originOwnerFirmId = flight.ownerFirmId || flight.airline?.firmId || '';
+  const reportFirmId = role === 'FIRM' ? authFirmId : requestedFirmId || originOwnerFirmId;
+  if (!reportFirmId) return res.status(400).json({ error: 'Report firm could not be resolved' });
+  if (role === 'ADMIN' && !accessibleFirmIds?.includes(reportFirmId)) return res.status(403).json({ error: 'Forbidden' });
+
+  const relevantAllocations = flight.ticketAllocations.filter((row) => row.fromFirmId === reportFirmId || row.toFirmId === reportFirmId);
+  const relevantSales = flight.ticketSales.filter((row) => row.sellerFirmId === reportFirmId);
+  const ownerView = Boolean(originOwnerFirmId) && reportFirmId === originOwnerFirmId;
+  const acquiredLegIds = new Set<string>();
+  if (ownerView) {
+    flight.tickets.flatMap((ticket) => ticket.legs).forEach((leg) => acquiredLegIds.add(leg.id));
+  } else {
+    relevantAllocations.filter((row) => row.toFirmId === reportFirmId && row.status === 'ACCEPTED')
+      .flatMap((row) => row.legItems).forEach((item) => acquiredLegIds.add(item.ticketLegId));
+  }
+  const visibleLegs = flight.tickets.flatMap((ticket) => ticket.legs).filter((leg) => acquiredLegIds.has(leg.id));
+  const discrepancies: Array<{ code: string; entityId?: string; expected?: number; actual?: number }> = [];
+  if (ownerView) {
+    const expectedLegs = flight.tickets.reduce((sum, ticket) => sum + (ticket.ticketType === 'ROUND_TRIP' ? 2 : 1), 0);
+    const actualLegs = flight.tickets.reduce((sum, ticket) => sum + ticket.legs.length, 0);
+    if (expectedLegs !== actualLegs) discrepancies.push({ code: 'TICKET_LEG_COUNT_MISMATCH', expected: expectedLegs, actual: actualLegs });
+    flight.ticketLegMigrationIssues.forEach((issue) => discrepancies.push({ code: issue.code, entityId: issue.id }));
+  }
+  relevantAllocations.filter((row) => ['PENDING', 'ACCEPTED'].includes(row.status)).forEach((row) => {
+    if (row.segmentCount !== row.legItems.length) discrepancies.push({ code: 'ALLOCATION_SEGMENT_COUNT_MISMATCH', entityId: row.id, expected: row.segmentCount, actual: row.legItems.length });
+  });
+  relevantSales.filter((row) => row.status === 'CONFIRMED').forEach((row) => {
+    if (row.segmentCount !== row.items.length) discrepancies.push({ code: 'SALE_SEGMENT_COUNT_MISMATCH', entityId: row.id, expected: row.segmentCount, actual: row.items.length });
+  });
+
+  const allocationIds = relevantAllocations.map((row) => row.id);
+  const transactions = await prisma.transaction.findMany({
+    where: {
+      deletedAt: null,
+      AND: [
+        { OR: [{ flightId }, ...(allocationIds.length ? [{ subjectType: 'TICKET_ALLOCATION', subjectId: { in: allocationIds } }] : [])] },
+        { OR: [{ firmId: reportFirmId }, { payerFirmId: reportFirmId }, { receiverFirmId: reportFirmId }] },
+      ],
+    },
+    select: { id: true, type: true, status: true, sourceMode: true, originalAmount: true, currency: true, reversedTransactionId: true },
+  });
+  const reversedIds = new Set(transactions.map((row) => row.reversedTransactionId).filter((id): id is string => Boolean(id)));
+  const validPayments = transactions.filter((row) => row.type === 'PAYMENT' && row.status === 'CONFIRMED' && row.sourceMode !== 'REVERSAL' && !reversedIds.has(row.id));
+  const paymentTotals = Array.from(validPayments.reduce((map, row) => map.set(row.currency, (map.get(row.currency) || 0) + Number(row.originalAmount)), new Map<string, number>()))
+    .map(([currency, total]) => ({ currency, total }));
+  const result = {
+    required: discrepancies.length > 0,
+    checkedAt: new Date().toISOString(),
+    reportType: ownerView ? 'OWNER' : 'AGENT',
+    comparisons: {
+      acquiredParentTickets: new Set(visibleLegs.map((leg) => leg.ticketId)).size,
+      acquiredSegments: visibleLegs.length,
+      currentAvailableSegments: visibleLegs.filter((leg) => leg.currentOwnerFirmId === reportFirmId && ['AVAILABLE', 'ASSIGNED'].includes(leg.status)).length,
+      pendingAllocationSegments: relevantAllocations.filter((row) => row.fromFirmId === reportFirmId && row.status === 'PENDING').reduce((sum, row) => sum + row.legItems.length, 0),
+      acceptedAllocationSegments: relevantAllocations.filter((row) => row.fromFirmId === reportFirmId && row.status === 'ACCEPTED').reduce((sum, row) => sum + row.legItems.length, 0),
+      confirmedSaleSegments: relevantSales.filter((row) => row.status === 'CONFIRMED').reduce((sum, row) => sum + row.items.length, 0),
+      tourReservedSegments: visibleLegs.filter((leg) => leg.currentOwnerFirmId === reportFirmId && leg.status === 'RESERVED_FOR_TOUR').length,
+      paymentTotals,
+    },
+    discrepancies,
+  };
+  await writeAuditLog(req, {
+    action: 'FLIGHT_INVENTORY_RECONCILED', entityType: 'flight', entityId: flight.id, entityLabel: flight.flightNumber,
+    summary: `Flight inventory reconciliation completed with ${discrepancies.length} issue(s)`, after: result,
+    metadata: { reportFirmId },
+  });
+  return res.json(result);
 };
 
 export const getFirmReport = async (req: Request, res: Response) => {
@@ -317,12 +317,12 @@ export const getFirmReport = async (req: Request, res: Response) => {
     }),
     prisma.ticket.groupBy({
       by: ['status'],
-      where: { assignedFirmId: resolvedFirmId },
+      where: { assignedFirmId: resolvedFirmId, deletedAt: null, status: { not: 'DELETED' } },
       _count: { _all: true },
     }),
     prisma.ticket.groupBy({
       by: ['flightId', 'status'],
-      where: { assignedFirmId: resolvedFirmId },
+      where: { assignedFirmId: resolvedFirmId, deletedAt: null, status: { not: 'DELETED' } },
       _count: { _all: true },
     }),
     prisma.transaction.groupBy({
@@ -852,34 +852,39 @@ export const getMonthlyReport = async (req: Request, res: Response) => {
   const role = normalizeRole(authUser.role);
 
   const { firmId, firm_id } = req.query;
-  const resolvedFirmId = role === 'FIRM'
-    ? (authUser.firmId ? String(authUser.firmId) : undefined)
-    : (firmId || firm_id ? String(firmId || firm_id) : undefined);
+  const requestedFirmId = firmId || firm_id ? String(firmId || firm_id) : undefined;
+  const accessibleFirmIds = role === 'ADMIN' ? await getAccessibleFirmIds(authUser) || [] : [];
+  if (role === 'ADMIN' && requestedFirmId && !accessibleFirmIds.includes(requestedFirmId)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  const scopedFirmIds = resolveReportFirmIds(role, authUser.firmId, accessibleFirmIds, requestedFirmId);
 
-  if (role === 'FIRM' && !resolvedFirmId) {
+  if (role === 'FIRM' && !scopedFirmIds?.length) {
     return res.status(400).json({ error: 'Firm account is missing firmId' });
   }
 
-  const data: any[] = resolvedFirmId
+  const data: any[] = scopedFirmIds === undefined
     ? await prisma.$queryRaw`
         SELECT 
           DATE_TRUNC('month', "createdAt") as month, 
           type, 
           SUM("baseAmount") as total
         FROM "Transaction"
-        WHERE "firmId" = ${resolvedFirmId}
         GROUP BY month, type 
         ORDER BY month DESC;
       `
-    : await prisma.$queryRaw`
+    : scopedFirmIds.length
+      ? await prisma.$queryRaw`
         SELECT 
           DATE_TRUNC('month', "createdAt") as month, 
           type, 
           SUM("baseAmount") as total
-        FROM "Transaction" 
+        FROM "Transaction"
+        WHERE "firmId" IN (${Prisma.join(scopedFirmIds)})
         GROUP BY month, type 
         ORDER BY month DESC;
-      `;
+      `
+      : [];
 
   const formatted: Record<string, any> = {};
 
@@ -923,7 +928,7 @@ export const getCalendarReport = async (req: Request, res: Response) => {
     prisma.flight.findMany({
       where: {
         departure: { gte: parsed.start, lt: parsed.end },
-        ...activeFlightRelation,
+        ...activeFlightWhere(),
       },
       orderBy: { departure: 'asc' },
       select: {
@@ -982,6 +987,7 @@ export const getDashboardReport = async (req: Request, res: Response) => {
     const firmScopeId = role === 'FIRM'
       ? (authUser.firmId ? String(authUser.firmId) : undefined)
       : undefined;
+    const adminFirmIds = role === 'ADMIN' ? await getAccessibleFirmIds(authUser) || [] : undefined;
     
     if (role === 'FIRM' && !firmScopeId) {
       return res.status(400).json({ error: 'Firm account is missing firmId' });
@@ -991,7 +997,7 @@ export const getDashboardReport = async (req: Request, res: Response) => {
       const [pendingGroups, dueGroups] = await Promise.all([
         prisma.ticket.groupBy({
           by: ['flightId'],
-          where: { assignedFirmId: firmScopeId, status: 'PENDING', flight: activeFlightRelation },
+          where: { assignedFirmId: firmScopeId, status: 'PENDING', deletedAt: null, flight: activeFlightWhere() },
           _count: { _all: true },
         }),
         prisma.transaction.groupBy({
@@ -1064,12 +1070,12 @@ export const getDashboardReport = async (req: Request, res: Response) => {
     const [pendingGroups, dueGroups] = await Promise.all([
       prisma.ticket.groupBy({
         by: ['assignedFirmId', 'flightId'],
-        where: { status: 'PENDING', assignedFirmId: { not: null }, flight: activeFlightRelation },
+        where: { status: 'PENDING', assignedFirmId: adminFirmIds ? { in: adminFirmIds } : { not: null }, deletedAt: null, flight: activeFlightWhere() },
         _count: { _all: true },
       }),
       prisma.transaction.groupBy({
         by: ['firmId', 'type'],
-        where: { type: payableAndPaymentTypeFilter },
+        where: { type: payableAndPaymentTypeFilter, ...(adminFirmIds ? { firmId: { in: adminFirmIds } } : {}) },
         _sum: { baseAmount: true },
       }),
     ]);

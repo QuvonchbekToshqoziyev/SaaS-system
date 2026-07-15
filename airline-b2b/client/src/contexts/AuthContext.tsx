@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 
 export type NormalizedRole = 'superadmin' | 'admin' | 'firm';
 
@@ -14,6 +15,7 @@ export interface User {
   firmRole: 'FIRM_ADMIN' | 'MANAGER' | 'KASSIR';
   firmKind?: 'AGENCY' | 'AIRLINE' | 'CONTRACTOR' | null;
   firmId: string | null;
+  subscriptionEndsAt?: string | null;
 }
 
 export type SavedAccount = User & {
@@ -70,6 +72,7 @@ function normalizeUser(raw: unknown): User | null {
       ? String(obj.firmKind ?? obj.firm_kind).toUpperCase() as User['firmKind']
       : null,
     firmId,
+    subscriptionEndsAt: typeof obj.subscriptionEndsAt === 'string' ? obj.subscriptionEndsAt : null,
   };
 }
 
@@ -108,6 +111,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
   const pathname = usePathname();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     setSavedAccounts(readSavedAccounts());
@@ -134,6 +138,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = (newToken: string, newUser: unknown) => {
     const normalized = normalizeUser(newUser);
     if (!normalized) return;
+    queryClient.clear();
     writeSavedAccounts([]);
     setSavedAccounts([]);
     persistActiveSession(newToken, normalized);
@@ -142,6 +147,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = () => {
+    queryClient.clear();
     writeSavedAccounts([]);
     setSavedAccounts([]);
     clearActiveSession();
@@ -153,6 +159,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const switchAccount = (accountId: string) => {
     const account = savedAccounts.find((item) => item.id === accountId || item.email === accountId);
     if (!account) return;
+    queryClient.clear();
     const { token: accountToken, lastUsedAt: _lastUsedAt, ...nextUser } = account;
     const nextAccounts = [
       { ...account, lastUsedAt: new Date().toISOString() },
@@ -171,6 +178,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     writeSavedAccounts(nextAccounts);
     setSavedAccounts(nextAccounts);
     if (user && (user.id === accountId || user.email === accountId)) {
+      queryClient.clear();
       const nextAccount = nextAccounts[0];
       if (nextAccount) {
         const { token: nextToken, lastUsedAt: _lastUsedAt, ...nextUser } = nextAccount;

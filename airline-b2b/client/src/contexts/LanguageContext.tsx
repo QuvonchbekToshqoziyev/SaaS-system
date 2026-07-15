@@ -9,6 +9,7 @@ type TranslationKey =
   | 'navAdminDashboard'
   | 'navAdmins'
   | 'navAuditLog'
+  | 'navMonitoring'
   | 'navAirlines'
   | 'navFirms'
   | 'navFlights'
@@ -36,6 +37,7 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     navAdminDashboard: 'Admin Dashboard',
     navAdmins: 'Admins',
     navAuditLog: 'Audit jurnali',
+    navMonitoring: 'Business monitoring',
     navAirlines: 'Airlines',
     navFirms: 'Firms',
     navFlights: 'Flights',
@@ -62,6 +64,7 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     navAdminDashboard: 'Admin panel',
     navAdmins: 'Adminlar',
     navAuditLog: 'Audit Log',
+    navMonitoring: 'Biznes monitoring',
     navAirlines: 'Aviakompaniyalar',
     navFirms: 'Firmalar',
     navFlights: 'Reyslar',

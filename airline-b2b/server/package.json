@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -9,6 +9,8 @@
     "build": "npx tsc",
     "start:dev": "nodemon src/index.ts",
     "bootstrap:superadmin": "npx ts-node prisma/seed.ts",
+    "repair:allocation-transactions": "node prisma/consolidate-allocation-transactions.js",
+    "audit:business-invariants": "node prisma/verify-business-invariants.js",
     "wipe:keep-superadmin": "npx ts-node prisma/wipe-keep-superadmin.ts"
   },
   "keywords": [],

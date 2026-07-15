@@ -1,6 +1,129 @@
 'use client';
+
 import { FormEvent, useEffect, useState } from 'react';
-import { api } from '@/lib/api';
-import { useAuth } from '@/contexts/AuthContext';
 import toast from 'react-hot-toast';
-export default function ServicesPage(){const{user}=useAuth();const[rows,setRows]=useState<any[]>([]),[flights,setFlights]=useState<any[]>([]),[form,setForm]=useState({name:'',flightId:'',quantity:'1',unitPrice:'',currency:'UZS'});const manage=String(user?.role).toUpperCase()==='FIRM'&&['FIRM_ADMIN','MANAGER'].includes(String(user?.firmRole||'FIRM_ADMIN').toUpperCase());const load=async()=>{const[s,f]=await Promise.all([api.get('/services'),api.get('/flights')]);setRows(s.data||[]);setFlights(f.data||[])};useEffect(()=>{if(user)load().catch(()=>toast.error('Failed to load services'))},[user]);const create=async(e:FormEvent)=>{e.preventDefault();try{await api.post('/services',{...form,quantity:Number(form.quantity),unitPrice:Number(form.unitPrice)});setForm({name:'',flightId:'',quantity:'1',unitPrice:'',currency:'UZS'});await load()}catch(e:any){toast.error(e?.response?.data?.error||'Failed')}};const assign=async(s:any)=>{const recipientFirmId=prompt('Recipient firm ID');const quantity=Number(prompt('Count','1'));if(recipientFirmId&&quantity)try{await api.post(`/services/${s.id}/assign`,{recipientFirmId,quantity});await load()}catch(e:any){toast.error(e?.response?.data?.error||'Failed')}};const status=async(id:string,v:string)=>{try{await api.patch(`/services/assignments/${id}/status`,{status:v});await load()}catch(e:any){toast.error(e?.response?.data?.error||'Failed')}};return <div className="space-y-6"><div><h1 className="text-3xl font-bold">Services / Xizmatlar</h1><p className="text-muted">Custom firm-to-firm services designated to flights.</p></div>{manage&&<form onSubmit={create} className="grid gap-3 rounded-lg border border-border bg-surface p-4 md:grid-cols-3"><input className="compact-control" placeholder="Service name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} required/><select className="compact-control" value={form.flightId} onChange={e=>setForm({...form,flightId:e.target.value})} required><option value="">Choose flight</option>{flights.map(f=><option key={f.id} value={f.id}>{f.flightNumber} · {f.route}</option>)}</select><input className="compact-control" type="number" min="1" value={form.quantity} onChange={e=>setForm({...form,quantity:e.target.value})}/><input className="compact-control" type="number" min="0.01" step="0.01" placeholder="Unit price" value={form.unitPrice} onChange={e=>setForm({...form,unitPrice:e.target.value})} required/><input className="compact-control" maxLength={3} value={form.currency} onChange={e=>setForm({...form,currency:e.target.value.toUpperCase()})}/><button className="rounded bg-primary px-4 py-2 font-semibold text-primary-foreground">Create service</button></form>}<div className="space-y-4">{rows.map(s=><div key={s.id} className="rounded-lg border border-border bg-surface p-4"><div className="flex flex-wrap justify-between"><div><b>{s.name}</b><p className="text-sm text-muted">{s.ownerFirm?.name} · {s.flight?.flightNumber} · {s.flight?.route}</p></div><span>{s.availableQuantity}/{s.quantity} · {Number(s.unitPrice).toLocaleString()} {s.currency}</span></div>{String(user?.firmId||'')===s.ownerFirmId&&<button onClick={()=>assign(s)} className="mt-3 rounded border border-border px-3 py-1">Assign to firm</button>}{s.assignments?.map((a:any)=><div key={a.id} className="mt-3 flex justify-between border-t border-border pt-2"><span>{a.providerFirm?.name} → {a.recipientFirm?.name}: {a.quantity} × {Number(a.unitPrice).toLocaleString()} {a.currency}</span><select value={a.status} onChange={e=>status(a.id,e.target.value)} className="compact-control w-auto"><option>ASSIGNED</option><option>IN_PROGRESS</option><option>FULFILLED</option><option>CANCELLED</option></select></div>)}</div>)}</div></div>}
+import { useAuth } from '@/contexts/AuthContext';
+import { useLanguage } from '@/contexts/LanguageContext';
+import { api } from '@/lib/api';
+
+const emptyForm = {
+  name: '', providerFirmId: '', providerName: '', flightId: '', quantity: '1',
+  unitPrice: '', currency: 'UZS', exchangeRate: '', paymentStatus: 'DEBT', description: '',
+};
+
+export default function ServicesPage() {
+  const { user } = useAuth();
+  const { tr } = useLanguage();
+  const [rows, setRows] = useState<any[]>([]);
+  const [firms, setFirms] = useState<any[]>([]);
+  const [flights, setFlights] = useState<any[]>([]);
+  const [form, setForm] = useState(emptyForm);
+  const [editingId, setEditingId] = useState('');
+  const [saving, setSaving] = useState(false);
+  const role = String(user?.role).toUpperCase();
+  const firmRole = String(user?.firmRole || 'MANAGER').toUpperCase();
+  const manage = role === 'FIRM'
+    && ['FIRM_ADMIN', 'MANAGER'].includes(String(user?.firmRole || 'MANAGER').toUpperCase());
+  const canEdit = role === 'SUPERADMIN' || (role === 'FIRM' && firmRole === 'FIRM_ADMIN');
+
+  const load = async () => {
+    const [services, firmRows, flightRows] = await Promise.all([
+      api.get('/services'), api.get('/firms'), api.get('/flights'),
+    ]);
+    setRows(services.data || []);
+    setFirms((firmRows.data || []).filter((firm: any) => firm.id !== user?.firmId));
+    setFlights(flightRows.data || []);
+  };
+
+  useEffect(() => { if (user) load().catch(() => toast.error(tr('Failed to load services', 'Xizmatlarni yuklab bo\'lmadi'))); }, [user]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    try {
+      setSaving(true);
+      const payload = {
+        ...form,
+        providerFirmId: form.providerFirmId || undefined,
+        flightId: form.flightId || undefined,
+        exchangeRate: form.currency === 'USD' && form.exchangeRate ? form.exchangeRate : undefined,
+        quantity: Number(form.quantity),
+        unitPrice: Number(form.unitPrice),
+      };
+      if (editingId) await api.patch(`/services/${editingId}`, payload);
+      else await api.post('/services', payload);
+      setForm(emptyForm);
+      setEditingId('');
+      toast.success(editingId ? tr('Service updated', 'Xizmat yangilandi') : tr('Service purchase recorded', 'Olingan xizmat qayd etildi'));
+      await load();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Failed to record service', 'Xizmatni qayd etib bo\'lmadi'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const edit = (service: any) => {
+    setEditingId(service.id);
+    setForm({
+      name: service.name || '', providerFirmId: service.providerFirmId || '', providerName: service.providerName || service.providerFirm?.name || '',
+      flightId: service.flightId || '', quantity: String(service.quantity || 1), unitPrice: String(service.unitPrice || ''), currency: service.currency || 'UZS',
+      exchangeRate: '', paymentStatus: service.paymentStatus || 'DEBT', description: service.description || '',
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const remove = async (service: any) => {
+    if (!window.confirm(tr('Delete this service?', 'Ushbu xizmat o\'chirilsinmi?'))) return;
+    try {
+      await api.delete(`/services/${service.id}`);
+      toast.success(tr('Service deleted', 'Xizmat o\'chirildi'));
+      await load();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Failed to delete service', 'Xizmatni o\'chirib bo\'lmadi'));
+    }
+  };
+
+  return <div className="space-y-6">
+    <div>
+      <h1 className="text-3xl font-bold">{tr('Purchased services', 'Olingan xizmatlar')}</h1>
+      <p className="text-muted">{tr('Record services your firm receives from another provider.', 'Firmangiz boshqa ta\'minotchidan olgan xizmatlarni qayd eting.')}</p>
+    </div>
+
+    {(manage || editingId) && <form onSubmit={submit} className="grid gap-3 rounded-lg border border-border bg-surface p-4 md:grid-cols-3">
+      <input className="compact-control" placeholder={tr('Service name, e.g. Visa', 'Xizmat nomi, masalan Viza')} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+      <select className="compact-control" value={form.providerFirmId} onChange={(e) => {
+        const providerFirmId = e.target.value;
+        const provider = firms.find((firm) => firm.id === providerFirmId);
+        setForm({ ...form, providerFirmId, providerName: provider?.name || '' });
+      }}>
+        <option value="">{tr('Custom provider', 'Boshqa ta\'minotchi')}</option>
+        {firms.map((firm) => <option key={firm.id} value={firm.id}>{firm.name}</option>)}
+      </select>
+      <input className="compact-control" placeholder={tr('Provider name', 'Xizmat ko\'rsatuvchi nomi')} value={form.providerName} onChange={(e) => setForm({ ...form, providerName: e.target.value, providerFirmId: '' })} required />
+      <select className="compact-control" value={form.flightId} onChange={(e) => setForm({ ...form, flightId: e.target.value })}>
+        <option value="">{tr('No flight', 'Reyssiz')}</option>
+        {flights.map((flight) => <option key={flight.id} value={flight.id}>{flight.flightNumber} · {flight.route}</option>)}
+      </select>
+      <input className="compact-control" type="number" min="1" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} required />
+      <input className="compact-control" type="number" min="0.01" step="0.01" placeholder={tr('Unit price', 'Bir dona narxi')} value={form.unitPrice} onChange={(e) => setForm({ ...form, unitPrice: e.target.value })} required />
+      <select className="compact-control" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}><option>UZS</option><option>USD</option></select>
+      {form.currency === 'USD' && <input className="compact-control" inputMode="decimal" placeholder={tr('Firm rate (optional)', 'Firma kursi (ixtiyoriy)')} value={form.exchangeRate} onChange={(e) => setForm({ ...form, exchangeRate: e.target.value })} />}
+      <select className="compact-control" value={form.paymentStatus} onChange={(e) => setForm({ ...form, paymentStatus: e.target.value })}>
+        <option value="DEBT">{tr('Debt', 'Qarz')}</option><option value="PAID">{tr('Paid', 'To\'langan')}</option>
+      </select>
+      <textarea className="compact-control md:col-span-2" placeholder={tr('Notes', 'Izoh')} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+      <button disabled={saving} className="rounded bg-primary px-4 py-2 font-semibold text-primary-foreground disabled:opacity-50">{saving ? tr('Saving...', 'Saqlanmoqda...') : editingId ? tr('Save changes', 'O\'zgarishlarni saqlash') : tr('Record service', 'Xizmatni qayd etish')}</button>
+      {editingId && <button type="button" onClick={() => { setEditingId(''); setForm(emptyForm); }} className="rounded border border-border px-4 py-2">{tr('Cancel', 'Bekor qilish')}</button>}
+    </form>}
+
+    <div className="space-y-3">{rows.map((service) => <div key={service.id} className="rounded-lg border border-border bg-surface p-4">
+      <div className="flex flex-wrap justify-between gap-3">
+        <div><b>{service.name}</b><p className="text-sm text-muted">{tr('Provider', 'Ta\'minotchi')}: {service.providerFirm?.name || service.providerName || service.ownerFirm?.name}{service.flight ? ` · ${service.flight.flightNumber}` : ''}</p></div>
+        <div className="flex items-start gap-2"><div className="text-right"><div>{service.quantity} × {Number(service.unitPrice).toLocaleString()} {service.currency}</div><span className={service.paymentStatus === 'PAID' ? 'text-green-600' : 'text-amber-600'}>{service.paymentStatus === 'PAID' ? tr('Paid', 'To\'langan') : tr('Debt', 'Qarz')}</span></div>
+          {canEdit && <div className="flex gap-1"><button type="button" onClick={() => edit(service)} className="rounded border border-border px-2 py-1 text-xs">{tr('Edit', 'Tahrirlash')}</button><button type="button" onClick={() => remove(service)} className="rounded border border-red-500/30 px-2 py-1 text-xs text-red-600">{tr('Delete', 'O\'chirish')}</button></div>}
+        </div>
+      </div>
+      {service.description && <p className="mt-2 text-sm text-muted">{service.description}</p>}
+    </div>)}</div>
+  </div>;
+}
