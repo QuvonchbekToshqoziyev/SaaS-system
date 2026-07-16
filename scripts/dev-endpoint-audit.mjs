@@ -2,7 +2,7 @@
 
 const base = String(process.env.DEV_BASE_URL || 'https://dev.b2b.booking.ado-finance.com').replace(/\/$/, '');
 const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!';
-const timeoutMs = Number(process.env.DEV_AUDIT_TIMEOUT_MS || 15_000);
+const timeoutMs = Number(process.env.DEV_AUDIT_TIMEOUT_MS || 30_000);
 const fakeId = '00000000-0000-4000-8000-000000000000';
 
 const actors = {
@@ -173,12 +173,21 @@ async function fetchWithTimeout(path, init = {}) {
   }
 }
 
+async function fetchWithTransportRetry(path, init = {}) {
+  try {
+    return await fetchWithTimeout(path, init);
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    return fetchWithTimeout(path, init);
+  }
+}
+
 async function probe(contract, actorName, expected, reason) {
   const token = actorName === 'public' ? '' : tokens[actorName];
   const body = contract.method === 'GET' ? undefined : (contract.body ?? {});
   const path = contract.path.replace('__ACCESSIBLE_FIRM__', actorFirmIds[actorName] || fakeId);
   try {
-    const response = await fetchWithTimeout(path, {
+    const response = await fetchWithTransportRetry(path, {
       method: contract.method,
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -196,7 +205,7 @@ async function probe(contract, actorName, expected, reason) {
 
 for (const [actorName, actor] of Object.entries(actors)) {
   try {
-    const response = await fetchWithTimeout('/auth/login', {
+    const response = await fetchWithTransportRetry('/auth/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: actor.email, password }),
     });
@@ -211,7 +220,7 @@ for (const [actorName, actor] of Object.entries(actors)) {
 for (const actorName of Object.keys(actors)) {
   if (!tokens[actorName]) continue;
   try {
-    const response = await fetchWithTimeout('/firms', { headers: { Authorization: `Bearer ${tokens[actorName]}` } });
+    const response = await fetchWithTransportRetry('/firms', { headers: { Authorization: `Bearer ${tokens[actorName]}` } });
     const data = await response.json();
     actorFirmIds[actorName] = Array.isArray(data) ? data[0]?.id : undefined;
   } catch {
@@ -236,7 +245,7 @@ for (const contract of contracts) {
   }
 }
 
-const concurrency = Math.max(1, Number(process.env.DEV_AUDIT_CONCURRENCY || 16));
+const concurrency = Math.max(1, Number(process.env.DEV_AUDIT_CONCURRENCY || 8));
 let cursor = 0;
 await Promise.all(Array.from({ length: concurrency }, async () => {
   while (cursor < jobs.length) {

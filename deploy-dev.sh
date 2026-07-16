@@ -169,8 +169,9 @@ REMOTE_ENV
   fi
 
   remote "cd '$REMOTE_BACKEND_DIR' && npm run build"
+  remote "cd '$REMOTE_BACKEND_DIR' && ALLOW_DEV_QA_SEED=1 npm run seed:dev-qa"
   remote "cd '$REMOTE_BACKEND_DIR' && npm run audit:business-invariants"
-  success "Build complete"
+  success "Build, release seed, and invariant audit complete"
 
   header "Dev backend - restart PM2"
   remote "pm2 describe '$PM2_APP_NAME' >/dev/null 2>&1 \

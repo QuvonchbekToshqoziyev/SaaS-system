@@ -126,3 +126,17 @@ Before closing any update, record and verify:
 - **Fix**: Added a partial unique PostgreSQL index for active confirmed allocation payables and a post-deploy audit that checks missing, duplicate, and wrong-total allocation transactions.
 - **Verification step**: Every dev/prod backend deploy runs `npm run audit:business-invariants`; `scripts/regression-guard-audit.mjs` verifies that the migration and audit remain wired into both deploy scripts.
 - **Prevention note**: Critical financial cardinality belongs in the database first, then in application tests and release automation.
+
+## Dev Releases Had No Update-Specific Test Data
+- **Symptom**: Endpoint, role, and build audits passed, but operators could not reliably reproduce the exact business flow changed by a release on the dev website.
+- **Root cause**: The shared QA seed was optional, was not tied to `VERSION`, and was not part of dev deployment or the live release gate.
+- **Fix**: Every dev deploy now runs an idempotent versioned fixture. The seed refuses non-dev databases, and `--dev` release auditing verifies the fixture through the API.
+- **Verification step**: Deploy the same release seed twice, confirm no duplicate business documents, then run `node scripts/release-audit.mjs --dev` and require the release-seed audit to pass.
+- **Prevention note**: Every release must update `RELEASE_FIXTURE_VERSION` and add the smallest fitting data scenario for the changed workflow; production deploy must never invoke the seed directly.
+
+## Live Endpoint Audit Overloaded the Dev Transport
+- **Symptom**: 718-720 of 721 probes passed, while random endpoints failed with `fetch failed` or `AbortError`; backend logs showed those requests later completed in milliseconds with expected statuses.
+- **Root cause**: Sixteen concurrent HTTPS probes and a 15-second client timeout were too aggressive for the small shared dev host, producing transport queue failures rather than endpoint failures.
+- **Fix**: Reduced default audit concurrency to eight, raised the per-attempt timeout to 30 seconds, and added one retry only when transport throws. HTTP responses are never retried or reclassified.
+- **Verification step**: Run `node scripts/dev-endpoint-audit.mjs` and require all 721 probes to pass; inspect PM2 error logs if any retry still fails.
+- **Prevention note**: Load-style concurrency is not correctness auditing. Keep endpoint audit pressure within the staging host capacity and preserve real HTTP failures exactly.

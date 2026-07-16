@@ -49,5 +49,15 @@ for (const deploy of ['deploy-dev.sh', 'deploy.sh']) {
   requireText(deploy, 'npm run audit:business-invariants', 'business invariant audit missing from deploy');
 }
 
-console.log(JSON.stringify({ ok: failures.length === 0, checks: 15, failures }, null, 2));
+const version = read('VERSION').trim();
+const devSeed = read('airline-b2b/server/prisma/seed-dev-qa.ts');
+if (!devSeed.includes(`const RELEASE_FIXTURE_VERSION = '${version}'`)) failures.push(`dev release fixture version does not match VERSION ${version}`);
+requireText('airline-b2b/server/package.json', '"seed:dev-qa": "npx ts-node prisma/seed-dev-qa.ts"', 'dev seed package command missing');
+requireText('airline-b2b/server/prisma/seed-dev-qa.ts', "process.env.ALLOW_DEV_QA_SEED !== '1'", 'dev seed opt-in safety guard missing');
+requireText('airline-b2b/server/prisma/seed-dev-qa.ts', "databaseUrl.includes('airline_b2b_dev')", 'dev database safety guard missing');
+requireText('deploy-dev.sh', 'ALLOW_DEV_QA_SEED=1 npm run seed:dev-qa', 'release seed missing from dev deploy');
+if (/ALLOW_DEV_QA_SEED|npm run seed:dev-qa/.test(read('deploy.sh'))) failures.push('production deploy directly runs dev QA seed');
+requireText('scripts/release-audit.mjs', "['scripts/dev-release-seed-audit.mjs']", 'live release seed audit missing from release gate');
+
+console.log(JSON.stringify({ ok: failures.length === 0, checks: 22, failures }, null, 2));
 if (failures.length) process.exitCode = 1;

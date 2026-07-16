@@ -66,6 +66,7 @@ run('Client production build', 'npm', ['run', 'build'], client);
 if (withDev) {
   run('Live dev endpoint and role audit', process.execPath, ['scripts/dev-endpoint-audit.mjs']);
   run('Live dev tenant-data isolation audit', process.execPath, ['scripts/dev-data-isolation-audit.mjs']);
+  run('Live dev release seed audit', process.execPath, ['scripts/dev-release-seed-audit.mjs']);
   run('Critical UI role-flow smoke', 'npm', ['run', 'test:e2e'], client);
 }
 

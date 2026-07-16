@@ -25,6 +25,7 @@ Every release and bug fix must first have:
 
 - a SemVer value in `VERSION` matching both client/server package files and lockfiles;
 - a matching entry in `CHANGELOG.md`;
+- an idempotent release-specific fixture in `prisma/seed-dev-qa.ts` whose version matches `VERSION`;
 - an endpoint contract for every mounted server route;
 - no unmatched static frontend API call.
 
@@ -40,7 +41,7 @@ After deploying the same source to dev, run the five-actor live gate:
 node scripts/release-audit.mjs --dev
 ```
 
-The live audits must report zero failures. They check every endpoint for authentication, route RBAC, safe controller behavior, read-path runtime/schema failures, firm/admin tenant-data isolation across transactions, accounts, employees, notifications, kassa desks, and payment cards, plus five-role browser login/navigation/page-load smoke. Destructive allowed-role mutations remain manual workflow checks.
+The live audits must report zero failures. They check every endpoint for authentication, route RBAC, safe controller behavior, read-path runtime/schema failures, firm/admin tenant-data isolation across transactions, accounts, employees, notifications, kassa desks, and payment cards, the current release's seeded regression scenarios, plus five-role browser login/navigation/page-load smoke. Destructive allowed-role mutations remain manual workflow checks.
 
 The release audit also blocks recurring regressions: duplicated active-flight predicates, tenant cache that survives account changes, login/subscription-dependent kassa desk visibility, missing service-owner isolation, and missing one-allocation/one-payable database enforcement.
 
@@ -68,6 +69,7 @@ Required result:
 - No failing tests.
 - No high-severity runtime dependency advisories (`npm audit --omit=dev --audit-level=high`).
 - No generated build artifacts are accidentally staged.
+- Dev deployment ran the current version's QA fixture without duplicates and the live release-seed audit passed.
 - `npm run audit:business-invariants` passes after every dev and production backend deploy.
 
 ## 3. Manual Smoke Gate

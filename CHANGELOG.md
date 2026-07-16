@@ -8,6 +8,20 @@ All releases use [Semantic Versioning](https://semver.org/):
 
 Every update must have a version, a changelog entry, and a passing release audit before deployment.
 
+## [1.0.4] - 2026-07-15
+
+### Added
+
+- Every dev deployment now runs an idempotent QA seed tied to the current release version.
+- Added 1.0.4 fixtures for an allocated null-status flight, its single allocation payable, a no-login expired-firm kassa desk, a historical closed kassa day, and a partner-owned service isolation case.
+- Added a live dev seed audit that verifies the fixture through source-firm, allocated-firm, and superadmin API views.
+- Stabilized the 721-probe live endpoint audit for the small dev host by lowering default concurrency and retrying transport interruptions once without retrying HTTP failures.
+
+### Safety
+
+- The QA seed requires explicit dev-deploy opt-in and refuses any database URL other than the dedicated `airline_b2b_dev` database.
+- The release audit fails when `VERSION` and the release fixture version differ, forcing each future update to include fitting dev test data.
+
 ## [1.0.3] - 2026-07-15
 
 ### Added
