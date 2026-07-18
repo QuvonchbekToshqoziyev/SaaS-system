@@ -1,11 +1,11 @@
-import { FinancialAccountType, Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { canManageFirmWork, isFirmAdminLike } from '../utils/firm-user-roles';
 import { writeAuditLog } from '../utils/audit';
-import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
-import { ensureFinancialAccount } from '../utils/financial-accounts';
 import { activeFlightWhere, firmFlightParticipationWhere } from '../domains/flights/flight-scope';
+import { softDeleteTransaction } from '../utils/transaction-visibility';
+import { getAccessibleFirmIds } from '../utils/access';
 
 const auth = (req: Request) => ((req as any).user || {}) as { userId?: string; role?: string; firmId?: string; firmRole?: string };
 const role = (req: Request) => String(auth(req).role || '').toUpperCase();
@@ -16,6 +16,9 @@ export const canEditFirmService = (user: ReturnType<typeof auth>, ownerFirmId: s
 const roleFromUser = (user: ReturnType<typeof auth>) => String(user.role || '').toUpperCase();
 export const firmServiceVisibilityWhere = (firmId: string): Prisma.ServiceOfferingWhereInput => ({
   ownerFirmId: firmId,
+});
+export const adminServiceVisibilityWhere = (firmIds: string[]): Prisma.ServiceOfferingWhereInput => ({
+  ownerFirmId: { in: firmIds },
 });
 const include = {
   ownerFirm: { select: { id: true, name: true } },
@@ -30,6 +33,9 @@ export async function listServices(req: Request, res: Response) {
   if (role(req) === 'FIRM') {
     if (!user.firmId) return res.status(400).json({ error: 'Firm account is missing firmId' });
     where.AND = [firmServiceVisibilityWhere(user.firmId)];
+  } else if (role(req) === 'ADMIN') {
+    const firmIds = await getAccessibleFirmIds(user);
+    where.AND = [adminServiceVisibilityWhere(firmIds || [])];
   }
   return res.json(await prisma.serviceOffering.findMany({ where, include, orderBy: { createdAt: 'desc' } }));
 }
@@ -55,17 +61,9 @@ export async function createService(req: Request, res: Response) {
   if (flightId && !flight) return res.status(404).json({ error: 'Active flight not found' });
   if (providerFirmId && !providerFirm) return res.status(404).json({ error: 'Provider firm not found' });
   if (providerFirmId === user.firmId) return res.status(400).json({ error: 'Provider must be another firm' });
-  const totalAmount = new Prisma.Decimal(String(unitPrice)).mul(quantity).toDecimalPlaces(4);
-  const exchangeRate = await resolveExchangeRateToUzs(user, { currency, overrideRate: req.body?.exchangeRate, rateFirmId: user.firmId });
-  const sourceAccount = paymentStatus === 'PAID' ? await ensureFinancialAccount({ firmId: user.firmId, currency, type: FinancialAccountType.BANK, createdByUserId: user.userId }) : null;
-  const created = await prisma.$transaction(async (tx) => {
-    const service = await tx.serviceOffering.create({
-      data: { ownerFirmId: user.firmId!, providerFirmId, providerName: providerFirm?.name || providerName, createdByUserId: user.userId, flightId, name, description: String(req.body?.description || '').trim() || undefined, quantity, availableQuantity: quantity, unitPrice, currency, paymentStatus },
-    });
-    const transaction = await tx.transaction.create({
-      data: { firmId: user.firmId!, payerFirmId: user.firmId!, receiverFirmId: providerFirmId, flightId, createdByUserId: user.userId, sourceAccountId: sourceAccount?.id, type: paymentStatus === 'PAID' ? 'PAYMENT' : 'PAYABLE', direction: 'SERVICE_PURCHASE', subjectType: 'SERVICE', subjectId: service.id, originalAmount: totalAmount, currency, exchangeRate, baseAmount: totalAmount.mul(exchangeRate).toDecimalPlaces(4), metadata: { serviceName: name, providerName: providerFirm?.name || providerName, quantity, paymentStatus } },
-    });
-    return tx.serviceOffering.update({ where: { id: service.id }, data: { transactionId: transaction.id }, include });
+  const created = await prisma.serviceOffering.create({
+    data: { ownerFirmId: user.firmId!, providerFirmId, providerName: providerFirm?.name || providerName, createdByUserId: user.userId, flightId, name, description: String(req.body?.description || '').trim() || undefined, quantity, availableQuantity: quantity, unitPrice, currency, paymentStatus },
+    include,
   });
   await writeAuditLog(req, { action: 'CREATE', entityType: 'serviceOffering', entityId: created.id, entityLabel: created.name, summary: `Recorded purchased service ${created.name} from ${created.providerName}`, after: created });
   return res.status(201).json(created);
@@ -98,20 +96,10 @@ export async function updateService(req: Request, res: Response) {
   const committedQuantity = existing.quantity - existing.availableQuantity;
   if (quantity < committedQuantity) return res.status(409).json({ error: `Service count cannot be below ${committedQuantity}; that quantity is assigned, reserved, or consumed` });
 
-  const totalAmount = new Prisma.Decimal(String(unitPrice)).mul(quantity).toDecimalPlaces(4);
-  const exchangeRate = await resolveExchangeRateToUzs(user, { currency, overrideRate: req.body?.exchangeRate, rateFirmId: existing.ownerFirmId });
-  const sourceAccount = paymentStatus === 'PAID' ? await ensureFinancialAccount({ firmId: existing.ownerFirmId, currency, type: FinancialAccountType.BANK, createdByUserId: user.userId }) : null;
-  const updated = await prisma.$transaction(async (tx) => {
-    const service = await tx.serviceOffering.update({
-      where: { id: existing.id },
-      data: { providerFirmId, providerName: providerFirm?.name || providerName, flightId, name, description: String(req.body?.description || '').trim() || null, quantity, availableQuantity: quantity - committedQuantity, unitPrice, currency, paymentStatus },
-      include,
-    });
-    if (existing.transactionId) await tx.transaction.update({
-      where: { id: existing.transactionId },
-      data: { receiverFirmId: providerFirmId || null, flightId: flightId || null, sourceAccountId: sourceAccount?.id || null, type: paymentStatus === 'PAID' ? 'PAYMENT' : 'PAYABLE', originalAmount: totalAmount, currency, exchangeRate, baseAmount: totalAmount.mul(exchangeRate).toDecimalPlaces(4), metadata: { serviceName: name, providerName: providerFirm?.name || providerName, quantity, paymentStatus } },
-    });
-    return service;
+  const updated = await prisma.serviceOffering.update({
+    where: { id: existing.id },
+    data: { providerFirmId, providerName: providerFirm?.name || providerName, flightId, name, description: String(req.body?.description || '').trim() || null, quantity, availableQuantity: quantity - committedQuantity, unitPrice, currency, paymentStatus },
+    include,
   });
   await writeAuditLog(req, { action: 'UPDATE', entityType: 'serviceOffering', entityId: updated.id, entityLabel: updated.name, summary: `Updated purchased service ${updated.name}`, before: existing, after: updated });
   return res.json(updated);
@@ -125,12 +113,9 @@ export async function deleteService(req: Request, res: Response) {
   if (await prisma.serviceAssignment.count({ where: { offeringId: existing.id } })) return res.status(409).json({ error: 'A service with assignments cannot be deleted' });
 
   await prisma.$transaction(async (tx) => {
-    await tx.serviceOffering.update({ where: { id: existing.id }, data: { transactionId: null, status: 'DELETED', deletedAt: new Date() } });
-    if (existing.transactionId) {
-      await tx.paymentAllocation.deleteMany({ where: { paymentId: existing.transactionId } });
-      await tx.ledgerEntry.deleteMany({ where: { transactionId: existing.transactionId } });
-      await tx.transaction.delete({ where: { id: existing.transactionId } });
-    }
+    const deletedAt = new Date();
+    await tx.serviceOffering.update({ where: { id: existing.id }, data: { status: 'DELETED', deletedAt } });
+    if (existing.transactionId) await softDeleteTransaction(tx, existing.transactionId, deletedAt);
   });
   await writeAuditLog(req, { action: 'DELETE', entityType: 'serviceOffering', entityId: existing.id, entityLabel: existing.name, summary: `Deleted purchased service ${existing.name}`, before: existing });
   return res.json({ ok: true });

@@ -372,6 +372,10 @@ function FlightDetailContent() {
       toast.error('Sale currency must be a 3-letter code (e.g. UZS)');
       return;
     }
+    if (currencyCode !== 'UZS' && (!Number.isFinite(Number(sellExchangeRate)) || Number(sellExchangeRate) <= 0)) {
+      toast.error(tr('Enter a valid exchange rate', 'To‘g‘ri valyuta kursini kiriting'));
+      return;
+    }
 
     const purchaserName = sellPurchaserName.trim();
     const purchaserIdNumber = sellPurchaserIdNumber.trim();
@@ -478,6 +482,10 @@ function FlightDetailContent() {
     }
     if (!/^[A-Z]{3}$/.test(currencyCode)) {
       toast.error('Sale currency must be a 3-letter code (e.g. UZS)');
+      return;
+    }
+    if (currencyCode !== 'UZS' && (!Number.isFinite(Number(sellBatchExchangeRate)) || Number(sellBatchExchangeRate) <= 0)) {
+      toast.error(tr('Enter a valid exchange rate', 'To‘g‘ri valyuta kursini kiriting'));
       return;
     }
 
@@ -853,6 +861,88 @@ function FlightDetailContent() {
     const price = Number(String(row.price || '').trim());
     return sum + (Number.isFinite(quantity) && quantity > 0 && Number.isFinite(price) && price > 0 ? quantity * price : 0);
   }, 0);
+  const allocationRowsValid = allocationRows.length > 0 && allocationRows.every((row) => {
+    const quantity = Number(row.quantity);
+    const price = Number(row.price);
+    return Number.isInteger(quantity) && quantity > 0 && Number.isFinite(price) && price > 0;
+  });
+  const allocationQuantityNumber = allocatePricingMode === 'MIXED' ? mixedAllocationTotalQuantity : Number(allocateQuantity);
+  const allocationAvailableQuantity = allocateProductType === 'ROUND_TRIP'
+    ? Number(inventorySummary.rtOw?.availableRoundTripCount || 0)
+    : allocateDirection === 'RETURN'
+      ? Number(inventorySummary.rtOw?.availableReturnLegCount || 0)
+      : Number(inventorySummary.rtOw?.availableOutboundLegCount || 0);
+  const selectedTicketProductAvailable = !selectedTicketId || (allocateProductType === 'ROUND_TRIP'
+    ? Boolean(allocationOperationTicket?.availableRoundTrip)
+    : allocateDirection === 'RETURN'
+      ? Boolean(allocationOperationTicket?.availableReturn)
+      : Boolean(allocationOperationTicket?.availableOutbound));
+  const allocationDraftValid = Boolean(
+    firms.length > 0
+    && selectedFirmId
+    && allocationSourceFirmId
+    && selectedTicketProductAvailable
+    && (selectedTicketId
+      ? Number(allocatePrice) > 0
+      : Number.isInteger(allocationQuantityNumber)
+        && allocationQuantityNumber > 0
+        && allocationQuantityNumber <= allocationAvailableQuantity
+        && (allocatePricingMode === 'MIXED' ? allocationRowsValid : Number(allocatePrice) > 0))
+  );
+  const saleCurrencyCode = (sellCurrency === 'OTHER' ? sellOtherCurrency : sellCurrency).trim().toUpperCase();
+  const saleProductAvailable = sellProductType === 'ROUND_TRIP'
+    ? Boolean(saleOperationTicket?.availableRoundTrip)
+    : sellDirection === 'RETURN'
+      ? Boolean(saleOperationTicket?.availableReturn)
+      : Boolean(saleOperationTicket?.availableOutbound);
+  const emailLooksValid = (value: string) => !value.trim() || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+  const singleSaleDraftValid = Boolean(
+    sellConfirmTicketId
+    && sellFirmId
+    && saleProductAvailable
+    && Number(sellPrice) > 0
+    && /^[A-Z]{3}$/.test(saleCurrencyCode)
+    && (saleCurrencyCode === 'UZS' || Number(sellExchangeRate) > 0)
+    && sellPurchaserName.trim()
+    && sellPurchaserIdNumber.trim()
+    && emailLooksValid(sellPurchaserEmail)
+    && (sellDeskOptions.length === 0 || sellKassaDeskId)
+  );
+  const batchSaleCurrencyCode = (sellBatchCurrency === 'OTHER' ? sellBatchOtherCurrency : sellBatchCurrency).trim().toUpperCase();
+  const batchAvailableQuantity = sellBatchProductType === 'ROUND_TRIP'
+    ? Number(inventorySummary.rtOw?.availableRoundTripCount || 0)
+    : sellBatchDirection === 'RETURN'
+      ? Number(inventorySummary.rtOw?.availableReturnLegCount || 0)
+      : Number(inventorySummary.rtOw?.availableOutboundLegCount || 0);
+  const batchSaleDraftValid = Boolean(
+    id
+    && sellBatchFirmId
+    && Number.isInteger(Number(sellBatchQuantity))
+    && Number(sellBatchQuantity) > 0
+    && Number(sellBatchQuantity) <= batchAvailableQuantity
+    && Number(sellBatchPrice) > 0
+    && /^[A-Z]{3}$/.test(batchSaleCurrencyCode)
+    && (batchSaleCurrencyCode === 'UZS' || Number(sellBatchExchangeRate) > 0)
+    && sellBatchPurchaserName.trim()
+    && sellBatchPurchaserIdNumber.trim()
+    && emailLooksValid(sellBatchPurchaserEmail)
+    && (sellBatchDeskOptions.length === 0 || sellBatchKassaDeskId)
+  );
+  const editAllocationDraftValid = Boolean(
+    editAllocation
+    && editAllocationReason.trim().length >= 5
+    && editAllocationReason.trim().length <= 500
+    && editAllocationRows.length > 0
+    && editAllocationRows.every((row) => Number.isInteger(Number(row.quantity)) && Number(row.quantity) > 0 && Number(row.price) > 0)
+  );
+  const cancelAllocationDraftValid = Boolean(
+    cancelAllocation
+    && cancelAllocationReason.trim().length >= 5
+    && cancelAllocationReason.trim().length <= 500
+    && Number.isInteger(Number(cancelAllocationQuantity))
+    && Number(cancelAllocationQuantity) > 0
+    && Number(cancelAllocationQuantity) <= Number(cancelAllocation?.cancellableQuantity || 0)
+  );
 
   return (
     <div className="space-y-8">
@@ -1417,7 +1507,10 @@ function FlightDetailContent() {
 	                  <div>
 	                  <label className="block text-sm font-medium text-muted mb-2">{tr('Allocation price (per ticket)', 'Ajratma narxi (har chipta)')}</label>
                   <input
+                    type="number"
                     inputMode="decimal"
+                    min="0.01"
+                    step="0.01"
                     required
                     className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground outline-none focus:border-primary transition"
                     placeholder="0"
@@ -1456,7 +1549,10 @@ function FlightDetailContent() {
                           disabled={allocateBusy}
                         />
                         <input
+                          type="number"
                           inputMode="decimal"
+                          min="0.01"
+                          step="0.01"
                           required
                           className="bg-surface border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary transition"
                           placeholder={tr('Price', 'Narx')}
@@ -1494,7 +1590,7 @@ function FlightDetailContent() {
                 </button>
                 <button
                   type="submit"
-                  disabled={allocateBusy || firms.length === 0}
+                  disabled={allocateBusy || !allocationDraftValid}
                   className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 text-white rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {allocateBusy ? tr('Allocating…', 'Ajratilmoqda…') : tr('Allocate', 'Ajratish')}
@@ -1529,7 +1625,7 @@ function FlightDetailContent() {
                 <input
                   type="number"
                   step="0.01"
-                  min={0}
+                  min={0.01}
                   value={sellPrice}
                   onChange={(e) => setSellPrice(e.target.value)}
                   disabled={sellBusy}
@@ -1557,8 +1653,10 @@ function FlightDetailContent() {
                 <div>
                   <label className="block text-sm font-medium text-muted mb-1">{tr('Other currency (3-letter)', 'Boshqa valyuta (3 harf)')}</label>
                   <input
-                    value={sellOtherCurrency}
-                    onChange={(e) => setSellOtherCurrency(e.target.value)}
+                  value={sellOtherCurrency}
+                  onChange={(e) => setSellOtherCurrency(e.target.value)}
+                  minLength={3}
+                  maxLength={3}
                     disabled={sellBusy}
                     className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                     placeholder="e.g. EUR"
@@ -1570,7 +1668,10 @@ function FlightDetailContent() {
                 <div>
                   <label className="block text-sm font-medium text-muted mb-1">{tr('Rate to UZS', 'UZS kursi')}</label>
                   <input
+                    type="number"
                     inputMode="decimal"
+                    min="0.000001"
+                    step="any"
                     value={sellExchangeRate}
                     onChange={(e) => setSellExchangeRate(e.target.value)}
                     disabled={sellBusy}
@@ -1635,6 +1736,7 @@ function FlightDetailContent() {
               <div>
                 <label className="block text-sm font-medium text-muted mb-1">{tr('Email (optional)', 'Email (ixtiyoriy)')}</label>
                 <input
+                  type="email"
                   value={sellPurchaserEmail}
                   onChange={(e) => setSellPurchaserEmail(e.target.value)}
                   disabled={sellBusy}
@@ -1668,7 +1770,7 @@ function FlightDetailContent() {
               <button
                 type="button"
                 onClick={confirmSell}
-                disabled={sellBusy}
+                disabled={sellBusy || !singleSaleDraftValid}
                 className="px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {sellBusy ? tr('Selling…', 'Sotilmoqda…') : tr('Confirm', 'Tasdiqlash')}
@@ -1693,7 +1795,7 @@ function FlightDetailContent() {
               <label className="block"><span className="compact-label">{tr('Note', 'Izoh')}</span><textarea className="compact-control" rows={2} value={editAllocationNote} onChange={(event) => setEditAllocationNote(event.target.value)} /></label>
               <label className="block"><span className="compact-label">{tr('Required edit reason', 'Tahrirlash sababi (majburiy)')}</span><textarea className="compact-control" rows={3} maxLength={500} value={editAllocationReason} onChange={(event) => setEditAllocationReason(event.target.value)} /></label>
             </div>
-            <div className="mt-6 flex justify-end gap-3"><button type="button" disabled={editAllocationBusy} onClick={() => setEditAllocation(null)} className="rounded bg-surface-2 px-4 py-2">{tr('Close', 'Yopish')}</button><button type="button" disabled={editAllocationBusy} onClick={submitAllocationEdit} className="rounded bg-primary px-4 py-2 font-bold text-primary-foreground disabled:opacity-50">{editAllocationBusy ? tr('Saving…', 'Saqlanmoqda…') : tr('Send change', 'O‘zgarishni yuborish')}</button></div>
+            <div className="mt-6 flex justify-end gap-3"><button type="button" disabled={editAllocationBusy} onClick={() => setEditAllocation(null)} className="rounded bg-surface-2 px-4 py-2">{tr('Cancel', 'Bekor qilish')}</button><button type="button" disabled={editAllocationBusy || !editAllocationDraftValid} onClick={submitAllocationEdit} className="rounded bg-primary px-4 py-2 font-bold text-primary-foreground disabled:opacity-50">{editAllocationBusy ? tr('Saving…', 'Saqlanmoqda…') : tr('Send change', 'O‘zgarishni yuborish')}</button></div>
           </div>
         </div>
       )}
@@ -1705,7 +1807,7 @@ function FlightDetailContent() {
             <p className="mt-1 text-sm text-muted">{tr('Only free, unsold and tour-unreserved tickets can be cancelled.', 'Faqat erkin, sotilmagan va turga band qilinmagan chiptalar bekor qilinadi.')}</p>
             <label className="mt-4 block"><span className="compact-label">{tr('Ticket quantity', 'Bilet soni')} (max: {cancelAllocation.cancellableQuantity})</span><input type="number" min="1" max={cancelAllocation.cancellableQuantity} className="compact-control" value={cancelAllocationQuantity} onChange={(event) => setCancelAllocationQuantity(event.target.value)} /></label>
             <label className="mt-4 block"><span className="compact-label">{tr('Required cancellation reason', 'Bekor qilish sababi (majburiy)')}</span><textarea className="compact-control" rows={4} maxLength={500} value={cancelAllocationReason} onChange={(event) => setCancelAllocationReason(event.target.value)} /></label>
-            <div className="mt-6 flex justify-end gap-3"><button type="button" disabled={cancelAllocationBusy} onClick={() => setCancelAllocation(null)} className="rounded bg-surface-2 px-4 py-2">{tr('Close', 'Yopish')}</button><button type="button" disabled={cancelAllocationBusy} onClick={submitAllocationCancel} className="rounded bg-red-600 px-4 py-2 font-bold text-white disabled:opacity-50">{cancelAllocationBusy ? tr('Sending…', 'Yuborilmoqda…') : tr('Cancel tickets', 'Biletlarni bekor qilish')}</button></div>
+            <div className="mt-6 flex justify-end gap-3"><button type="button" disabled={cancelAllocationBusy} onClick={() => setCancelAllocation(null)} className="rounded bg-surface-2 px-4 py-2">{tr('Cancel', 'Bekor qilish')}</button><button type="button" disabled={cancelAllocationBusy || !cancelAllocationDraftValid} onClick={submitAllocationCancel} className="rounded bg-red-600 px-4 py-2 font-bold text-white disabled:opacity-50">{cancelAllocationBusy ? tr('Sending…', 'Yuborilmoqda…') : tr('Cancel tickets', 'Biletlarni bekor qilish')}</button></div>
           </div>
         </div>
       )}
@@ -1814,7 +1916,7 @@ function FlightDetailContent() {
               {deallocateConfirm.status === 'ASSIGNED'
                 ? (
                     <span>
-                      {tr('This will reverse the PAYABLE (debt) transaction.', 'Bu PAYABLE (qarz) tranzaksiyasini bekor qiladi.')}
+                      {tr('This returns the ticket to the source inventory without creating an allocation transaction.', 'Bu chiptani ajratma tranzaksiyasi yaratmasdan manba zaxirasiga qaytaradi.')}
                     </span>
                   )
                 : (
@@ -1861,7 +1963,7 @@ function FlightDetailContent() {
               <label className="block text-sm font-medium text-muted mb-2">{tr('Reason', 'Sabab')}</label>
               <textarea
                 value={saleCancelRequestReason}
-                onChange={(e) => setSaleCancelRequestReason(e.target.value)}
+                onChange={(e) => setSaleCancelRequestReason(e.target.value.slice(0, 500))}
                 disabled={saleCancelRequestBusy}
                 className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition disabled:opacity-50"
                 rows={3}
@@ -1882,7 +1984,7 @@ function FlightDetailContent() {
               <button
                 type="button"
                 onClick={submitSaleCancelRequest}
-                disabled={saleCancelRequestBusy}
+                disabled={saleCancelRequestBusy || !saleCancelRequestReason.trim() || saleCancelRequestReason.trim().length > 500}
                 className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {saleCancelRequestBusy ? tr('Sending…', 'Yuborilmoqda…') : tr('Send request', "So'rov yuborish")}
@@ -1916,7 +2018,7 @@ function FlightDetailContent() {
                 <label className="block text-sm font-medium text-muted mb-2">{tr('Admin reason', 'Admin sababi')}</label>
                 <textarea
                   value={saleCancelDecisionReason}
-                  onChange={(e) => setSaleCancelDecisionReason(e.target.value)}
+                  onChange={(e) => setSaleCancelDecisionReason(e.target.value.slice(0, 500))}
                   disabled={saleCancelApproveBusy}
                   className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-foreground placeholder:text-muted outline-none focus:border-primary transition disabled:opacity-50"
                   rows={3}
@@ -1938,7 +2040,7 @@ function FlightDetailContent() {
               <button
                 type="button"
                 onClick={confirmSaleCancelApprove}
-                disabled={saleCancelApproveBusy}
+                disabled={saleCancelApproveBusy || !saleCancelDecisionReason.trim() || saleCancelDecisionReason.trim().length > 500}
                 className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {saleCancelApproveBusy
@@ -1994,7 +2096,7 @@ function FlightDetailContent() {
                 <input
                   type="number"
                   step="0.01"
-                  min={0}
+                  min={0.01}
                   value={sellBatchPrice}
                   onChange={(e) => setSellBatchPrice(e.target.value)}
                   disabled={sellBatchBusy}
@@ -2022,8 +2124,10 @@ function FlightDetailContent() {
                 <div>
                   <label className="block text-sm font-medium text-muted mb-1">{tr('Other currency (3-letter)', 'Boshqa valyuta (3 harf)')}</label>
                   <input
-                    value={sellBatchOtherCurrency}
-                    onChange={(e) => setSellBatchOtherCurrency(e.target.value)}
+                  value={sellBatchOtherCurrency}
+                  onChange={(e) => setSellBatchOtherCurrency(e.target.value)}
+                  minLength={3}
+                  maxLength={3}
                     disabled={sellBatchBusy}
                     className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                     placeholder="e.g. EUR"
@@ -2035,7 +2139,10 @@ function FlightDetailContent() {
                 <div>
                   <label className="block text-sm font-medium text-muted mb-1">{tr('Rate to UZS', 'UZS kursi')}</label>
                   <input
+                    type="number"
                     inputMode="decimal"
+                    min="0.000001"
+                    step="any"
                     value={sellBatchExchangeRate}
                     onChange={(e) => setSellBatchExchangeRate(e.target.value)}
                     disabled={sellBatchBusy}
@@ -2100,6 +2207,7 @@ function FlightDetailContent() {
               <div>
                 <label className="block text-sm font-medium text-muted mb-1">{tr('Email (optional)', 'Email (ixtiyoriy)')}</label>
                 <input
+                  type="email"
                   value={sellBatchPurchaserEmail}
                   onChange={(e) => setSellBatchPurchaserEmail(e.target.value)}
                   disabled={sellBatchBusy}
@@ -2133,7 +2241,7 @@ function FlightDetailContent() {
               <button
                 type="button"
                 onClick={confirmSellBatch}
-                disabled={sellBatchBusy}
+                disabled={sellBatchBusy || !batchSaleDraftValid}
                 className="px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {sellBatchBusy ? tr('Selling…', 'Sotilmoqda…') : tr('Confirm', 'Tasdiqlash')}

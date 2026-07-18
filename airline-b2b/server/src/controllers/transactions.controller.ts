@@ -1,14 +1,18 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { FinancialAccountType, Prisma } from '@prisma/client';
-import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
+import { canAccessFirm, canViewRelatedFirm, getAccessibleFirmIds } from '../utils/access';
 import { assertKassaOpenForDate, findKassaForDate, getTransactionBusinessDateKey, parseBusinessDate } from '../utils/kassa';
 import { writeAuditLog } from '../utils/audit';
 import { requireCorrectionReason } from '../domains/transactions/correction';
 import { assertActiveKassaDesk, assertKassaDeskForFirmSetSelection } from '../utils/kassa-desk-policy';
 import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
-import { assertKassirDeskAccess, getBoundKassaDeskId, isKassirUser } from '../utils/kassa-desk-access';
+import { assertKassirDeskAccess, getBoundKassaDeskId, isKassirUser, KassaDeskAccessError } from '../utils/kassa-desk-access';
 import { ensureFinancialAccount } from '../utils/financial-accounts';
+import { softDeleteTransaction, visibleTransactionWhere } from '../utils/transaction-visibility';
+import { canOperateKassa } from '../utils/kassa-permissions';
+import { historicalKassaIdempotencyKey, normalizeHistoricalKassaImportRows, type HistoricalKassaImportError, type HistoricalKassaImportRow } from '../domains/transactions/historical-kassa-import';
+import { randomUUID } from 'node:crypto';
 
 type AuthUser = {
   userId?: string;
@@ -49,7 +53,7 @@ async function resolveKassaDesk(authUser: AuthUser, rawKassaDeskId: unknown) {
 
   const accessibleFirmIds = await getAccessibleFirmIds(authUser);
   if (accessibleFirmIds && !accessibleFirmIds.includes(desk.firmId)) {
-    throw new Error('Forbidden');
+    throw new KassaDeskAccessError('Forbidden');
   }
 
   return desk;
@@ -93,12 +97,173 @@ function parseDecimal(value: unknown): Prisma.Decimal | undefined {
   return undefined;
 }
 
+function historicalImportMatches(
+  existing: { direction: string | null; originalAmount: Prisma.Decimal; currency: string; exchangeRate: Prisma.Decimal; metadata: unknown },
+  row: HistoricalKassaImportRow,
+) {
+  const metadata = existing.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
+    ? existing.metadata as Record<string, unknown>
+    : {};
+  return existing.direction === (row.flow === 'IN' ? 'KASSA_IN' : 'KASSA_OUT')
+    && existing.originalAmount.eq(row.amount)
+    && existing.currency === row.currency
+    && existing.exchangeRate.eq(row.exchangeRate)
+    && metadata.date === row.date
+    && String(metadata.importReference || '').toUpperCase() === row.referenceKey;
+}
+
+export const importHistoricalKassaTransactions = async (req: Request, res: Response) => {
+  const authUser = getAuthUser(req);
+  const role = normalizeRole(authUser.role);
+  const dryRun = req.body?.dryRun !== false;
+  let firmId = String(req.body?.firmId || '').trim();
+  const kassaDeskId = String(req.body?.kassaDeskId || '').trim();
+
+  if (!(await canOperateKassa(authUser))) {
+    return res.status(403).json({ error: 'Kassa importi uchun ruxsat yo‘q.' });
+  }
+  if (role === 'FIRM') firmId = String(authUser.firmId || '');
+  if (!firmId || !kassaDeskId) {
+    return res.status(400).json({ error: 'Firma va kassa tanlanishi kerak.' });
+  }
+  if (!(await canAccessFirm(authUser, firmId))) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  let kassaDesk: Awaited<ReturnType<typeof resolveKassaDesk>>;
+  try {
+    kassaDesk = await resolveKassaDesk(authUser, kassaDeskId);
+    await assertKassirDeskAccess(authUser, kassaDesk?.id);
+    if (!kassaDesk || kassaDesk.firmId !== firmId) throw new KassaDeskAccessError('Tanlangan kassa bu firmaga tegishli emas.');
+  } catch (err: any) {
+    return res.status(err?.statusCode || 400).json({ error: err?.message || 'Kassa noto‘g‘ri tanlangan.' });
+  }
+
+  const normalized = normalizeHistoricalKassaImportRows(req.body?.rows);
+  const errors: HistoricalKassaImportError[] = [...normalized.errors];
+  if (errors.length) {
+    return res.status(dryRun ? 200 : 422).json({ ok: false, validCount: normalized.rows.length, readyCount: 0, skippedCount: 0, errors });
+  }
+
+  const dates = Array.from(new Set(normalized.rows.map((row) => row.date)));
+  const sessions = await prisma.kassaDay.findMany({
+    where: { cashDeskId: kassaDeskId, businessDate: { in: dates.map((date) => new Date(`${date}T00:00:00.000Z`)) } },
+    select: { businessDate: true, status: true },
+  });
+  const sessionsByDate = new Map(sessions.map((session) => [session.businessDate.toISOString().slice(0, 10), session.status]));
+  for (const row of normalized.rows) {
+    const status = sessionsByDate.get(row.date);
+    if (!status) errors.push({ row: row.rowNumber, field: 'date', message: `${row.date} uchun bu kassa ochilmagan.` });
+    else if (status !== 'OPEN') errors.push({ row: row.rowNumber, field: 'date', message: `${row.date} kassasi yopiq. Avval shu kunni qayta oching.` });
+  }
+
+  const keys = normalized.rows.map((row) => historicalKassaIdempotencyKey(firmId, kassaDeskId, row.referenceKey));
+  const existingRows = await prisma.transaction.findMany({
+    where: { idempotencyKey: { in: keys } },
+    select: { idempotencyKey: true, direction: true, originalAmount: true, currency: true, exchangeRate: true, metadata: true, deletedAt: true },
+  });
+  const existingByKey = new Map(existingRows.map((row) => [String(row.idempotencyKey), row]));
+  const skippedKeys = new Set<string>();
+  for (const row of normalized.rows) {
+    const key = historicalKassaIdempotencyKey(firmId, kassaDeskId, row.referenceKey);
+    const existing = existingByKey.get(key);
+    if (!existing) continue;
+    if (!existing.deletedAt && historicalImportMatches(existing, row)) skippedKeys.add(key);
+    else errors.push({ row: row.rowNumber, field: 'reference', message: `${row.reference} Import ID oldin boshqa ma’lumot bilan ishlatilgan.` });
+  }
+
+  const rowsToCreate = normalized.rows.filter((row) => !skippedKeys.has(historicalKassaIdempotencyKey(firmId, kassaDeskId, row.referenceKey)));
+  const preview = {
+    ok: errors.length === 0,
+    validCount: normalized.rows.length,
+    readyCount: rowsToCreate.length,
+    skippedCount: skippedKeys.size,
+    errors,
+  };
+  if (dryRun || errors.length) return res.status(dryRun ? 200 : 422).json(preview);
+
+  const firm = await prisma.firm.findUnique({ where: { id: firmId }, select: { id: true, name: true } });
+  if (!firm) return res.status(404).json({ error: 'Firma topilmadi.' });
+
+  const accounts = new Map<string, Awaited<ReturnType<typeof ensureFinancialAccount>>>();
+  for (const currency of Array.from(new Set(rowsToCreate.map((row) => row.currency)))) {
+    accounts.set(currency, await ensureFinancialAccount({
+      firmId,
+      currency,
+      type: FinancialAccountType.CASH,
+      kassaDeskId,
+      createdByUserId: authUser.userId,
+    }));
+  }
+
+  const batchId = randomUUID();
+  const importedAt = new Date();
+  const created = await prisma.transaction.createMany({
+    data: rowsToCreate.map((row) => {
+      const amount = new Prisma.Decimal(row.amount);
+      const exchangeRate = new Prisma.Decimal(row.exchangeRate);
+      const account = accounts.get(row.currency)!;
+      return {
+        firmId,
+        payerFirmId: firmId,
+        receiverFirmId: firmId,
+        kassaDeskId,
+        createdByUserId: authUser.userId ? String(authUser.userId) : undefined,
+        type: 'ADJUSTMENT' as const,
+        sourceMode: 'HISTORICAL_IMPORT',
+        status: 'CONFIRMED',
+        direction: row.flow === 'IN' ? 'KASSA_IN' : 'KASSA_OUT',
+        subjectType: 'KASSA',
+        subjectId: firmId,
+        sourceAccountId: row.flow === 'OUT' ? account.id : undefined,
+        destinationAccountId: row.flow === 'IN' ? account.id : undefined,
+        originalAmount: amount,
+        currency: row.currency,
+        exchangeRate,
+        baseAmount: amount.mul(exchangeRate).toDecimalPlaces(4),
+        paymentMethod: 'cash',
+        idempotencyKey: historicalKassaIdempotencyKey(firmId, kassaDeskId, row.referenceKey),
+        metadata: {
+          note: row.note,
+          date: row.date,
+          cashFlow: row.flow,
+          firmLabel: firm.name,
+          kassaDeskId,
+          kassaDeskLabel: kassaDesk.name,
+          importReference: row.reference,
+          importBatchId: batchId,
+          importedAt: importedAt.toISOString(),
+        },
+        createdAt: new Date(`${row.date}T12:00:00.000Z`),
+      };
+    }),
+    skipDuplicates: true,
+  });
+
+  await writeAuditLog(req, {
+    action: 'IMPORT',
+    entityType: 'transactionBatch',
+    entityId: batchId,
+    entityLabel: `${kassaDesk.name} · ${created.count} qator`,
+    summary: `Imported ${created.count} historical kassa transactions`,
+    after: { firmId, kassaDeskId, createdCount: created.count, skippedCount: normalized.rows.length - created.count },
+    metadata: { references: rowsToCreate.map((row) => row.reference) },
+  });
+
+  return res.status(201).json({
+    ok: true,
+    batchId,
+    createdCount: created.count,
+    skippedCount: normalized.rows.length - created.count,
+  });
+};
+
 export const getTransactions = async (req: Request, res: Response) => {
   const authUser = getAuthUser(req);
   const role = normalizeRole(authUser.role);
 
   const { dateFrom, dateTo, firmId, flightId, allocationId, kassaDeskId, paymentCardId, paymentMethod, sourceMode, status, confirmedOnly, type, currency, page = '1', limit = '10' } = req.query;
-  const where: Prisma.TransactionWhereInput = { deletedAt: null };
+  const where: Prisma.TransactionWhereInput = {};
   const conditions: Prisma.TransactionWhereInput[] = [];
 
   if (dateFrom || dateTo) {
@@ -147,17 +312,18 @@ export const getTransactions = async (req: Request, res: Response) => {
   const pageNum = Math.max(1, parseInt(String(page)) || 1);
   const limitNum = Math.max(1, parseInt(String(limit)) || 10);
   const skip = (pageNum - 1) * limitNum;
+  const visibleWhere = visibleTransactionWhere(where);
 
   const [total, data, summaryRows] = await Promise.all([
-    prisma.transaction.count({ where }),
+    prisma.transaction.count({ where: visibleWhere }),
     prisma.transaction.findMany({
-      where,
+      where: visibleWhere,
       include: { firm: true, flight: true, payerFirm: true, receiverFirm: true, paymentCard: true, createdBy: { select: { id: true, email: true, fullName: true } }, kassaDesk: { include: { firm: true } } },
       orderBy: { createdAt: 'desc' },
       skip,
       take: limitNum
     }),
-    prisma.transaction.groupBy({ by: ['currency', 'type'], where, _sum: { originalAmount: true }, _count: { _all: true } }),
+    prisma.transaction.groupBy({ by: ['currency', 'type'], where: visibleWhere, _sum: { originalAmount: true }, _count: { _all: true } }),
   ]);
   
   res.json({
@@ -178,8 +344,8 @@ export const getTransactionById = async (req: Request, res: Response) => {
   const role = normalizeRole(authUser.role);
 
   const { id } = req.params;
-  const tx = await prisma.transaction.findUnique({
-    where: { id: String(id) },
+  const tx = await prisma.transaction.findFirst({
+    where: visibleTransactionWhere({ id: String(id) }),
     include: { firm: true, flight: true, ticket: true, payerFirm: true, receiverFirm: true, kassaDesk: { include: { firm: true } } }
   });
   if (!tx) {
@@ -198,7 +364,7 @@ export const getTransactionById = async (req: Request, res: Response) => {
 
 async function getOwnedDailyCashTransaction(req: Request, id: string) {
   const authUser = getAuthUser(req);
-  const row = await prisma.transaction.findUnique({ where: { id } });
+  const row = await prisma.transaction.findFirst({ where: visibleTransactionWhere({ id }) });
   if (!row) throw new Error('Transaction not found');
   if (row.type !== 'ADJUSTMENT' || !['KASSA_IN', 'KASSA_OUT'].includes(String(row.direction || ''))) {
     throw new Error('Only manually entered cash income/expense can be changed');
@@ -215,8 +381,6 @@ async function getOwnedDailyCashTransaction(req: Request, id: string) {
     ? row.metadata as Record<string, unknown>
     : {};
   const businessDay = String(metadata.date || row.createdAt.toISOString().slice(0, 10));
-  const today = new Date().toISOString().slice(0, 10);
-  if (businessDay !== today) throw new Error('Only today\'s transactions can be changed');
   await assertTransactionKassaEditable(row);
   return { row, metadata, isCreator };
 }
@@ -246,7 +410,7 @@ export const deleteOwnDailyCashTransaction = async (req: Request, res: Response)
   try {
     const { row } = await getOwnedDailyCashTransaction(req, String(req.params.id || ''));
     const correctionReason = requireCorrectionReason(req.body?.correctionReason || req.body?.reason);
-    await prisma.transaction.delete({ where: { id: row.id } });
+    await softDeleteTransaction(prisma, row.id);
     await writeAuditLog(req, { action: 'DELETE', entityType: 'transaction', entityId: row.id, summary: `Cash entry removed: ${correctionReason}`, before: row, metadata: { correctionReason } });
     return res.json({ ok: true });
   } catch (err: any) {
@@ -260,7 +424,7 @@ export const deleteTransaction = async (req: Request, res: Response) => {
   const reason = String(req.body?.reason || '').trim().slice(0, 500);
   if (!reason) return res.status(400).json({ error: 'Delete reason is required' });
 
-  const row = await prisma.transaction.findUnique({ where: { id } });
+  const row = await prisma.transaction.findFirst({ where: visibleTransactionWhere({ id }) });
   if (!row) return res.status(404).json({ error: 'Transaction not found' });
   if (!canDeleteFirmTransaction(authUser, row.firmId)) return res.status(403).json({ error: 'Only superadmin or the owning firm admin can delete this transaction' });
   try {
@@ -269,13 +433,7 @@ export const deleteTransaction = async (req: Request, res: Response) => {
     return res.status(409).json({ error: err?.message || 'Kassa session must be open' });
   }
 
-  await prisma.$transaction(async (tx) => {
-    await tx.serviceOffering.updateMany({ where: { transactionId: id }, data: { transactionId: null, paymentStatus: 'DELETED' } });
-    await tx.tourPackageSale.updateMany({ where: { transactionId: id }, data: { transactionId: null } });
-    await tx.paymentAllocation.deleteMany({ where: { paymentId: id } });
-    await tx.ledgerEntry.deleteMany({ where: { transactionId: id } });
-    await tx.transaction.delete({ where: { id } });
-  });
+  await softDeleteTransaction(prisma, id);
   await writeAuditLog(req, { action: 'DELETE', entityType: 'transaction', entityId: id, summary: `Deleted transaction: ${reason}`, before: row, metadata: { reason } });
   return res.json({ ok: true });
 };
@@ -331,7 +489,7 @@ export const createDirectedTransaction = async (req: Request, res: Response) => 
     await assertKassirDeskAccess(authUser, kassaDesk?.id);
     await assertKassaDeskBelongsToOneOf(kassaDesk, [payerFirmId, receiverFirmId]);
   } catch (err: any) {
-    return res.status(400).json({ error: err.message || 'Invalid kassa desk' });
+    return res.status(err?.statusCode || 400).json({ error: err.message || 'Invalid kassa desk' });
   }
 
   try {
@@ -468,7 +626,7 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
   if (!(await canAccessFirm(authUser, firmId))) {
     return res.status(403).json({ error: 'Forbidden' });
   }
-  if (counterpartyFirmId && !(await canAccessFirm(authUser, counterpartyFirmId))) {
+  if (counterpartyFirmId && !(await canViewRelatedFirm(authUser, counterpartyFirmId))) {
     return res.status(403).json({ error: 'Counterparty is not accessible' });
   }
   try {
@@ -476,7 +634,7 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
     await assertKassirDeskAccess(authUser, kassaDesk?.id);
     await assertKassaDeskBelongsToOneOf(kassaDesk, [firmId], firmId);
   } catch (err: any) {
-    return res.status(400).json({ error: err.message || 'Invalid kassa desk' });
+    return res.status(err?.statusCode || 400).json({ error: err.message || 'Invalid kassa desk' });
   }
   try {
     await assertKassaOpenForDate(businessDate, kassaDesk?.id);

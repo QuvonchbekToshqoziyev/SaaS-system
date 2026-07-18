@@ -15,13 +15,13 @@ import { api } from '@/lib/api';
 import toast from 'react-hot-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { formatMoney, pctChange } from '@/lib/format';
+import { formatMoney } from '@/lib/format';
 import KpiCard from './KpiCard';
-import SimpleLineChart from './SimpleLineChart';
-import SimpleDonutChart from './SimpleDonutChart';
 import DashboardRightPanel from './DashboardRightPanel';
 
-type MonthlyRow = { month: string; allocations: number | string; sales: number | string; payments: number | string };
+type MoneyRow = { currency: string; total: number };
+type DebtRow = { firmId: string; firmName: string; ownerFirmId?: string; ownerFirmName?: string; currency: string; charged: number; paid: number; currentDebt: number };
+type UpcomingFlight = { id: string; flightNumber: string; route: string; departure: string; arrival?: string | null; airline?: { name?: string | null } | null; ownerFirm?: { name?: string | null } | null };
 
 type DashboardNotification = {
   id: string;
@@ -45,11 +45,16 @@ type DashboardReport = {
   notifications?: DashboardNotification[];
   activityFeed?: DashboardActivity[];
   counts?: { notifications: number; messages: number };
-  duePayments?: {
-    totalOutstanding: number;
-    byFirm?: Array<{ firmId: string; firmName: string | null; outstanding: number }>;
-    byFlight?: Array<{ flightId: string; flightNumber: string | null; outstanding: number; departure: string | null }>;
+  summary?: {
+    totalSales: MoneyRow[];
+    totalPurchases: MoneyRow[];
+    paymentsReceived: MoneyRow[];
+    paymentsMade: MoneyRow[];
+    receivableTotals: MoneyRow[];
+    payableTotals: MoneyRow[];
   };
+  upcomingFlights?: UpcomingFlight[];
+  debts?: { receivables: DebtRow[]; payables: DebtRow[] };
   pendingAllocations?: { total: number };
 };
 
@@ -72,34 +77,24 @@ export default function AdoHomeDashboard() {
   const { user } = useAuth();
   const { tr, language } = useLanguage();
   const router = useRouter();
-  const isAdmin = user?.role?.toLowerCase() !== 'firm';
   const [loading, setLoading] = useState(true);
-  const [monthly, setMonthly] = useState<MonthlyRow[]>([]);
   const [dashboard, setDashboard] = useState<DashboardReport | null>(null);
   const [recentTx, setRecentTx] = useState<any[]>([]);
-  const [firmTotals, setFirmTotals] = useState<{ outstanding?: number; revenue?: number; paid?: number; debt?: number } | null>(null);
 
   useEffect(() => {
     if (!user) return;
     const load = async () => {
       try {
-        const reqs: Promise<unknown>[] = [
-          api.get<MonthlyRow[]>('/reports/monthly'),
+        const reqs = [
           api.get<DashboardReport>('/reports/dashboard'),
           api.get('/transactions', { params: { page: 1, limit: 8 } }),
         ];
-        if (!isAdmin) reqs.push(api.get('/reports/firm'));
         const results = await Promise.all(reqs);
-        setMonthly((results[0] as any).data || []);
-        setDashboard((results[1] as any).data || null);
+        setDashboard(results[0].data || null);
         
         // The transactions endpoint returns { data: [...], meta: { ... } }
-        const txResponseData = (results[2] as any).data;
+        const txResponseData = results[1].data;
         setRecentTx(Array.isArray(txResponseData) ? txResponseData : (txResponseData?.data || []));
-        
-        if (!isAdmin && results[3]) {
-          setFirmTotals((results[3] as any).data?.totals ?? null);
-        }
       } catch (err: any) {
         console.error('Dashboard load error:', err);
         toast.error(tr('Failed to load dashboard', 'Panel yuklanmadi'));
@@ -108,42 +103,11 @@ export default function AdoHomeDashboard() {
       }
     };
     load();
-  }, [user, tr, isAdmin]);
+  }, [user, tr]);
 
-  const sortedMonthly = useMemo(
-    () => [...monthly].sort((a, b) => String(a.month).localeCompare(String(b.month))),
-    [monthly],
-  );
-
-  const latest = sortedMonthly[sortedMonthly.length - 1];
-  const prev = sortedMonthly[sortedMonthly.length - 2];
-
-  const totals = useMemo(() => {
-    const sales = Number(latest?.sales ?? 0);
-    const payments = Number(latest?.payments ?? 0);
-    const allocations = Number(latest?.allocations ?? 0);
-    const outstanding = dashboard?.duePayments?.totalOutstanding ?? (isAdmin ? 0 : Number(firmTotals?.outstanding ?? 0));
-    return { sales, payments, allocations, outstanding };
-  }, [latest, dashboard, firmTotals, isAdmin]);
-
-  const chartData = useMemo(() => {
-    return sortedMonthly.slice(-7).map((m) => ({
-      label: String(m.month).slice(5),
-      income: Number(m.sales),
-      expense: Number(m.payments) + Number(m.allocations) * 0.3,
-    }));
-  }, [sortedMonthly]);
-
-  const donutSlices = useMemo(() => {
-    const s = Number(latest?.sales ?? 0);
-    const p = Number(latest?.payments ?? 0);
-    const a = Number(latest?.allocations ?? 0);
-    return [
-      { label: tr('Sales', 'Sotuvlar'), value: s, color: '#34d399' },
-      { label: tr('Payments', "To'lovlar"), value: p, color: '#38bdf8' },
-      { label: tr('Allocations', 'Ajratmalar'), value: a, color: '#C9A84C' },
-    ].filter((x) => x.value > 0);
-  }, [latest, tr]);
+  const fmtAmounts = (rows: MoneyRow[] | undefined) => rows?.length
+    ? rows.map((row) => `${Number(row.total || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${row.currency}`).join(' · ')
+    : '0';
 
   const panelNotifications = useMemo(() => {
     const fromApi = dashboard?.notifications || [];
@@ -156,26 +120,6 @@ export default function AdoHomeDashboard() {
       href: n.href,
     }));
   }, [dashboard?.notifications]);
-
-  const dueItems = useMemo(() => {
-    const firms = dashboard?.duePayments?.byFirm;
-    if (firms?.length) {
-      return firms.slice(0, 4).map((f) => ({
-        id: f.firmId,
-        title: f.firmName || f.firmId,
-        amount: f.outstanding,
-        href: `/transactions?firmId=${encodeURIComponent(f.firmId)}&type=payment`,
-      }));
-    }
-    const flights = dashboard?.duePayments?.byFlight;
-    return (flights || []).slice(0, 4).map((f) => ({
-      id: f.flightId,
-      title: f.flightNumber || tr('Flight', 'Reys'),
-      detail: f.departure ? safeFormat(f.departure, 'dd MMM yyyy') : undefined,
-      amount: f.outstanding,
-      href: `/flights/detail?id=${encodeURIComponent(f.flightId)}`,
-    }));
-  }, [dashboard, tr]);
 
   const paymentHref = '/kassa';
   const todayLabel = format(new Date(), language === 'uz' ? 'd MMMM yyyy, EEEE' : 'MMMM d, yyyy — EEEE');
@@ -191,13 +135,14 @@ export default function AdoHomeDashboard() {
   return (
     <>
       <div className="space-y-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="page-intro flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="font-serif text-2xl font-bold text-foreground md:text-3xl">
-              {tr('Welcome', 'Xush kelibsiz')}, {user?.email?.split('@')[0] || 'Admin'}! 👋
+            <p className="page-eyebrow">{tr('Operations desk', 'Operatsion markaz')}</p>
+            <h1 className="page-title mt-1 text-3xl text-foreground md:text-4xl">
+              {tr('Welcome', 'Xush kelibsiz')}, {user?.email?.split('@')[0] || 'Admin'}
             </h1>
             <p className="mt-1 text-sm text-muted capitalize">{todayLabel}</p>
-            <p className="mt-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-[#D4AF37]/80">
+            <p className="mt-3 text-xs font-semibold uppercase tracking-[0.16em] text-signal">
               ADO-SYSTEM · {tr('powered by ADO-FINANCE', 'ADO-FINANCE tomonidan')}
             </p>
           </div>
@@ -205,58 +150,49 @@ export default function AdoHomeDashboard() {
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <KpiCard
-            title={tr('Ticket sales (month)', 'Chipta sotuvlari (oy)')}
-            value={formatMoney(totals.sales)}
-            trend={prev ? pctChange(Number(latest?.sales), Number(prev?.sales)) : null}
+            title={tr('Total sales', 'Jami sotuv')}
+            value={fmtAmounts(dashboard?.summary?.totalSales)}
             icon={<PlaneTakeoff size={20} />}
             accent="gold"
             href="/reports"
           />
           <KpiCard
             title={tr('Payments received', "Olingan to'lovlar")}
-            value={formatMoney(totals.payments)}
-            trend={prev ? pctChange(Number(latest?.payments), Number(prev?.payments)) : null}
+            value={fmtAmounts(dashboard?.summary?.paymentsReceived)}
             icon={<Wallet size={20} />}
             accent="green"
             href={paymentHref}
           />
           <KpiCard
-            title={tr('Allocations (debt)', 'Ajratmalar (qarz)')}
-            value={formatMoney(totals.allocations)}
-            subtitle={tr('Assigned ticket debt', 'Ajratilgan chipta qarzi')}
+            title={tr('Receivables', 'Olinadigan qarz')}
+            value={fmtAmounts(dashboard?.summary?.receivableTotals)}
+            subtitle={tr('Firms owe us', 'Bizdan qarzi bor firmalar')}
             icon={<ArrowRightLeft size={20} />}
             accent="blue"
-            href="/transactions?type=payable"
+            href="/reports"
           />
           <KpiCard
-            title={tr('Outstanding balance', 'Qoldiq qarz')}
-            value={formatMoney(totals.outstanding)}
-            subtitle={totals.outstanding > 0 ? tr('Action required', 'Harakat talab qilinadi') : undefined}
+            title={tr('Payables', 'To‘lanadigan qarz')}
+            value={fmtAmounts(dashboard?.summary?.payableTotals)}
+            subtitle={tr('We owe airlines / firms', 'Biz qarz bo‘lgan airline / firmalar')}
             icon={<AlertCircle size={20} />}
             accent="red"
-            href={paymentHref}
+            href="/reports"
           />
+        </div>
+
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+          <UpcomingFlightsTable rows={dashboard?.upcomingFlights || []} tr={tr} />
+          <DashboardDebtTable title={tr('Firms owing us', 'Bizdan qarzdorlar')} rows={dashboard?.debts?.receivables || []} kind="receivable" tr={tr} />
+          <DashboardDebtTable title={tr('Firms we owe', 'Biz qarz bo‘lganlar')} rows={dashboard?.debts?.payables || []} kind="payable" tr={tr} />
         </div>
 
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
           <div className="space-y-6 xl:col-span-8">
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-              <SimpleLineChart
-                title={tr('Cash flow', 'Pul oqimi')}
-                subtitle={tr('Income vs outflows by month', 'Oylik kirim va chiqim')}
-                data={chartData}
-              />
-              <SimpleDonutChart
-                title={tr('Structure (current month)', 'Tuzilma (joriy oy)')}
-                subtitle={tr('Sales, payments, allocations', "Sotuv, to'lov, ajratma")}
-                slices={donutSlices.length ? donutSlices : [{ label: tr('No data', "Ma'lumot yo'q"), value: 1, color: '#3f3f46' }]}
-              />
-            </div>
-
-            <div className="rounded-2xl border border-border bg-surface shadow-[0_4px_24px_rgba(0,0,0,0.2)]">
+            <div className="data-panel">
               <div className="flex items-center justify-between border-b border-border px-5 py-4">
                 <h3 className="text-sm font-bold text-foreground">{tr('Recent operations', "So'nggi operatsiyalar")}</h3>
-                <Link href="/transactions" className="text-xs font-semibold text-[#D4AF37] hover:underline">
+                <Link href="/transactions" className="text-xs font-semibold text-signal hover:underline">
                   {tr('View all', 'Hammasi')}
                 </Link>
               </div>
@@ -311,11 +247,40 @@ export default function AdoHomeDashboard() {
               tr={tr}
               todos={dashboard?.todos || []}
               notifications={panelNotifications}
-              dueItems={dueItems}
+              dueItems={[]}
             />
           </div>
         </div>
       </div>
     </>
+  );
+}
+
+function UpcomingFlightsTable({ rows, tr }: { rows: UpcomingFlight[]; tr: (en: string, uz: string) => string }) {
+  return (
+    <div className="data-panel overflow-hidden">
+      <div className="border-b border-border px-4 py-3"><h3 className="text-sm font-bold text-foreground">{tr('Next 5 flights', 'Eng yaqin uchadigan 5 ta reys')}</h3></div>
+      <div className="overflow-x-auto"><table className="excel-table"><thead><tr><th>{tr('Flight', 'Reys')}</th><th>{tr('Departure', 'Uchish')}</th></tr></thead>
+        <tbody>{rows.length ? rows.slice(0, 5).map((flight) => <tr key={flight.id}>
+          <td><Link href={`/flights/detail?id=${encodeURIComponent(flight.id)}`} className="font-semibold text-foreground hover:text-signal">{flight.flightNumber}</Link><div className="text-xs text-muted">{flight.route} · {flight.airline?.name || flight.ownerFirm?.name || '-'}</div></td>
+          <td className="whitespace-nowrap">{safeFormat(flight.departure, 'dd.MM.yyyy HH:mm')}</td>
+        </tr>) : <tr><td colSpan={2} className="text-center text-muted">{tr('No upcoming flights', 'Yaqin reys yo‘q')}</td></tr>}</tbody>
+      </table></div>
+    </div>
+  );
+}
+
+function DashboardDebtTable({ title, rows, kind, tr }: { title: string; rows: DebtRow[]; kind: 'receivable' | 'payable'; tr: (en: string, uz: string) => string }) {
+  return (
+    <div className="data-panel overflow-hidden">
+      <div className="border-b border-border px-4 py-3"><h3 className="text-sm font-bold text-foreground">{title}</h3><p className="mt-1 text-xs text-muted">{tr('Largest balance first', 'Qarzi kattadan kichikka')}</p></div>
+      <div className="overflow-x-auto"><table className="excel-table"><thead><tr><th>{tr('Airline / firm', 'Airline / firma')}</th><th>{tr('Paid', 'To‘langan')}</th><th>{tr('Current debt', 'Hozirgi qarz')}</th></tr></thead>
+        <tbody>{rows.length ? rows.slice(0, 5).map((row) => <tr key={`${row.ownerFirmId || ''}-${row.firmId}-${row.currency}`}>
+          <td className="font-semibold">{row.firmName}<div className="text-xs font-normal text-muted">{kind === 'receivable' ? `${row.firmName} → ${row.ownerFirmName || tr('Us', 'Biz')}` : `${row.ownerFirmName || tr('Us', 'Biz')} → ${row.firmName}`}</div></td>
+          <td className="whitespace-nowrap font-mono">{Number(row.paid || 0).toLocaleString()} {row.currency}</td>
+          <td className={`whitespace-nowrap font-mono font-bold ${kind === 'receivable' ? 'text-red-400' : 'text-amber-400'}`}>{Number(row.currentDebt || 0).toLocaleString()} {row.currency}</td>
+        </tr>) : <tr><td colSpan={3} className="text-center text-muted">{tr('No debt', 'Qarz yo‘q')}</td></tr>}</tbody>
+      </table></div>
+    </div>
   );
 }

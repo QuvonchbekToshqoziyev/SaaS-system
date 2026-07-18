@@ -10,6 +10,7 @@ import { getAccessibleFirmIds } from '../utils/access';
 import { TicketProductType, type Prisma } from '@prisma/client';
 import { canManageFlight } from '../domains/flights/flight-permissions';
 import { activeFlightWhere, firmFlightParticipationWhere } from '../domains/flights/flight-scope';
+import { visibleTransactionWhere } from '../utils/transaction-visibility';
 import { writeAuditLog } from '../utils/audit';
 import { buildTicketInventorySummary } from '../domains/tickets/inventory-summary';
 import { createTicketLegInventory, normalizeTicketProductType, validateLegCosts } from '../domains/tickets/ticket-leg-inventory';
@@ -142,7 +143,7 @@ export const getAllFlights = async (req: AuthenticatedRequest, res: Response) =>
       orderBy: { departure: 'asc' },
       include: {
         transactions: {
-          ...(txWhere ? { where: txWhere } : {}),
+          where: visibleTransactionWhere(txWhere || {}),
           select: {
             type: true,
             baseAmount: true,

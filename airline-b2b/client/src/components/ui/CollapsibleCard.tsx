@@ -13,6 +13,7 @@ type CollapsibleCardProps = {
   headerRight?: React.ReactNode;
   collapsible?: boolean;
   id?: string;
+  tone?: 'default' | 'finance' | 'success' | 'danger';
 };
 
 export default function CollapsibleCard({
@@ -26,13 +27,14 @@ export default function CollapsibleCard({
   headerRight,
   collapsible = false,
   id,
+  tone = 'default',
 }: CollapsibleCardProps) {
   const { tr } = useLanguage();
   const [open, setOpen] = useState(defaultOpen);
   const didHydrateFromStorage = useRef(false);
   const hasChildren = useMemo(() => React.Children.count(children) > 0, [children]);
 
-  const bodyPaddingClassName = contentClassName ?? 'p-6 md:p-8';
+  const bodyPaddingClassName = contentClassName ?? 'p-5 md:p-6';
 
   useEffect(() => {
     if (!collapsible) return;
@@ -62,18 +64,18 @@ export default function CollapsibleCard({
   const isOpen = collapsible ? open : true;
 
   return (
-    <div id={id} className={`scroll-mt-24 bg-surface shadow-sm border border-border rounded-lg transition-all duration-300 hover:shadow-[0_4px_24px_-8px_rgba(0,0,0,0.05)] ${className || ''}`}>
+    <section id={id} data-tone={tone === 'default' ? undefined : tone} className={`section-card scroll-mt-24 transition-[border-color,box-shadow,background-color] duration-300 ${className || ''}`}>
       <div
-        className={`px-6 py-5 md:px-8 md:py-6 flex items-start justify-between gap-4 transition-colors ${
+        className={`section-card__header flex flex-col items-start justify-between gap-4 px-5 py-4 transition-colors sm:flex-row md:px-6 md:py-5 ${
           isOpen && hasChildren ? 'border-b border-border' : ''
         }`}
       >
         <div className="min-w-0">
-          <div className="text-sm font-semibold tracking-wide uppercase text-foreground">{title}</div>
-          {description ? <div className="mt-1 text-xs font-medium text-muted">{description}</div> : null}
+          <div className="section-card__title text-foreground">{title}</div>
+          {description ? <div className="mt-1.5 max-w-3xl text-sm font-medium leading-5 text-muted">{description}</div> : null}
         </div>
 
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex w-full shrink-0 flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap sm:gap-3">
           {headerRight}
           {collapsible && (
             <button
@@ -97,11 +99,11 @@ export default function CollapsibleCard({
           }`}
           aria-hidden={!isOpen}
         >
-          <div className="min-h-0 bg-surface-2/30">
+          <div className="section-card__body min-h-0">
             <div className={bodyPaddingClassName}>{children}</div>
           </div>
         </div>
       ) : null}
-    </div>
+    </section>
   );
 }

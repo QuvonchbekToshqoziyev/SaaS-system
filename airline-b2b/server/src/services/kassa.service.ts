@@ -15,6 +15,7 @@ import { getAccessibleFirmIds } from '../utils/access';
 import { assertCanOperateKassa, canOperateKassa } from '../utils/kassa-permissions';
 import { normalizeFirmUserRole } from '../utils/firm-user-roles';
 import { getBoundKassaDeskId, isKassirUser } from '../utils/kassa-desk-access';
+import { visibleTransactionWhere } from '../utils/transaction-visibility';
 
 export type AuthUser = {
   userId?: string;
@@ -51,11 +52,32 @@ export function calculateExpectedCashByCurrency(
   };
 }
 
-async function findPreviousKassaSession(db: typeof prisma | Prisma.TransactionClient, firmId: string, cashDeskId: string, day: Date) {
-  return db.kassaDay.findFirst({
-    where: { firmId, cashDeskId, currency: 'UZS', status: KassaStatus.CLOSED, businessDate: { lt: day }, closedAt: { lt: new Date() } },
-    orderBy: { closedAt: 'desc' },
-  });
+export function previousKassaRemainderQuery(firmId: string, cashDeskId: string, day: Date, currency: 'UZS' | 'USD'): Prisma.KassaDayFindFirstArgs {
+  const remainderWhere = currency === 'USD'
+    ? { OR: [{ actualClosingBalanceUsd: { not: null } }, { closingBalanceUsd: { not: null } }, { expectedCashUsd: { not: null } }] }
+    : { OR: [{ actualClosingBalance: { not: null } }, { closingBalance: { not: null } }, { expectedCash: { not: null } }] };
+  return {
+    where: { firmId, cashDeskId, currency: 'UZS', status: KassaStatus.CLOSED, businessDate: { lt: day }, ...remainderWhere },
+    orderBy: [{ businessDate: 'desc' }, { closedAt: 'desc' }],
+  };
+}
+
+async function findPreviousKassaRemainders(db: typeof prisma | Prisma.TransactionClient, firmId: string, cashDeskId: string, day: Date) {
+  const [uzsSession, usdSession] = await Promise.all([
+    db.kassaDay.findFirst(previousKassaRemainderQuery(firmId, cashDeskId, day, 'UZS')),
+    db.kassaDay.findFirst(previousKassaRemainderQuery(firmId, cashDeskId, day, 'USD')),
+  ]);
+  return {
+    UZS: { session: uzsSession, balance: uzsSession ? resolveCarryForwardBalance(uzsSession) : null },
+    USD: {
+      session: usdSession,
+      balance: usdSession ? resolveCarryForwardBalance({
+        actualClosingBalance: usdSession.actualClosingBalanceUsd,
+        closingBalance: usdSession.closingBalanceUsd,
+        expectedCash: usdSession.expectedCashUsd,
+      }) : null,
+    },
+  };
 }
 
 export function resolveKassaDayStatus(selectedDesk: boolean, selectedSessionStatus: KassaStatus | null | undefined, allSessionStatuses: KassaStatus[]) {
@@ -160,12 +182,34 @@ async function loadDayTransactions(businessDate: Date, firmScopeIds?: string[], 
     ...(kassaDeskId ? { kassaDeskId } : {}),
   };
   const rows = await prisma.transaction.findMany({
-    where,
+    where: visibleTransactionWhere(where),
     include: { firm: true, flight: true, paymentCard: true, createdBy: { select: { id: true, email: true, fullName: true } }, kassaDesk: { include: { firm: { select: { id: true, name: true } } } } },
     orderBy: { createdAt: 'desc' },
   });
 
   return rows.filter((tx) => getTransactionBusinessDateKey(tx) === dayKey);
+}
+
+export function resolveKassaTransactionFlow(tx: {
+  type: string;
+  direction?: string | null;
+  firmId: string;
+  payerFirmId?: string | null;
+  receiverFirmId?: string | null;
+  metadata?: unknown;
+}): 'IN' | 'OUT' | null {
+  if (tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_IN') return 'IN';
+  if (tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_OUT') return 'OUT';
+  if (tx.type !== 'PAYMENT') return null;
+
+  const metadata = tx.metadata && typeof tx.metadata === 'object' && !Array.isArray(tx.metadata)
+    ? tx.metadata as Record<string, unknown>
+    : {};
+  const explicitFlow = String(metadata.cashFlow || '').toUpperCase();
+  if (explicitFlow === 'IN' || explicitFlow === 'OUT') return explicitFlow;
+  if (tx.payerFirmId === tx.firmId && tx.receiverFirmId !== tx.firmId) return 'OUT';
+  if (tx.receiverFirmId === tx.firmId && tx.payerFirmId !== tx.firmId) return 'IN';
+  return 'IN';
 }
 
 function computeDayTotals(transactions: Awaited<ReturnType<typeof loadDayTransactions>>) {
@@ -219,19 +263,30 @@ function computeDayTotals(transactions: Awaited<ReturnType<typeof loadDayTransac
     const row = currencyRow(tx.currency);
     row.transactionCount += 1;
     if (tx.type === 'PAYMENT') {
+      const outgoing = resolveKassaTransactionFlow(tx) === 'OUT';
       paymentCount += 1;
       row.paymentCount += 1;
       if (method === 'cash') {
-        cashTotal += base;
-        cashInTotal += base;
-        row.cashTotal += original;
-        row.cashInTotal += original;
+        cashTotal += outgoing ? -base : base;
+        row.cashTotal += outgoing ? -original : original;
+        if (outgoing) {
+          cashOutTotal += base;
+          row.cashOutTotal += original;
+        } else {
+          cashInTotal += base;
+          row.cashInTotal += original;
+        }
       }
       else if (method === 'card') {
-        cardTotal += base;
-        cardInTotal += base;
-        row.cardTotal += original;
-        row.cardInTotal += original;
+        cardTotal += outgoing ? -base : base;
+        row.cardTotal += outgoing ? -original : original;
+        if (outgoing) {
+          cardOutTotal += base;
+          row.cardOutTotal += original;
+        } else {
+          cardInTotal += base;
+          row.cardInTotal += original;
+        }
       }
     } else if (tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_IN') {
       if (method === 'card') {
@@ -312,8 +367,16 @@ function serializePaymentCard(card: any) {
     cashDeskId: card.cashDeskId,
     firm: card.firm ?? null,
     status: card.status,
+    createdByUserId: card.createdByUserId,
     createdAt: card.createdAt instanceof Date ? card.createdAt.toISOString() : card.createdAt,
   };
+}
+
+export function canDeletePaymentCard(authUser: AuthUser, card: { firmId?: string | null; createdByUserId?: string | null }) {
+  const actorUserId = authUser.userId ? String(authUser.userId) : '';
+  if (normalizeRole(authUser.role) === 'SUPERADMIN') return true;
+  if (actorUserId && card.createdByUserId === actorUserId) return true;
+  return isFirmAdmin(authUser) && Boolean(authUser.firmId) && card.firmId === authUser.firmId;
 }
 
 function emptyCurrencyTotals() {
@@ -467,11 +530,11 @@ export async function updateKassaDeskService(authUser: AuthUser, id: string, inp
   return { before: existing, desk: serializeKassaDesk(updated) };
 }
 
-function cardFlowAmount(tx: { type: string; direction: string | null; originalAmount: unknown }) {
+function cardFlowAmount(tx: { type: string; direction: string | null; firmId: string; payerFirmId: string | null; receiverFirmId: string | null; originalAmount: unknown; metadata?: unknown }) {
   const original = sumToNumber(tx.originalAmount as any);
-  if (tx.type === 'PAYMENT') return original;
-  if (tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_IN') return original;
-  if (tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_OUT') return -original;
+  const flow = resolveKassaTransactionFlow(tx);
+  if (flow === 'IN') return original;
+  if (flow === 'OUT') return -original;
   return 0;
 }
 
@@ -492,19 +555,23 @@ async function loadCardSummaries(
   firmScopeIds?: string[],
   kassaDeskId?: string,
 ) {
+  if (kassaDeskId === '__unassigned_kassir__') return [];
   const cards = (await loadPaymentCards(firmScopeIds)).filter((card) => !kassaDeskId || !card.cashDeskId || card.cashDeskId === kassaDeskId);
   const cardIds = cards.map((card) => card.id);
   const allCardTransactions = cardIds.length
     ? await prisma.transaction.findMany({
-        where: {
+        where: visibleTransactionWhere({
           paymentCardId: { in: cardIds },
           paymentMethod: 'card',
           ...(firmScopeIds ? { firmId: { in: firmScopeIds } } : {}),
-        },
+        }),
         select: {
           paymentCardId: true,
           type: true,
           direction: true,
+          firmId: true,
+          payerFirmId: true,
+          receiverFirmId: true,
           originalAmount: true,
           currency: true,
           metadata: true,
@@ -526,6 +593,7 @@ async function loadCardSummaries(
   const balances = new Map<string, Record<string, { in: number; out: number; net: number }>>();
   for (const tx of allCardTransactions) {
     if (!tx.paymentCardId) continue;
+    if (getTransactionBusinessDateKey(tx) > dayKey) continue;
     const row = balances.get(tx.paymentCardId) || {};
     addCurrencyAmount(row, tx.currency, cardFlowAmount(tx));
     balances.set(tx.paymentCardId, row);
@@ -580,7 +648,12 @@ export async function getKassaDayService(authUser: AuthUser, rawDate: unknown, i
   ]);
 
   const totals = computeDayTotals(transactions);
-  const paymentCards = await loadCardSummaries(day, transactions, firmScopeIds, kassaDeskFilter?.id);
+  const paymentCards = await loadCardSummaries(
+    day,
+    transactions,
+    firmScopeIds,
+    effectiveDeskId === '__unassigned_kassir__' ? effectiveDeskId : kassaDeskFilter?.id,
+  );
   const scopedDesks = await loadKassaDesks(firmScopeIds);
   const kassaDesks = isKassirUser(authUser) ? scopedDesks.filter((desk) => desk.id === boundDeskId) : scopedDesks;
   const deskSessions = kassaDesks.length ? await prisma.kassaDay.findMany({ where: { businessDate: day, cashDeskId: { in: kassaDesks.map((desk) => desk.id) } }, include: { openedBy: { select: { id: true, email: true } }, closedBy: { select: { id: true, email: true } } } }) : [];
@@ -599,13 +672,10 @@ export async function getKassaDayService(authUser: AuthUser, rawDate: unknown, i
     };
   });
   const status = resolveKassaDayStatus(Boolean(kassaDeskFilter), kassa?.status, deskSessions.map((row) => row.status));
-  const previousSession = kassaDeskFilter ? await findPreviousKassaSession(prisma, kassaDeskFilter.firmId, kassaDeskFilter.id, day) : null;
-  const suggestedOpeningBalance = previousSession ? resolveCarryForwardBalance(previousSession) : null;
-  const suggestedOpeningBalanceUsd = previousSession ? resolveCarryForwardBalance({
-    actualClosingBalance: previousSession.actualClosingBalanceUsd,
-    closingBalance: previousSession.closingBalanceUsd,
-    expectedCash: previousSession.expectedCashUsd,
-  }) : null;
+  const previous = kassaDeskFilter ? await findPreviousKassaRemainders(prisma, kassaDeskFilter.firmId, kassaDeskFilter.id, day) : null;
+  const previousSession = previous?.UZS.session || previous?.USD.session || null;
+  const suggestedOpeningBalance = previous?.UZS.balance ?? null;
+  const suggestedOpeningBalanceUsd = previous?.USD.balance ?? null;
   const expectedCashByCurrency = kassa ? calculateExpectedCashByCurrency(kassa, totals.byCurrency) : null;
   const expectedCash = expectedCashByCurrency?.UZS ?? null;
   const cardBalanceTotal = paymentCards.reduce((sum, card) => sum + card.balance, 0);
@@ -632,6 +702,10 @@ export async function getKassaDayService(authUser: AuthUser, rawDate: unknown, i
       previousSessionId: previousSession.id,
       previousClosedAt: previousSession.closedAt?.toISOString() || null,
       previousBusinessDate: formatBusinessDateKey(previousSession.businessDate),
+      previousBusinessDates: {
+        UZS: previous?.UZS.session ? formatBusinessDateKey(previous.UZS.session.businessDate) : null,
+        USD: previous?.USD.session ? formatBusinessDateKey(previous.USD.session.businessDate) : null,
+      },
       openingBalance: suggestedOpeningBalance != null ? String(suggestedOpeningBalance) : null,
       openingBalances: { UZS: suggestedOpeningBalance != null ? String(suggestedOpeningBalance) : '0', USD: suggestedOpeningBalanceUsd != null ? String(suggestedOpeningBalanceUsd) : '0' },
       currency: 'UZS',
@@ -667,7 +741,8 @@ export async function getKassaDayService(authUser: AuthUser, rawDate: unknown, i
 
 export async function listPaymentCardsService(authUser: AuthUser) {
   const firmScopeIds = await kassaFirmScope(authUser);
-  return loadCardSummaries(new Date(), [], firmScopeIds);
+  const boundDeskId = await getBoundKassaDeskId(authUser);
+  return loadCardSummaries(new Date(), [], firmScopeIds, isKassirUser(authUser) ? (boundDeskId || '__unassigned_kassir__') : undefined);
 }
 
 export async function createPaymentCardService(authUser: AuthUser, input: { ownerName?: unknown; cardNumber?: unknown; currency?: unknown; firmId?: unknown; cashDeskId?: unknown; openingBalance?: unknown }) {
@@ -794,7 +869,6 @@ export async function updatePaymentCardService(
 }
 
 export async function deletePaymentCardService(authUser: AuthUser, id: string, input: { reason?: unknown } = {}) {
-  const role = normalizeRole(authUser.role);
   const actorUserId = authUser.userId ? String(authUser.userId) : '';
   if (!actorUserId) {
     throw new ServiceError('Unauthorized', 401);
@@ -808,8 +882,7 @@ export async function deletePaymentCardService(authUser: AuthUser, id: string, i
     throw new ServiceError('Payment card not found', 404);
   }
 
-  const isOwnFirmAdmin = isFirmAdmin(authUser) && Boolean(authUser.firmId) && existing.firmId === authUser.firmId;
-  if (role !== 'SUPERADMIN' && !isOwnFirmAdmin) throw new ServiceError('Only superadmin or the owning firm admin can delete this card', 403);
+  if (!canDeletePaymentCard(authUser, existing)) throw new ServiceError('Only the card creator, superadmin, or the owning firm admin can delete this card', 403);
 
   const reason = typeof input.reason === 'string' && input.reason.trim() ? input.reason.trim().slice(0, 500) : null;
   if (!reason) throw new ServiceError('Delete reason is required');
@@ -892,14 +965,10 @@ export async function openKassaService(authUser: AuthUser, input: { businessDate
       throw new ServiceError('Ushbu kassa shu sana uchun allaqachon ochilgan.');
     }
 
-    const previous = await findPreviousKassaSession(tx, desk.firmId, desk.id, day);
-    const previousBalance = previous ? resolveCarryForwardBalance(previous) : null;
-    const previousBalanceUsd = previous ? resolveCarryForwardBalance({
-      actualClosingBalance: previous.actualClosingBalanceUsd,
-      closingBalance: previous.closingBalanceUsd,
-      expectedCash: previous.expectedCashUsd,
-    }) : null;
-    if (previous && previousBalance == null) throw new ServiceError('Previous closed kassa has no closing balance');
+    const previous = await findPreviousKassaRemainders(tx, desk.firmId, desk.id, day);
+    const previousBalance = previous.UZS.balance;
+    const previousBalanceUsd = previous.USD.balance;
+    const previousSession = previous.UZS.session || previous.USD.session || null;
     const resolved = resolveOpeningBalance({ previousClosingBalance: previousBalance, requestedBalance, canAdjust: canAdjustOpening, adjustmentReason });
     const resolvedUsd = resolveOpeningBalance({ previousClosingBalance: previousBalanceUsd, requestedBalance: requestedBalanceUsd, canAdjust: canAdjustOpening, adjustmentReason });
     const { automaticBalance, openingBalance } = resolved;
@@ -939,7 +1008,8 @@ export async function openKassaService(authUser: AuthUser, input: { businessDate
           firmId: desk.firmId,
           cashDeskId: desk.id,
           currency: 'UZS',
-          previousSessionId: previous?.id || null,
+          previousSessionId: previousSession?.id || null,
+          previousSessionIds: { UZS: previous.UZS.session?.id || null, USD: previous.USD.session?.id || null },
           automaticOpeningBalance: String(automaticBalance),
           automaticOpeningBalanceUsd: String(resolvedUsd.automaticBalance),
           finalOpeningBalance: String(kassa.openingBalance),
@@ -949,13 +1019,14 @@ export async function openKassaService(authUser: AuthUser, input: { businessDate
         },
       },
     });
-    return { kassa, previous, automaticBalance, automaticBalanceUsd: resolvedUsd.automaticBalance, adjusted: wantsAdjustment };
+    return { kassa, previous, previousSession, automaticBalance, automaticBalanceUsd: resolvedUsd.automaticBalance, adjusted: wantsAdjustment };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
   return {
     kassa: serializeKassa(result.kassa),
     openingAudit: {
-      previousSessionId: result.previous?.id || null,
+      previousSessionId: result.previousSession?.id || null,
+      previousSessionIds: { UZS: result.previous.UZS.session?.id || null, USD: result.previous.USD.session?.id || null },
       automaticOpeningBalance: String(result.automaticBalance),
       automaticOpeningBalanceUsd: String(result.automaticBalanceUsd),
       finalOpeningBalance: String(result.kassa.openingBalance),
@@ -987,6 +1058,8 @@ export async function closeKassaService(authUser: AuthUser, input: { businessDat
   const firmScopeIds = await kassaFirmScope(authUser);
   const desk = await resolveKassaDeskFilter(input.kassaDeskId, firmScopeIds);
   if (!desk) throw new ServiceError('Kassa desk is required');
+  const boundDeskId = await getBoundKassaDeskId(authUser);
+  if (isKassirUser(authUser) && (!boundDeskId || boundDeskId !== desk.id)) throw new ServiceError('Kassir can access only their own kassa', 403);
 
   let closingBalance: Prisma.Decimal | undefined;
   let closingBalanceUsd: Prisma.Decimal | undefined;
@@ -1131,14 +1204,23 @@ export async function reopenKassaService(authUser: AuthUser, input: { businessDa
   return { kassa: serializeKassa(updated) };
 }
 
-export async function getKassaHistoryService(input: { page?: unknown; limit?: unknown }) {
+export async function getKassaHistoryService(authUser: AuthUser, input: { page?: unknown; limit?: unknown; firmId?: unknown; kassaDeskId?: unknown }) {
   const page = Math.max(1, parseInt(String(input.page || '1'), 10) || 1);
   const limit = Math.min(50, Math.max(1, parseInt(String(input.limit || '20'), 10) || 20));
   const skip = (page - 1) * limit;
+  const firmScopeIds = await monitoringFirmScope(authUser, input.firmId);
+  const boundDeskId = await getBoundKassaDeskId(authUser);
+  const requestedDeskId = isKassirUser(authUser) ? (boundDeskId || '__unassigned_kassir__') : input.kassaDeskId;
+  const desk = requestedDeskId === '__unassigned_kassir__' ? null : await resolveKassaDeskFilter(requestedDeskId, firmScopeIds);
+  const where: Prisma.KassaDayWhereInput = {
+    ...(firmScopeIds ? { firmId: { in: firmScopeIds } } : {}),
+    ...(requestedDeskId ? { cashDeskId: desk?.id || '__unassigned_kassir__' } : {}),
+  };
 
   const [total, rows] = await Promise.all([
-    prisma.kassaDay.count(),
+    prisma.kassaDay.count({ where }),
     prisma.kassaDay.findMany({
+      where,
       orderBy: { businessDate: 'desc' },
       skip,
       take: limit,

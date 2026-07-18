@@ -9,6 +9,8 @@ import {
   listTourFlights,
   updateTourPackage,
   cancelTourPackage,
+  updateTourPackageSale,
+  deleteTourPackageSale,
 } from '../controllers/tour-packages.controller';
 import { authMiddleware } from '../middleware/auth';
 import { roleMiddleware } from '../middleware/role';
@@ -22,6 +24,8 @@ router.get('/flights', roleMiddleware(['FIRM']), listTourFlights);
 router.get('/', listTourPackages);
 router.post('/', roleMiddleware(['FIRM']), createTourPackage);
 router.get('/sales', listTourPackageSales);
+router.patch('/sales/:saleId', updateTourPackageSale);
+router.delete('/sales/:saleId', deleteTourPackageSale);
 router.put('/:id', updateTourPackage);
 router.post('/:id/cancel', cancelTourPackage);
 router.post('/:id/sell', sellTourPackage);

@@ -6,11 +6,11 @@ import { api } from '@/lib/api';
 import toast from 'react-hot-toast';
 import type { AxiosError } from 'axios';
 import { useAuth } from '@/contexts/AuthContext';
-import { ShieldCheck } from 'lucide-react';
 import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
+import ActionButtons from '@/components/ui/ActionButtons';
 
 type ApiErrorResponse = { error?: string; };
-type AcceptInviteResponse = { success?: boolean; message?: string; token?: string; user?: unknown; };
+type AcceptInviteResponse = { success?: boolean; message?: string; token?: string; user?: { role?: string; [key: string]: unknown }; };
 
 function getApiErrorMessage(error: unknown): string | undefined {
   const axiosError = error as AxiosError<ApiErrorResponse>;
@@ -49,7 +49,7 @@ function InviteContent() {
       if (!currentToken && apiToken && apiUser) {
         login(apiToken, apiUser);
         toast.success('Hisob faollashtirildi. Tizimga kirdingiz.');
-        const role = String((apiUser as any)?.role || '').toLowerCase();
+        const role = String(apiUser.role || '').toLowerCase();
         router.push(role === 'firm' ? '/firm' : '/admin');
       } else {
         toast.success('Hisob yaratildi. Iltimos login qiling.');
@@ -105,7 +105,7 @@ function InviteContent() {
               Faollashtirish
             </h1>
             <p className="mt-2 text-sm text-gray-500 font-normal">
-              Xavfsizlik uchun yangi shaxsiy parol o'rnating
+              Xavfsizlik uchun yangi shaxsiy parol o&apos;rnating
             </p>
           </div>
 
@@ -118,6 +118,7 @@ function InviteContent() {
                 id="password"
                 name="password"
                 type="password"
+                minLength={6}
                 required
                 className="block w-full rounded-lg border border-gray-200 bg-gray-50/50 px-4 py-3.5 text-gray-900 placeholder-gray-400 focus:bg-white focus:outline-none focus:border-primary focus:ring-4 focus:ring-blue-600/10 transition-all sm:text-sm"
                 placeholder="••••••••"
@@ -134,6 +135,7 @@ function InviteContent() {
                 id="confirmPassword"
                 name="confirmPassword"
                 type="password"
+                minLength={6}
                 required
                 className="block w-full rounded-lg border border-gray-200 bg-gray-50/50 px-4 py-3.5 text-gray-900 placeholder-gray-400 focus:bg-white focus:outline-none focus:border-primary focus:ring-4 focus:ring-blue-600/10 transition-all sm:text-sm"
                 placeholder="••••••••"
@@ -142,14 +144,15 @@ function InviteContent() {
               />
             </div>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="mt-4 w-full flex items-center justify-center gap-2 rounded-lg bg-primary py-3.5 px-4 text-sm font-semibold text-foreground shadow-md shadow-blue-600/20 hover:bg-blue-700 hover:shadow-lg hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-2 disabled:opacity-70 transition-all duration-200"
-            >
-              <ShieldCheck size={18} />
-              {loading ? 'Tasdiqlanmoqda...' : 'Tasdiqlash va Kirish'}
-            </button>
+            <ActionButtons
+              className="mt-4"
+              cancelLabel="Bekor qilish"
+              confirmLabel="Tasdiqlash"
+              busyLabel="Tasdiqlanmoqda..."
+              busy={loading}
+              canConfirm={Boolean(token && id && password.length >= 6 && password === confirmPassword)}
+              onCancel={() => { setPassword(''); setConfirmPassword(''); router.push('/login'); }}
+            />
           </form>
 
           <div className="mt-16 text-left">

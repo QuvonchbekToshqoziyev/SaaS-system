@@ -100,9 +100,11 @@ export const reopenKassa = async (req: Request, res: Response) => {
 
 export const getKassaHistory = async (req: Request, res: Response) => {
   try {
-    const result = await getKassaHistoryService({
+    const result = await getKassaHistoryService(getAuthUser(req), {
       page: req.query.page,
       limit: req.query.limit,
+      firmId: req.query.firmId,
+      kassaDeskId: req.query.kassaDeskId,
     });
     return res.json(result);
   } catch (err) {

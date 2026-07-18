@@ -20,12 +20,12 @@ export default function NewOperationLauncher({ role, firmRole }: { role: string;
   }, [open]);
 
   const operations: Operation[] = [
-    { label: tr('Customer paid', 'Mijoz pul to‘ladi'), description: tr('Record a cash or card payment.', 'Naqd yoki karta to‘lovini qayd eting.'), href: '/kassa#add-payment', storageKey: 'kassa-payment-card', icon: CircleDollarSign, firmRoles: ['FIRM_ADMIN', 'KASSIR'] },
+    { label: tr('Customer paid', 'Mijoz pul to‘ladi'), description: tr('Record a cash or card payment.', 'Naqd yoki karta to‘lovini qayd eting.'), href: '/kassa#add-payment', storageKey: 'kassa-payment-card', icon: CircleDollarSign, firmRoles: ['FIRM_ADMIN', 'MANAGER', 'KASSIR'] },
     { label: tr('Tour sold', 'Tur sotildi'), description: tr('Choose the tour and buyer firm.', 'Tur va xaridor firmani tanlang.'), href: '/tours#tour-sales', icon: PackageCheck, firmRoles: ['FIRM_ADMIN', 'MANAGER'] },
-    { label: tr('Cash received', 'Kassaga pul kirdi'), description: tr('Record cash income and its source.', 'Kirim va pul manbasini kiriting.'), href: '/kassa#cash-movement', storageKey: 'kassa-cash-movement-card', icon: ArrowDownToLine, firmRoles: ['FIRM_ADMIN', 'KASSIR'] },
+    { label: tr('Cash received', 'Kassaga pul kirdi'), description: tr('Record cash income and its source.', 'Kirim va pul manbasini kiriting.'), href: '/kassa#cash-movement', storageKey: 'kassa-cash-movement-card', icon: ArrowDownToLine, firmRoles: ['FIRM_ADMIN', 'MANAGER', 'KASSIR'] },
     { label: tr('Firm debt created', 'Firmaga qarz yozildi'), description: tr('Choose the firm and record its debt.', 'Firmani tanlab qarzdorlikni kiriting.'), href: '/firms#firm-list', icon: ReceiptText, firmRoles: ['FIRM_ADMIN'] },
     { label: tr('Ticket sold', 'Bilet sotildi'), description: tr('Choose a flight, then the assigned ticket.', 'Reysni, keyin ajratilgan biletni tanlang.'), href: '/flights#flight-list', icon: TicketCheck, firmRoles: ['FIRM_ADMIN', 'MANAGER'] },
-    { label: tr('Close today’s cash desk', 'Bugungi hisobni yopaman'), description: tr('Count physical cash and close the day.', 'Naqd pulni sanab kunni yoping.'), href: '/kassa#close-kassa', storageKey: 'kassa-close-card', icon: BanknoteArrowUp, firmRoles: ['FIRM_ADMIN', 'KASSIR'] },
+    { label: tr('Close today’s cash desk', 'Bugungi hisobni yopaman'), description: tr('Count physical cash and close the day.', 'Naqd pulni sanab kunni yoping.'), href: '/kassa#close-kassa', storageKey: 'kassa-close-card', icon: BanknoteArrowUp, firmRoles: ['FIRM_ADMIN', 'MANAGER', 'KASSIR'] },
   ];
   const visible = role === 'firm' ? operations.filter((item) => item.firmRoles?.includes(firmRole)) : operations;
   const choose = (operation: Operation) => {

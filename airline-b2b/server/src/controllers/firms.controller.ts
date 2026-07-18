@@ -6,6 +6,7 @@ import { canAccessFirm, canViewRelatedFirm, getRelatedFirmIds } from '../utils/a
 import { writeAuditLog } from '../utils/audit';
 import { canManageFirmWork } from '../utils/firm-user-roles';
 import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
+import { visibleTransactionWhere } from '../utils/transaction-visibility';
 
 type AuthUser = {
   userId?: string;
@@ -25,7 +26,7 @@ function sumToNumber(value: unknown): number {
 
 async function getFirmBalances(firmIds?: string[]) {
   const rows = await prisma.transaction.findMany({
-    where: {
+    where: visibleTransactionWhere({
       type: payableAndPaymentTypeFilter,
       ...(firmIds?.length
         ? {
@@ -36,7 +37,7 @@ async function getFirmBalances(firmIds?: string[]) {
             ],
           }
         : {}),
-    },
+    }),
     select: { firmId: true, payerFirmId: true, receiverFirmId: true, type: true, baseAmount: true },
   });
 

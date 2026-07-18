@@ -11,6 +11,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import CollapsibleCard from '@/components/ui/CollapsibleCard';
 import ExportActions from '@/components/ui/ExportActions';
+import ActionButtons from '@/components/ui/ActionButtons';
 import { normalizeDateParam, normalizeTxTypeParam, TRANSACTIONS_PREFS_KEY, type TransactionsPrefs } from '@/features/transactions/query';
 
 type FirmOption = {
@@ -59,6 +60,7 @@ export default function TransactionsPage() {
   const [accountDraft, setAccountDraft] = useState({ name: '', type: 'BANK', currency: 'UZS', openingBalance: '0' });
   const [accountTx, setAccountTx] = useState({ accountId: '', flow: 'IN', amount: '', category: 'OTHER', counterpartyName: '', note: '', exchangeRate: '' });
   const [savingAccount, setSavingAccount] = useState(false);
+  const [savingAccountTransaction, setSavingAccountTransaction] = useState(false);
   const [loading, setLoading] = useState(true);
   const [transactionsView, setTransactionsView] = useState<'list' | 'boxes'>('list');
   const [quickSearch, setQuickSearch] = useState('');
@@ -112,11 +114,16 @@ export default function TransactionsPage() {
   const createAccountTransaction = async (event: FormEvent) => {
     event.preventDefault();
     try {
+      setSavingAccountTransaction(true);
       await api.post('/transactions/account', { ...accountTx, amount: Number(accountTx.amount), exchangeRate: accountTx.exchangeRate || undefined });
       setAccountTx({ accountId: '', flow: 'IN', amount: '', category: 'OTHER', counterpartyName: '', note: '', exchangeRate: '' });
       setReloadKey((key) => key + 1);
       toast.success(tr('Account transaction recorded', 'Hisob tranzaksiyasi qayd etildi'));
-    } catch (error: any) { toast.error(error?.response?.data?.error || tr('Failed to record transaction', 'Tranzaksiyani qayd etib bo\'lmadi')); }
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Failed to record transaction', 'Tranzaksiyani qayd etib bo\'lmadi'));
+    } finally {
+      setSavingAccountTransaction(false);
+    }
   };
 
   // Record Payment
@@ -157,6 +164,32 @@ export default function TransactionsPage() {
   const selectedPayFirm = useMemo(() => firmOptions.find((firm) => firm.id === payFirmId), [firmOptions, payFirmId]);
   const selectedCashFirm = useMemo(() => firmOptions.find((firm) => firm.id === cashFirmId), [firmOptions, cashFirmId]);
 
+  const resetPaymentDraft = () => {
+    setPayFirmId(canFilterFirm ? filterFirmId : '');
+    setPayFlightId(filterFlightId);
+    setPayAmount('');
+    setPayCurrency('UZS');
+    setPayOtherCurrency('');
+    setPayMethod('cash');
+    setPayAllocationId('');
+    setPayCashDate(format(new Date(), 'yyyy-MM-dd'));
+    setPayCardId('');
+    setPayCardReference('');
+    setPayReference('');
+    setPayKassaDeskId(filterKassaDeskId);
+  };
+
+  const resetCashDraft = () => {
+    setCashFlow('IN');
+    setCashFirmId(canFilterFirm ? filterFirmId : '');
+    setCashCounterpartyFirmId('');
+    setCashAmount('');
+    setCashDate(format(new Date(), 'yyyy-MM-dd'));
+    setCashNote('');
+    setCashFlightId('');
+    setCashKassaDeskId(filterKassaDeskId);
+  };
+
   const canChangeOwnDailyCash = (t: any) => {
     const creatorId = String(t.createdByUserId || '');
     const currentUserId = String((user as any)?.id || (user as any)?.userId || '');
@@ -186,19 +219,6 @@ export default function TransactionsPage() {
       setReloadKey((k) => k + 1);
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to update transaction', 'Tranzaksiyani tahrirlab bo\'lmadi'));
-    }
-  };
-
-  const deleteOwnDailyCash = async (t: any) => {
-    const reason = window.prompt(tr('Why should this entry be removed?', 'Yozuvni o‘chirish sababi nima?'));
-    if (!reason?.trim()) return;
-    if (!window.confirm(tr('Delete this transaction?', 'Ushbu tranzaksiyani o\'chirasizmi?'))) return;
-    try {
-      await api.delete(`/transactions/${t.id}/daily-cash`, { data: { reason: reason.trim() } });
-      toast.success(tr('Transaction deleted', 'Tranzaksiya o\'chirildi'));
-      setReloadKey((k) => k + 1);
-    } catch (err: any) {
-      toast.error(err?.response?.data?.error || tr('Failed to delete transaction', 'Tranzaksiyani o\'chirib bo\'lmadi'));
     }
   };
 
@@ -709,30 +729,46 @@ export default function TransactionsPage() {
         }} />
       </div>
 
-      <CollapsibleCard title={tr('Firm accounts', 'Firma hisoblari')} description={tr('Cash desks, shared cards, bank and owner accounts with separate balances.', 'Kassalar, umumiy kartalar, bank va ta\'sischi hisoblari alohida qoldiq bilan.')} defaultOpen storageKey="firm-financial-accounts">
-        {canManageAccounts && <form onSubmit={createAccount} className="compact-toolbar mb-4">
-          <input className="compact-control" placeholder={tr('Account name', 'Hisob nomi')} value={accountDraft.name} onChange={(e) => setAccountDraft({ ...accountDraft, name: e.target.value })} required />
-          <select className="compact-control" value={accountDraft.type} onChange={(e) => setAccountDraft({ ...accountDraft, type: e.target.value })}><option value="BANK">{tr('Bank', 'Bank')}</option><option value="OWNER">{tr('Owner capital', 'Ta\'sischi')}</option><option value="OTHER">{tr('Other', 'Boshqa')}</option></select>
-          <select className="compact-control" value={accountDraft.currency} onChange={(e) => setAccountDraft({ ...accountDraft, currency: e.target.value })}><option>UZS</option><option>USD</option></select>
-          <input className="compact-control" type="number" step="0.01" value={accountDraft.openingBalance} onChange={(e) => setAccountDraft({ ...accountDraft, openingBalance: e.target.value })} />
-          <button disabled={savingAccount} className="rounded bg-primary px-4 py-2 font-semibold text-primary-foreground disabled:opacity-50">{tr('Create account', 'Hisob yaratish')}</button>
+      <CollapsibleCard collapsible tone="finance" title={tr('Firm accounts', 'Firma hisoblari')} description={tr('Cash desks, shared cards, bank and owner accounts with separate balances.', 'Kassalar, umumiy kartalar, bank va ta\'sischi hisoblari alohida qoldiq bilan.')} defaultOpen storageKey="firm-financial-accounts">
+        {canManageAccounts && <form onSubmit={createAccount} className="operation-form form-grid mb-4">
+          <label className="form-field--wide"><span className="compact-label">{tr('Account name', 'Hisob nomi')}</span><input name="accountName" autoComplete="off" className="compact-control" placeholder={tr('For example: Main bank', 'Masalan: Asosiy bank')} value={accountDraft.name} onChange={(e) => setAccountDraft({ ...accountDraft, name: e.target.value })} required /></label>
+          <label><span className="compact-label">{tr('Account type', 'Hisob turi')}</span><select name="accountType" className="compact-control" value={accountDraft.type} onChange={(e) => setAccountDraft({ ...accountDraft, type: e.target.value })}><option value="BANK">{tr('Bank', 'Bank')}</option><option value="OWNER">{tr('Owner capital', 'Ta\'sischi')}</option><option value="OTHER">{tr('Other', 'Boshqa')}</option></select></label>
+          <label className="form-field--compact"><span className="compact-label">{tr('Currency', 'Valyuta')}</span><select name="accountCurrency" className="compact-control" value={accountDraft.currency} onChange={(e) => setAccountDraft({ ...accountDraft, currency: e.target.value })}><option>UZS</option><option>USD</option></select></label>
+          <label className="form-field--compact"><span className="compact-label">{tr('Opening balance', 'Boshlang‘ich qoldiq')}</span><input name="accountOpeningBalance" autoComplete="off" inputMode="decimal" className="compact-control text-right" type="number" step="0.01" value={accountDraft.openingBalance} onChange={(e) => setAccountDraft({ ...accountDraft, openingBalance: e.target.value })} /></label>
+          <ActionButtons
+            cancelLabel={tr('Cancel', 'Bekor qilish')}
+            confirmLabel={tr('Create account', 'Hisob yaratish')}
+            busyLabel={tr('Creating...', 'Yaratilmoqda...')}
+            busy={savingAccount}
+            canConfirm={Boolean(accountDraft.name.trim() && /^[A-Z]{3}$/.test(accountDraft.currency.trim().toUpperCase()) && Number.isFinite(Number(accountDraft.openingBalance)))}
+            onCancel={() => setAccountDraft({ name: '', type: 'BANK', currency: 'UZS', openingBalance: '0' })}
+          />
         </form>}
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{accounts.map((account) => <div key={account.id} className="rounded-md border border-border bg-surface-2 p-3"><div className="text-xs font-semibold uppercase text-muted">{account.type}</div><div className="font-semibold">{account.name}</div><div className="mt-2 font-mono text-lg">{Number(account.balance || 0).toLocaleString()} {account.currency}</div></div>)}</div>
-        {canManageAccounts && <form onSubmit={createAccountTransaction} className="compact-toolbar mt-4 border-t border-border pt-4">
-          <select className="compact-control" value={accountTx.accountId} onChange={(e) => setAccountTx({ ...accountTx, accountId: e.target.value })} required><option value="">{tr('Select account', 'Hisobni tanlang')}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} ({account.currency})</option>)}</select>
-          <select className="compact-control" value={accountTx.flow} onChange={(e) => setAccountTx({ ...accountTx, flow: e.target.value })}><option value="IN">{tr('Money in', 'Kirim')}</option><option value="OUT">{tr('Money out', 'Chiqim')}</option></select>
-          <input className="compact-control" placeholder={accountTx.flow === 'IN' ? tr('From whom?', 'Kimdan?') : tr('To whom?', 'Kimga?')} value={accountTx.counterpartyName} onChange={(e) => setAccountTx({ ...accountTx, counterpartyName: e.target.value })} required />
-          <select className="compact-control" value={accountTx.category} onChange={(e) => setAccountTx({ ...accountTx, category: e.target.value })}><option value="OTHER">{tr('Other', 'Boshqa')}</option><option value="OWNER_INVESTMENT">{tr('Owner investment', 'Ta\'sischi mablag\'i')}</option><option value="LOAN">{tr('Loan', 'Qarz mablag\'i')}</option><option value="BANK">{tr('Bank operation', 'Bank operatsiyasi')}</option></select>
-          <input className="compact-control" type="number" min="0.01" step="0.01" placeholder={tr('Amount', 'Summa')} value={accountTx.amount} onChange={(e) => setAccountTx({ ...accountTx, amount: e.target.value })} required />
-          {accounts.find((account) => account.id === accountTx.accountId)?.currency === 'USD' && <input className="compact-control" inputMode="decimal" placeholder={tr('Firm rate (optional)', 'Firma kursi (ixtiyoriy)')} value={accountTx.exchangeRate} onChange={(e) => setAccountTx({ ...accountTx, exchangeRate: e.target.value })} />}
-          <input className="compact-control" placeholder={tr('Note', 'Izoh')} value={accountTx.note} onChange={(e) => setAccountTx({ ...accountTx, note: e.target.value })} />
-          <div className="text-xs font-semibold text-muted">{accountTx.flow === 'IN' ? `${accountTx.counterpartyName || 'Kimdan'} → ${accounts.find((a) => a.id === accountTx.accountId)?.name || 'Hisob'}` : `${accounts.find((a) => a.id === accountTx.accountId)?.name || 'Hisob'} → ${accountTx.counterpartyName || 'Kimga'}`}</div>
-          <button className="rounded bg-primary px-4 py-2 font-semibold text-primary-foreground">{tr('Record', 'Qayd etish')}</button>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{accounts.map((account) => <div key={account.id} data-account-type={account.type} className="account-card p-4"><div className="text-xs font-semibold uppercase tracking-wide text-muted">{account.type}</div><div className="mt-1 font-semibold">{account.name}</div><div className="data-value mt-3 text-lg font-semibold">{Number(account.balance || 0).toLocaleString()} {account.currency}</div></div>)}</div>
+        {canManageAccounts && <form onSubmit={createAccountTransaction} className="operation-form form-grid mt-4">
+          <div className="form-heading"><div><h3 className="form-heading__title">{tr('Record an account movement', 'Hisob harakatini qayd etish')}</h3><p className="form-heading__description">{tr('Use this for owner capital, bank operations and other non-Kassa movements.', 'Ta’sischi mablag‘i, bank operatsiyasi va Kassa bo‘lmagan boshqa harakatlar uchun ishlating.')}</p></div></div>
+          <label className="form-field--wide"><span className="compact-label">{tr('Account', 'Hisob')}</span><select name="accountTransactionAccount" className="compact-control" value={accountTx.accountId} onChange={(e) => setAccountTx({ ...accountTx, accountId: e.target.value })} required><option value="">{tr('Select account', 'Hisobni tanlang')}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} ({account.currency})</option>)}</select></label>
+          <label className="form-field--compact"><span className="compact-label">{tr('Direction', 'Yo‘nalish')}</span><select name="accountTransactionFlow" className="compact-control" value={accountTx.flow} onChange={(e) => setAccountTx({ ...accountTx, flow: e.target.value })}><option value="IN">{tr('Money in', 'Kirim')}</option><option value="OUT">{tr('Money out', 'Chiqim')}</option></select></label>
+          <label className="form-field--wide"><span className="compact-label">{accountTx.flow === 'IN' ? tr('From whom?', 'Kimdan?') : tr('To whom?', 'Kimga?')}</span><input name="accountTransactionCounterparty" autoComplete="off" className="compact-control" placeholder={tr('Counterparty name…', 'Kontragent nomi…')} value={accountTx.counterpartyName} onChange={(e) => setAccountTx({ ...accountTx, counterpartyName: e.target.value })} required /></label>
+          <label><span className="compact-label">{tr('Category', 'Kategoriya')}</span><select name="accountTransactionCategory" className="compact-control" value={accountTx.category} onChange={(e) => setAccountTx({ ...accountTx, category: e.target.value })}><option value="OTHER">{tr('Other', 'Boshqa')}</option><option value="OWNER_INVESTMENT">{tr('Owner investment', 'Ta\'sischi mablag\'i')}</option><option value="LOAN">{tr('Loan', 'Qarz mablag\'i')}</option><option value="BANK">{tr('Bank operation', 'Bank operatsiyasi')}</option></select></label>
+          <label className="form-field--compact"><span className="compact-label">{tr('Amount', 'Summa')}</span><input name="accountTransactionAmount" autoComplete="off" inputMode="decimal" className="compact-control text-right" type="number" min="0.01" step="0.01" placeholder="0.00" value={accountTx.amount} onChange={(e) => setAccountTx({ ...accountTx, amount: e.target.value })} required /></label>
+          {accounts.find((account) => account.id === accountTx.accountId)?.currency === 'USD' && <label className="form-field--compact"><span className="compact-label">{tr('Firm rate (optional)', 'Firma kursi (ixtiyoriy)')}</span><input name="accountTransactionExchangeRate" autoComplete="off" className="compact-control text-right" inputMode="decimal" placeholder={tr('For example: 12 700', 'Masalan: 12 700')} value={accountTx.exchangeRate} onChange={(e) => setAccountTx({ ...accountTx, exchangeRate: e.target.value })} /></label>}
+          <label className="form-field--full"><span className="compact-label">{tr('Note (optional)', 'Izoh (ixtiyoriy)')}</span><textarea name="accountTransactionNote" autoComplete="off" className="compact-control" rows={3} placeholder={tr('Describe this account movement…', 'Ushbu hisob harakatini batafsil yozing…')} value={accountTx.note} onChange={(e) => setAccountTx({ ...accountTx, note: e.target.value })} /></label>
+          <div className="form-preview">{accountTx.flow === 'IN' ? `${accountTx.counterpartyName || 'Kimdan'} → ${accounts.find((a) => a.id === accountTx.accountId)?.name || 'Hisob'}` : `${accounts.find((a) => a.id === accountTx.accountId)?.name || 'Hisob'} → ${accountTx.counterpartyName || 'Kimga'}`}</div>
+          <ActionButtons
+            cancelLabel={tr('Cancel', 'Bekor qilish')}
+            confirmLabel={tr('Record', 'Qayd etish')}
+            busyLabel={tr('Recording...', 'Qayd etilmoqda...')}
+            busy={savingAccountTransaction}
+            canConfirm={Boolean(accountTx.accountId && accountTx.counterpartyName.trim() && Number(accountTx.amount) > 0)}
+            onCancel={() => setAccountTx({ accountId: '', flow: 'IN', amount: '', category: 'OTHER', counterpartyName: '', note: '', exchangeRate: '' })}
+          />
         </form>}
       </CollapsibleCard>
 
       {canCreateTransaction && (
         <CollapsibleCard
+          tone="finance"
           title={tr('Record payment', "To'lovni qayd etish")}
           description={
             <>
@@ -743,13 +779,14 @@ export default function TransactionsPage() {
             </>
           }
           defaultOpen={false}
+          collapsible
           storageKey="jetstream-transactions-record-payment-open"
           className="shadow sm:rounded-lg"
         >
-          <form onSubmit={submitPayment} className="compact-toolbar">
-          <div className="rounded border border-border bg-surface-2 px-3 py-2 text-sm font-semibold">{tr('From', 'Kimdan')}: {selectedPayFirm?.name || tr('Your firm', 'Sizning firmangiz')} → {tr('To', 'Kimga')}: {tr('Admin / airline', 'Admin / aviakompaniya')}</div>
+          <form onSubmit={submitPayment} className="operation-form form-grid">
+          <div className="form-preview">{tr('From', 'Kimdan')}: {selectedPayFirm?.name || tr('Your firm', 'Sizning firmangiz')} → {tr('To', 'Kimga')}: {tr('Admin / airline', 'Admin / aviakompaniya')}</div>
           {canFilterFirm && (
-            <div>
+            <div className="form-field form-field--wide">
               <label htmlFor="payFirm" className="compact-label">{tr('Firm', 'Firma')}</label>
               <select
                 id="payFirm"
@@ -766,7 +803,7 @@ export default function TransactionsPage() {
             </div>
           )}
 
-          <div>
+          <div className="form-field form-field--wide">
             <label htmlFor="payFlight" className="compact-label">{tr('Flight (optional)', 'Reys (ixtiyoriy)')}</label>
             <select
               id="payFlight"
@@ -787,13 +824,13 @@ export default function TransactionsPage() {
             </select>
           </div>
 
-          <div>
+          <div className="form-field form-field--compact">
             <label htmlFor="payAmount" className="compact-label">{tr('Amount', 'Summa')}</label>
             <input
               id="payAmount"
               type="number"
               step="0.01"
-              min="0"
+              min="0.01"
               value={payAmount}
               onChange={(e) => setPayAmount(e.target.value)}
               placeholder="0.00"
@@ -802,7 +839,7 @@ export default function TransactionsPage() {
             />
           </div>
 
-          <div>
+          <div className="form-field form-field--compact">
             <label htmlFor="payCurrency" className="compact-label">{tr('Currency', 'Valyuta')}</label>
             <select
               id="payCurrency"
@@ -820,7 +857,7 @@ export default function TransactionsPage() {
           </div>
 
           {payCurrency === 'OTHER' && (
-            <div>
+            <div className="form-field form-field--compact">
               <label htmlFor="payOtherCurrency" className="compact-label">{tr('Other currency', 'Boshqa valyuta')}</label>
               <input
                 id="payOtherCurrency"
@@ -833,7 +870,7 @@ export default function TransactionsPage() {
             </div>
           )}
 
-          <div>
+          <div className="form-field form-field--compact">
             <label htmlFor="payMethod" className="compact-label">{tr('Method', 'Usul')}</label>
             <select
               id="payMethod"
@@ -852,23 +889,24 @@ export default function TransactionsPage() {
             </select>
           </div>
 
-          <div>
-            <label htmlFor="payReference" className="compact-label">{tr('Reference (optional)', 'Izoh (ixtiyoriy)')}</label>
-            <input
+          <label className="form-field--full">
+            <span className="compact-label">{tr('Reference and payment note (optional)', 'To‘lov raqami va izoh (ixtiyoriy)')}</span>
+            <textarea
               id="payReference"
+              rows={3}
               value={payReference}
               onChange={(e) => setPayReference(e.target.value)}
-              placeholder={tr('Receipt / note', 'Kvitansiya / izoh')}
+              placeholder={tr('Receipt number, payment purpose or other details…', 'Kvitansiya raqami, to‘lov maqsadi yoki boshqa tafsilotlar…')}
               className="compact-control"
             />
-          </div>
+          </label>
 
-          <div>
+          <div className="form-field form-field--wide">
             <label htmlFor="payAllocationId" className="compact-label">{tr('Allocation ID (optional)', 'Ajratma ID (ixtiyoriy)')}</label>
             <input id="payAllocationId" value={payAllocationId} onChange={(e) => setPayAllocationId(e.target.value)} placeholder={tr('Links payment to debt', 'To‘lovni qarzga bog‘laydi')} className="compact-control" />
           </div>
 
-          <div>
+          <div className="form-field form-field--wide">
             <label htmlFor="payKassaDesk" className="compact-label">{tr('Kassa desk', 'Kassa')}</label>
             <select
               id="payKassaDesk"
@@ -884,7 +922,7 @@ export default function TransactionsPage() {
           </div>
 
           {payMethod === 'cash' && (
-            <div>
+            <div className="form-field form-field--compact">
               <label htmlFor="payCashDate" className="compact-label">{tr('Cash date', 'Naqd sana')}</label>
               <input
                 id="payCashDate"
@@ -899,7 +937,7 @@ export default function TransactionsPage() {
 
           {payMethod === 'card' && (
             <>
-              <div>
+              <div className="form-field form-field--wide">
                 <label htmlFor="payCardId" className="compact-label">{tr('Card', 'Karta')}</label>
                 <select
                   id="payCardId"
@@ -920,7 +958,7 @@ export default function TransactionsPage() {
                 </select>
               </div>
 
-              <div>
+              <div className="form-field form-field--wide">
                 <label htmlFor="payCardReference" className="compact-label">{tr('Transaction reference (optional)', 'Tranzaksiya raqami (ixtiyoriy)')}</label>
                 <input
                   id="payCardReference"
@@ -933,20 +971,27 @@ export default function TransactionsPage() {
             </>
           )}
 
-          <div className="sm:col-span-2 lg:col-span-3 xl:col-span-4">
-            <div className="mb-2 text-xs text-muted">
+          <div className="form-field--full">
+            <div className="form-preview mb-3">
               {tr('Preview:', 'Ko\'rinish:')} {Number.isFinite(payAmountNum) && payAmountNum > 0 ? payAmountNum.toFixed(2) : '0.00'} {payCurrencyCode || 'UZS'}
               {' · '}
               {tr('No exchange conversion will be applied.', 'Valyuta kursiga aylantirilmaydi.')}
             </div>
 
-            <button
-              type="submit"
-              disabled={recordingPayment}
-              className="inline-flex items-center justify-center px-4 py-2 rounded-md bg-indigo-600 text-white font-medium hover:bg-indigo-700 disabled:opacity-50"
-            >
-              {recordingPayment ? tr('Recording...', 'Qayd etilmoqda...') : tr('Record payment', "To'lovni qayd etish")}
-            </button>
+            <ActionButtons
+              cancelLabel={tr('Cancel', 'Bekor qilish')}
+              confirmLabel={tr('Record payment', "To'lovni qayd etish")}
+              busyLabel={tr('Recording...', 'Qayd etilmoqda...')}
+              busy={recordingPayment}
+              canConfirm={Boolean(
+                (!canFilterFirm || payFirmId)
+                && payAmountNum > 0
+                && /^[A-Z]{3}$/.test(payCurrencyCode)
+                && (payMethod !== 'cash' || payCashDate)
+                && (payMethod !== 'card' || (payCardId && (!selectedPayCard?.currency || selectedPayCard.currency === payCurrencyCode)))
+              )}
+              onCancel={resetPaymentDraft}
+            />
           </div>
           </form>
         </CollapsibleCard>
@@ -954,21 +999,23 @@ export default function TransactionsPage() {
 
       {canCreateTransaction && (
         <CollapsibleCard
+          tone="success"
           title={tr('Cash income / expense', 'Kassa kirim / chiqim')}
           description={tr('Create a manual cash-in or cash-out transaction.', 'Qo\'lda kassa kirim yoki chiqim tranzaksiyasini yarating.')}
           defaultOpen={false}
+          collapsible
           storageKey="jetstream-transactions-cash-movement-open"
           className="shadow sm:rounded-lg"
         >
-          <form onSubmit={submitCashMovement} className="compact-toolbar">
-            <div>
+          <form onSubmit={submitCashMovement} className="operation-form form-grid">
+            <div className="form-field form-field--compact">
               <label htmlFor="cashFlow" className="compact-label">{tr('Type', 'Turi')}</label>
               <select id="cashFlow" value={cashFlow} onChange={(e) => setCashFlow(e.target.value as 'IN' | 'OUT')} className="compact-control">
                 <option value="IN">{tr('Income', 'Kirim')}</option>
                 <option value="OUT">{tr('Expense', 'Chiqim')}</option>
               </select>
             </div>
-            {canFilterFirm && <div>
+            {canFilterFirm && <div className="form-field form-field--wide">
               <label htmlFor="cashFirm" className="compact-label">{tr('Firm', 'Firma')}</label>
               <select id="cashFirm" value={cashFirmId} onChange={(e) => setCashFirmId(e.target.value)} className="compact-control" required>
                 <option value="">{tr('Select', 'Tanlang')}</option>
@@ -977,14 +1024,14 @@ export default function TransactionsPage() {
                 ))}
               </select>
             </div>}
-            <div>
+            <div className="form-field form-field--wide">
               <label htmlFor="cashCounterparty" className="compact-label">{cashFlow === 'IN' ? tr('From whom?', 'Kimdan?') : tr('To whom?', 'Kimga?')}</label>
               <select id="cashCounterparty" value={cashCounterpartyFirmId} onChange={(e) => setCashCounterpartyFirmId(e.target.value)} className="compact-control">
                 <option value="">{tr('Other / not specified', 'Boshqa / ko\'rsatilmagan')}</option>
                 {firmOptions.filter((f) => f.id !== (cashFirmId || user?.firmId)).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
               </select>
             </div>
-            <div>
+            <div className="form-field form-field--wide">
               <label htmlFor="cashKassaDesk" className="compact-label">{tr('Kassa desk', 'Kassa')}</label>
               <select
                 id="cashKassaDesk"
@@ -998,7 +1045,7 @@ export default function TransactionsPage() {
                 ))}
               </select>
             </div>
-            <div>
+            <div className="form-field form-field--wide">
               <label htmlFor="cashFlight" className="compact-label">{tr('Flight (optional)', 'Reys (ixtiyoriy)')}</label>
               <select id="cashFlight" value={cashFlightId} onChange={(e) => setCashFlightId(e.target.value)} className="compact-control">
                 <option value="">{tr('No flight', 'Reyssiz')}</option>
@@ -1008,23 +1055,23 @@ export default function TransactionsPage() {
                 })}
               </select>
             </div>
-            <div>
+            <div className="form-field form-field--compact">
               <label htmlFor="cashDate" className="compact-label">{tr('Date', 'Sana')}</label>
               <input id="cashDate" type="date" value={cashDate} onChange={(e) => setCashDate(e.target.value)} className="compact-control" required />
             </div>
-            <div>
+            <div className="form-field form-field--compact">
               <label htmlFor="cashAmount" className="compact-label">{tr('Amount', 'Summa')} ({selectedCashFirm?.currency || 'UZS'})</label>
-              <input id="cashAmount" inputMode="decimal" value={cashAmount} onChange={(e) => setCashAmount(e.target.value)} className="compact-control" required />
+              <input id="cashAmount" type="number" inputMode="decimal" min="0.01" step="0.01" value={cashAmount} onChange={(e) => setCashAmount(e.target.value)} className="compact-control" required />
             </div>
-            <div>
-              <label htmlFor="cashNote" className="compact-label">{tr('Note', 'Izoh')}</label>
-              <input id="cashNote" value={cashNote} onChange={(e) => setCashNote(e.target.value)} className="compact-control" />
-            </div>
-            <div className="flex items-end">
-              <button type="submit" disabled={recordingCash} className="inline-flex items-center justify-center px-4 py-2 rounded-md bg-primary text-ink font-medium hover:bg-primary/90 disabled:opacity-50">
-                {recordingCash ? tr('Recording...', 'Qayd etilmoqda...') : tr('Record', 'Qayd etish')}
-              </button>
-            </div>
+            <label className="form-field--full"><span className="compact-label">{tr('Note and cash details', 'Izoh va kassa tafsilotlari')}</span><textarea id="cashNote" rows={3} value={cashNote} onChange={(e) => setCashNote(e.target.value)} placeholder={tr('Describe the purpose of this cash movement…', 'Ushbu kassa harakatining maqsadini batafsil yozing…')} className="compact-control" /></label>
+            <ActionButtons
+              cancelLabel={tr('Cancel', 'Bekor qilish')}
+              confirmLabel={tr('Record', 'Qayd etish')}
+              busyLabel={tr('Recording...', 'Qayd etilmoqda...')}
+              busy={recordingCash}
+              canConfirm={Boolean((!canFilterFirm || cashFirmId) && Number(cashAmount) > 0 && cashDate)}
+              onCancel={resetCashDraft}
+            />
           </form>
         </CollapsibleCard>
       )}
@@ -1145,7 +1192,7 @@ export default function TransactionsPage() {
               className="compact-control"
             />
           </div>
-          <div><label className="compact-label">{tr('Source', 'Manba')}</label><select className="compact-control" value={filterSourceMode} onChange={(e) => { setFilterSourceMode(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option><option value="AUTO_ALLOCATION">AUTO_ALLOCATION</option><option value="AUTO_TICKET_SALE">AUTO_TICKET_SALE</option><option value="AUTO_TOUR_SALE">AUTO_TOUR_SALE</option><option value="AUTO_DEBT_ADJUSTMENT">AUTO_DEBT_ADJUSTMENT</option><option value="MANUAL_CASH">MANUAL_CASH</option><option value="MANUAL_CARD">MANUAL_CARD</option><option value="MANUAL_BANK">MANUAL_BANK</option><option value="REVERSAL">REVERSAL</option></select></div>
+          <div><label className="compact-label">{tr('Source', 'Manba')}</label><select className="compact-control" value={filterSourceMode} onChange={(e) => { setFilterSourceMode(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option><option value="AUTO_TICKET_SALE">AUTO_TICKET_SALE</option><option value="AUTO_TOUR_SALE">AUTO_TOUR_SALE</option><option value="HISTORICAL_IMPORT">HISTORICAL_IMPORT</option><option value="MANUAL_CASH">MANUAL_CASH</option><option value="MANUAL_CARD">MANUAL_CARD</option><option value="MANUAL_BANK">MANUAL_BANK</option><option value="REVERSAL">REVERSAL</option></select></div>
           <div><label className="compact-label">{tr('Status', 'Holat')}</label><select className="compact-control" value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option><option value="CONFIRMED">CONFIRMED</option><option value="PENDING">PENDING</option><option value="REVERSED">REVERSED</option></select></div>
           <div><label className="compact-label">{tr('Payment method', 'To‘lov usuli')}</label><select className="compact-control" value={filterPaymentMethod} onChange={(e) => { setFilterPaymentMethod(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option><option value="cash">{tr('Cash', 'Naqd')}</option><option value="card">{tr('Card', 'Karta')}</option><option value="bank">{tr('Bank', 'Bank')}</option></select></div>
           <div><label className="compact-label">{tr('Payment card', 'To‘lov kartasi')}</label><select className="compact-control" value={filterPaymentCardId} onChange={(e) => { setFilterPaymentCardId(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option>{paymentCards.map((card) => <option key={card.id} value={card.id}>{card.ownerName} · {card.cardNumber}</option>)}</select></div>

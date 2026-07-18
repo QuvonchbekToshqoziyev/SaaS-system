@@ -5,11 +5,12 @@ import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { Plus, Save, Trash2, X } from 'lucide-react';
+import { Save, Trash2, X } from 'lucide-react';
 import type { AxiosError } from 'axios';
 import Link from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import ExportActions from '@/components/ui/ExportActions';
+import ActionButtons from '@/components/ui/ActionButtons';
 
 type ApiErrorResponse = {
   error?: string;
@@ -111,6 +112,12 @@ export default function FirmsPage() {
   const [createdFirmId, setCreatedFirmId] = useState<string | null>(null);
   const [connectionDraft, setConnectionDraft] = useState({ airlineFirmId: '', firmId: '' });
   const [savingConnection, setSavingConnection] = useState(false);
+
+  const resetCreateFirm = () => {
+    setFirmName(''); setEmail(''); setInitialPassword(''); setContactFullName(''); setPhone('');
+    setSubscriptionDays('30'); setPriorBalanceAmount(''); setPriorBalanceCurrency('UZS');
+    setPriorBalanceDirection('DEBT'); setPriorBalanceCounterpartyFirmId(''); setPriorBalanceExchangeRate('');
+  };
 
   const closeModal = () => {
     setInviteLink(null);
@@ -535,6 +542,7 @@ export default function FirmsPage() {
                   value={initialPassword}
                   onChange={(e) => setInitialPassword(e.target.value)}
                   type="password"
+                  minLength={6}
                   className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
                   placeholder="••••••••"
                   required
@@ -568,7 +576,8 @@ export default function FirmsPage() {
           <div>
             <label className="block text-sm font-medium text-muted mb-1">{tr('Subscription duration (days)', 'Obuna muddati (kun)')}</label>
             <input
-              inputMode="numeric"
+              type="number"
+              min="1"
               value={subscriptionDays}
               onChange={(e) => setSubscriptionDays(e.target.value)}
               className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition"
@@ -582,7 +591,7 @@ export default function FirmsPage() {
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div>
                 <label className="compact-label">{tr('Amount', 'Summa')}</label>
-                <input inputMode="decimal" value={priorBalanceAmount} onChange={(e) => setPriorBalanceAmount(e.target.value)} className="compact-control" placeholder="0" />
+                <input type="number" min="0.01" step="0.01" value={priorBalanceAmount} onChange={(e) => setPriorBalanceAmount(e.target.value)} className="compact-control" placeholder="0" />
               </div>
               <div>
                 <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
@@ -607,24 +616,20 @@ export default function FirmsPage() {
               {priorBalanceCurrency.trim().toUpperCase() !== 'UZS' && (
                 <div>
                   <label className="compact-label">{tr('Rate to UZS', 'UZS kursi')}</label>
-                  <input inputMode="decimal" value={priorBalanceExchangeRate} onChange={(e) => setPriorBalanceExchangeRate(e.target.value)} className="compact-control" placeholder="12600" />
+                  <input type="number" min="0.000001" step="any" value={priorBalanceExchangeRate} onChange={(e) => setPriorBalanceExchangeRate(e.target.value)} className="compact-control" placeholder="12600" required={Boolean(priorBalanceAmount.trim())} />
                 </div>
               )}
             </div>
           </div>
 
-          <button
-            type="submit"
-            disabled={submitting}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Plus size={18} />
-            {submitting
-              ? tr('Creating...', 'Yaratilmoqda...')
-              : isSuperAdmin
-                ? tr('Create firm & generate link', 'Firma yaratish va taklif havolasini yaratish')
-                : tr('Add firm', 'Firma qo\'shish')}
-          </button>
+          <ActionButtons
+            cancelLabel={tr('Cancel', 'Bekor qilish')}
+            confirmLabel={tr('Confirm', 'Tasdiqlash')}
+            busyLabel={tr('Creating...', 'Yaratilmoqda...')}
+            busy={submitting}
+            canConfirm={!priorBalanceAmount.trim() || (Number(priorBalanceAmount) > 0 && (priorBalanceCurrency.trim().toUpperCase() === 'UZS' || Number(priorBalanceExchangeRate) > 0))}
+            onCancel={resetCreateFirm}
+          />
         </form>
       </div>
 
@@ -637,7 +642,7 @@ export default function FirmsPage() {
           <form onSubmit={saveAirlineConnection} className="compact-toolbar">
             <div>
               <label className="compact-label">{tr('Airline', 'Aviakompaniya')}</label>
-              <select value={connectionDraft.airlineFirmId} onChange={(e) => setConnectionDraft({ ...connectionDraft, airlineFirmId: e.target.value })} className="compact-control">
+              <select value={connectionDraft.airlineFirmId} onChange={(e) => setConnectionDraft({ ...connectionDraft, airlineFirmId: e.target.value })} className="compact-control" required>
                 <option value="">{tr('Select airline', 'Aviakompaniyani tanlang')}</option>
                 {airlines.filter((airline) => airline.firmId).map((airline) => (
                   <option key={airline.id} value={airline.firmId || ''}>{airline.name}</option>
@@ -646,19 +651,21 @@ export default function FirmsPage() {
             </div>
             <div>
               <label className="compact-label">{tr('Firm', 'Firma')}</label>
-              <select value={connectionDraft.firmId} onChange={(e) => setConnectionDraft({ ...connectionDraft, firmId: e.target.value })} className="compact-control">
+              <select value={connectionDraft.firmId} onChange={(e) => setConnectionDraft({ ...connectionDraft, firmId: e.target.value })} className="compact-control" required>
                 <option value="">{tr('Select firm', 'Firmani tanlang')}</option>
                 {(firms || []).filter((firm) => firm.kind !== 'AIRLINE').map((firm) => (
                   <option key={firm.id} value={firm.id}>{firm.name}{firm.kind === 'CONTRACTOR' ? ` · ${tr('Contractor', 'Pudratchi')}` : ''}</option>
                 ))}
               </select>
             </div>
-            <div className="flex items-end">
-              <button type="submit" disabled={savingConnection} className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold uppercase tracking-wide text-ink hover:bg-primary/90 disabled:opacity-50">
-                <Plus size={16} />
-                {savingConnection ? tr('Saving...', 'Saqlanmoqda...') : tr('Connect', 'Ulash')}
-              </button>
-            </div>
+            <ActionButtons
+              className="col-span-full"
+              cancelLabel={tr('Cancel', 'Bekor qilish')}
+              confirmLabel={tr('Confirm', 'Tasdiqlash')}
+              busyLabel={tr('Saving...', 'Saqlanmoqda...')}
+              busy={savingConnection}
+              onCancel={() => setConnectionDraft({ airlineFirmId: '', firmId: '' })}
+            />
           </form>
           <div className="mt-4 grid gap-2 md:grid-cols-2">
             {airlineConnections.length === 0 ? (
@@ -826,12 +833,33 @@ export default function FirmsPage() {
                       {isSuperAdmin && (
                         <button
                           type="button"
+                          onClick={() => setFirmDrafts((drafts) => { const next = { ...drafts }; delete next[firm.id]; return next; })}
+                          className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface"
+                        >
+                          {tr('Cancel', 'Bekor qilish')}
+                        </button>
+                      )}
+                      {isSuperAdmin && (
+                        <button
+                          type="button"
                           onClick={() => saveFirm(firm)}
-                          disabled={savingCreditFirmId === firm.id}
+                          disabled={
+                            savingCreditFirmId === firm.id
+                            || !draft.name.trim()
+                            || !Number.isFinite(Number(draft.creditLimit))
+                            || Number(draft.creditLimit) < 0
+                            || !/^[A-Z]{3}$/.test(draft.currency.trim().toUpperCase())
+                            || !/^[A-Z]{3}$/.test(draft.balanceAdjustmentCurrency.trim().toUpperCase())
+                            || (Boolean(draft.balanceAdjustmentAmount.trim()) && (
+                              !Number.isFinite(Number(draft.balanceAdjustmentAmount))
+                              || Number(draft.balanceAdjustmentAmount) <= 0
+                              || (draft.balanceAdjustmentCurrency.trim().toUpperCase() !== 'UZS' && Number(draft.balanceAdjustmentExchangeRate) <= 0)
+                            ))
+                          }
                           className="inline-flex items-center gap-1 border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50"
                         >
                           <Save size={14} />
-                          {savingCreditFirmId === firm.id ? tr('Saving', 'Saqlanmoqda') : tr('Update', 'Yangilash')}
+                          {savingCreditFirmId === firm.id ? tr('Saving', 'Saqlanmoqda') : tr('Confirm', 'Tasdiqlash')}
                         </button>
                       )}
                       <Link href={`/transactions?firmId=${encodeURIComponent(firm.id)}`} className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface">

@@ -136,6 +136,7 @@ model User {
   fullName                        String?
   phone                           String?
   role                            Role                      @default(FIRM)
+  readOnlyAccess                  Boolean                   @default(false)
   firmRole                        FirmUserRole              @default(MANAGER)
   status                          String                    @default("ACTIVE")
   firmId                          String?
@@ -1039,25 +1040,31 @@ model TourComponent {
 }
 
 model TourPackageSale {
-  id            String       @id @default(uuid())
-  packageId     String
-  package       TourPackage  @relation(fields: [packageId], references: [id])
-  sellerFirmId  String
-  sellerFirm    Firm         @relation("TourPackageSeller", fields: [sellerFirmId], references: [id])
-  buyerFirmId   String
-  buyerFirm     Firm         @relation("TourPackageBuyer", fields: [buyerFirmId], references: [id])
-  quantity      Int
-  unitPrice     Decimal      @db.Decimal(18, 4)
-  currency      String
-  totalAmount   Decimal      @db.Decimal(18, 4)
-  transactionId String?      @unique
-  transaction   Transaction? @relation(fields: [transactionId], references: [id])
-  notes         String?
-  createdAt     DateTime     @default(now())
+  id              String       @id @default(uuid())
+  packageId       String
+  package         TourPackage  @relation(fields: [packageId], references: [id])
+  sellerFirmId    String
+  sellerFirm      Firm         @relation("TourPackageSeller", fields: [sellerFirmId], references: [id])
+  buyerFirmId     String
+  buyerFirm       Firm         @relation("TourPackageBuyer", fields: [buyerFirmId], references: [id])
+  quantity        Int
+  unitPrice       Decimal      @db.Decimal(18, 4)
+  currency        String
+  totalAmount     Decimal      @db.Decimal(18, 4)
+  transactionId   String?      @unique
+  transaction     Transaction? @relation(fields: [transactionId], references: [id])
+  notes           String?
+  status          String       @default("CONFIRMED")
+  deletedAt       DateTime?
+  deletedByUserId String?
+  deleteReason    String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @default(now()) @updatedAt
 
   @@index([packageId, createdAt])
   @@index([sellerFirmId, createdAt])
   @@index([buyerFirmId, createdAt])
+  @@index([status, deletedAt])
 }
 
 model ServiceOffering {

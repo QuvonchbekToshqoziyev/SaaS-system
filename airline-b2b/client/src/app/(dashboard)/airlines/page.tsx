@@ -2,12 +2,13 @@
 
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plane, Plus, Save } from 'lucide-react';
+import { Plane, Plus } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { AxiosError } from 'axios';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
+import ActionButtons from '@/components/ui/ActionButtons';
 
 type ApiErrorResponse = { error?: string };
 
@@ -101,16 +102,20 @@ export default function AirlinesPage() {
           {tr('New airline', 'Yangi aviakompaniya')}
         </div>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-          <input className="compact-control" placeholder={tr('Airline name', 'Aviakompaniya nomi')} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          <input className="compact-control" placeholder={tr('Airline name', 'Aviakompaniya nomi')} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
           <input className="compact-control" placeholder={tr('Code', 'Kod')} value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })} />
           <select className="compact-control" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>
             <option value="USD">USD</option>
             <option value="UZS">UZS</option>
           </select>
-          <button type="submit" disabled={submitting} className="inline-flex items-center justify-center gap-2 bg-primary px-4 py-2 text-sm font-bold uppercase tracking-wide text-ink disabled:opacity-60">
-            <Save size={16} />
-            {submitting ? tr('Saving...', 'Saqlanmoqda...') : tr('Create', 'Yaratish')}
-          </button>
+          <ActionButtons
+            className="md:col-span-4"
+            cancelLabel={tr('Cancel', 'Bekor qilish')}
+            confirmLabel={tr('Confirm', 'Tasdiqlash')}
+            busyLabel={tr('Saving...', 'Saqlanmoqda...')}
+            busy={submitting}
+            onCancel={() => setForm({ name: '', code: '', currency: 'USD' })}
+          />
         </div>
       </form>
 

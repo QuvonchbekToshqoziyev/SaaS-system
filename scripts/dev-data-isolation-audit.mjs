@@ -47,13 +47,14 @@ for (const [actor, email] of Object.entries(qaUsers)) {
     : new Set(firmDirectory.map((firm) => String(firm.id)));
   if (!operationalFirmIds.size) throw new Error(`${actor} has no operational firm scope`);
 
-  const [transactions, accounts, employees, notifications, desks, cards, services] = await Promise.all([
+  const [transactions, accounts, employees, notifications, desks, cards, kassaHistory, services] = await Promise.all([
     get(session.token, '/transactions?page=1&limit=1000'),
     get(session.token, '/accounts'),
     get(session.token, '/employees'),
     get(session.token, '/notifications?limit=100'),
     get(session.token, '/kassa/desks'),
     get(session.token, '/kassa/cards'),
+    get(session.token, '/kassa/history?limit=50'),
     get(session.token, '/services'),
   ]);
 
@@ -63,6 +64,7 @@ for (const [actor, email] of Object.entries(qaUsers)) {
   check(actor, 'notifications', array(notifications, 'items'), (row) => String(row.userId || '') === String(session.user.id) || (row.firmId && operationalFirmIds.has(String(row.firmId))), (row) => `outside notification ${row.id}`);
   check(actor, 'kassa-desks', array(desks), (row) => operationalFirmIds.has(String(row.firmId)), (row) => `outside desk ${row.id}`);
   check(actor, 'payment-cards', array(cards), (row) => !row.firmId || operationalFirmIds.has(String(row.firmId)), (row) => `outside card ${row.id}`);
+  check(actor, 'kassa-history', array(kassaHistory, 'data'), (row) => operationalFirmIds.has(String(row.firmId)), (row) => `outside kassa day ${row.id}`);
   check(actor, 'services', array(services), (row) => operationalFirmIds.has(String(row.ownerFirmId)), (row) => `outside service ${row.id}`);
 
   if (session.user.role === 'FIRM') {

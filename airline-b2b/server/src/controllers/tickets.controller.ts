@@ -1,13 +1,12 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma, TicketProductType } from '@prisma/client';
-import { payableDebtTypeFilter } from '../utils/transaction-types';
 import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
 import { assertActiveKassaDesk, assertKassaDeskForFirmSelection } from '../utils/kassa-desk-policy';
 import { canManageFirmWork } from '../utils/firm-user-roles';
 import { createFirmNotification } from '../utils/notifications';
 import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
-import { allocationDirection, canManageFlightInventory, normalizeCurrency, normalizeOptionalString, parseAllocationRows, parsePositiveDecimal, parsePositiveInt, parsePurchaserInfo, requiresAirlineConnectionForAllocation, requiresAllocationApproval, restoredTicketState, validateAllocationRejectionReason } from '../domains/tickets/ticket-input';
+import { canManageFlightInventory, normalizeCurrency, normalizeOptionalString, parseAllocationRows, parsePositiveDecimal, parsePositiveInt, parsePurchaserInfo, requiresAirlineConnectionForAllocation, requiresAllocationApproval, restoredTicketState, validateAllocationRejectionReason } from '../domains/tickets/ticket-input';
 import { writeAuditLog } from '../utils/audit';
 import { cancelLegSale, changeLegAllocation, countCancellableLegAllocationUnits, createTicketLegInventory } from '../domains/tickets/ticket-leg-inventory';
 
@@ -384,52 +383,21 @@ async function mayManageReceivingFirm(user: any, receivingFirmId: string): Promi
   return role === 'FIRM' && normalizeOptionalString(user?.firmId) === receivingFirmId && canManageFirmWork(user);
 }
 
-async function addAllocationDebtAdjustment(
-  tx: Prisma.TransactionClient,
-  input: { allocation: any; requestId: string; ticketId: string; delta: Prisma.Decimal; actorUserId?: string; exchangeRate: Prisma.Decimal },
-) {
-  if (input.delta.isZero()) return;
-  await tx.transaction.create({
-    data: {
-      firmId: input.allocation.toFirmId,
-      payerFirmId: input.allocation.toFirmId,
-      receiverFirmId: input.allocation.fromFirmId,
-      flightId: input.allocation.flightId,
-      ticketId: input.ticketId,
-      createdByUserId: input.actorUserId,
-      type: 'PAYABLE',
-      originalAmount: input.delta.toDecimalPlaces(4),
-      currency: input.allocation.currency,
-      exchangeRate: input.exchangeRate.toDecimalPlaces(6),
-      baseAmount: input.delta.mul(input.exchangeRate).toDecimalPlaces(4),
-      direction: allocationDirection(input.allocation.fromFirm.kind),
-      subjectType: 'TICKET_ALLOCATION_ADJUSTMENT',
-      subjectId: input.requestId,
-      metadata: { allocationId: input.allocation.id, changeRequestId: input.requestId, note: 'Allocation change debt adjustment' },
-    },
-  });
-}
-
 async function applyAllocationChange(
   tx: Prisma.TransactionClient,
-  input: { allocation: any; request: any; user: any; actorUserId?: string },
+  input: { allocation: any; request: any; actorUserId?: string },
 ) {
-  const { allocation, request, user, actorUserId } = input;
+  const { allocation, request, actorUserId } = input;
   if (allocation.version !== request.baseVersion) throw new Error('Ajratma ma’lumotlari boshqa operatsiya orqali o‘zgargan. Sahifani yangilang.');
   if (!['PENDING', 'ACCEPTED'].includes(allocation.status)) throw new Error('Ushbu ajratmani endi o‘zgartirib bo‘lmaydi.');
 
   if (allocation.legItems?.length) {
-    const exchangeRate = allocation.status === 'ACCEPTED'
-      ? await resolveExchangeRateToUzs(user, { currency: allocation.currency, rateFirmId: allocation.fromFirmId })
-      : new Prisma.Decimal(1);
     return changeLegAllocation(tx, {
       allocation,
       requestId: request.id,
       type: request.type,
       proposed: request.proposedValuesJson,
       actorUserId,
-      exchangeRate,
-      debtDirection: allocationDirection(allocation.fromFirm.kind),
     });
   }
 
@@ -442,10 +410,6 @@ async function applyAllocationChange(
     .filter((ticket: any) => ticket.status === freeStatus && !ticket.tourPackageId && ticket.soldPrice == null)
     .sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
   const proposed = request.proposedValuesJson as any;
-  const exchangeRate = allocation.status === 'ACCEPTED'
-    ? await resolveExchangeRateToUzs(user, { currency: allocation.currency, rateFirmId: allocation.fromFirmId })
-    : new Prisma.Decimal(1);
-
   let nextRows = currentRows;
   let nextNote = allocation.note;
   let nextCurrency = allocation.currency;
@@ -488,12 +452,6 @@ async function applyAllocationChange(
   }
 
   for (const ticket of removedTickets) {
-    if (allocation.status === 'ACCEPTED') {
-      await addAllocationDebtAdjustment(tx, {
-        allocation, requestId: request.id, ticketId: ticket.id,
-        delta: new Prisma.Decimal(ticket.basePrice).negated(), actorUserId, exchangeRate,
-      });
-    }
     await tx.ticket.update({
       where: { id: ticket.id },
       data: {
@@ -514,10 +472,6 @@ async function applyAllocationChange(
       const targetPrice = targetPrices[index];
       if (!targetPrice) throw new Error('Ajratma narx qatorlari chipta soniga mos emas.');
       const isAdded = addedTickets.some((added) => String(added.id) === String(ticket.id));
-      const oldPrice = isAdded ? new Prisma.Decimal(0) : new Prisma.Decimal(ticket.basePrice);
-      if (allocation.status === 'ACCEPTED' && !targetPrice.eq(oldPrice)) {
-        await addAllocationDebtAdjustment(tx, { allocation, requestId: request.id, ticketId: String(ticket.id), delta: targetPrice.sub(oldPrice), actorUserId, exchangeRate });
-      }
       await tx.ticket.update({
         where: { id: String(ticket.id) },
         data: {
@@ -614,7 +568,7 @@ export const createAllocationChangeRequest = async (req: Request, res: Response)
         },
       });
       let updatedAllocation = null;
-      if (!requiresApproval) updatedAllocation = await applyAllocationChange(tx, { allocation, request, user, actorUserId: normalizeOptionalString(user?.userId) });
+      if (!requiresApproval) updatedAllocation = await applyAllocationChange(tx, { allocation, request, actorUserId: normalizeOptionalString(user?.userId) });
       await createFirmNotification(tx, allocation.toFirmId, {
         title: requiresApproval ? 'Ajratma bo‘yicha o‘zgarish so‘rovi' : 'Ajratma avtomatik yangilandi',
         body: `${allocation.fromFirm.name} ${allocation.flight.flightNumber || 'reys'} ajratmasi bo‘yicha ${type === 'EDIT' ? 'tahrir' : 'bekor qilish'} so‘rovini yaratdi.`,
@@ -685,7 +639,7 @@ export const approveAllocationChangeRequest = async (req: Request, res: Response
       });
       if (!allocation) throw new Error('Ajratma topilmadi.');
       const actorUserId = normalizeOptionalString(user?.userId);
-      const updated = await applyAllocationChange(tx, { allocation, request: change, user, actorUserId });
+      const updated = await applyAllocationChange(tx, { allocation, request: change, actorUserId });
       const decided = await tx.allocationChangeRequest.update({ where: { id: requestId }, data: { status: 'APPROVED', approvedByUserId: actorUserId, approvedAt: new Date(), appliedAt: new Date() } });
       await createFirmNotification(tx, change.requestedByFirmId, { title: 'Ajratma o‘zgarishi tasdiqlandi', body: `${allocation.toFirm.name} ajratma bo‘yicha so‘rovni tasdiqladi.`, type: change.type === 'EDIT' ? 'ALLOCATION_EDIT_APPROVED' : 'ALLOCATION_CANCEL_APPROVED', entityType: 'allocationChangeRequest', entityId: requestId, metadata: { allocationId: allocation.id, changeRequestId: requestId } });
       await writeAuditLog(req, { action: change.type === 'EDIT' ? 'ALLOCATION_EDIT_APPROVED' : 'ALLOCATION_CANCEL_APPROVED', entityType: 'allocationChangeRequest', entityId: requestId, entityLabel: allocation.flight.flightNumber, summary: `${allocation.toFirm.name} ajratma o‘zgarishini tasdiqladi`, before: change.oldValuesJson, after: change.proposedValuesJson, metadata: { allocationId: allocation.id } }, tx);
@@ -938,42 +892,6 @@ export const allocateTicket = async (req: Request, res: Response) => {
             },
           });
         } else {
-          const exchangeRate = await resolveExchangeRateToUzs(user, {
-            currency: currencies[0],
-            rateFirmId: source.firmId,
-          });
-          const pricesByTicketId = new Map<string, Prisma.Decimal>();
-          if (parsedAllocationRows.length) {
-            let offset = 0;
-            for (const row of parsedAllocationRows) {
-              for (const id of ticketIds.slice(offset, offset + row.quantity)) pricesByTicketId.set(id, row.price.toDecimalPlaces(4));
-              offset += row.quantity;
-            }
-          }
-          await tx.transaction.createMany({
-            data: tickets.map((ticket) => {
-              const ticketId = String(ticket.id);
-              const originalAmount = pricesByTicketId.get(ticketId)
-                || (overridePrice?.gt(0) ? overridePrice.toDecimalPlaces(4) : new Prisma.Decimal(String(ticket.basePrice)).toDecimalPlaces(4));
-              return {
-                firmId: targetFirmId,
-                payerFirmId: targetFirmId,
-                receiverFirmId: source.firmId,
-                flightId: resolvedFlightId,
-                ticketId,
-                createdByUserId: null,
-                type: 'PAYABLE' as const,
-                originalAmount,
-                currency: currencies[0],
-                exchangeRate: exchangeRate.toDecimalPlaces(6),
-                baseAmount: originalAmount.mul(exchangeRate).toDecimalPlaces(4),
-                direction: allocationDirection(sourceFirm.kind),
-                subjectType: 'TICKET_ALLOCATION',
-                subjectId: allocation.id,
-                metadata: { note: 'External firm ticket allocation accepted automatically', allocationId: allocation.id } as any,
-              };
-            }),
-          });
           await writeAuditLog(req, {
             action: 'TICKET_ALLOCATION_AUTO_ACCEPTED',
             entityType: 'ticketAllocation',
@@ -1058,8 +976,7 @@ export const allocateTicket = async (req: Request, res: Response) => {
       if (!['AVAILABLE', 'ASSIGNED'].includes(String(ticket.status))) throw new Error('Ticket is not available for allocation');
       if (String(ticket.assignedFirmId || '') !== source.firmId && !(source.isFlightOwner && !ticket.assignedFirmId)) throw new Error('Ticket is not in your inventory');
 
-      const [firm, sourceFirm] = await Promise.all([
-        tx.firm.findFirst({
+      const firm = await tx.firm.findFirst({
           where: allocationTargetWhere(source.firmId, targetFirmId),
           select: {
             id: true,
@@ -1071,11 +988,8 @@ export const allocateTicket = async (req: Request, res: Response) => {
               },
             },
           },
-        }),
-        tx.firm.findUnique({ where: { id: source.firmId }, select: { kind: true } }),
-      ]);
+        });
       if (!firm) throw new Error('Firm not found');
-      if (!sourceFirm) throw new Error('Source firm not found');
 
       const unitPrice = overridePrice?.gt(0)
         ? overridePrice.toDecimalPlaces(4)
@@ -1119,26 +1033,6 @@ export const allocateTicket = async (req: Request, res: Response) => {
           metadata: { allocationId: allocation.id, flightId: flight.id, flightNumber: flight.flightNumber, ticketId, totalAmount: unitPrice.toString(), currency, airlineId: flight.airline?.id, airlineName: flight.airline?.name, airlineFirmId: flight.airline?.firmId },
         });
       } else {
-        const exchangeRate = await resolveExchangeRateToUzs(user, { currency, rateFirmId: source.firmId });
-        await tx.transaction.create({
-          data: {
-            firmId: targetFirmId,
-            payerFirmId: targetFirmId,
-            receiverFirmId: source.firmId,
-            flightId: String(ticket.flightId),
-            ticketId,
-            createdByUserId: null,
-            type: 'PAYABLE',
-            originalAmount: unitPrice,
-            currency,
-            exchangeRate: exchangeRate.toDecimalPlaces(6),
-            baseAmount: unitPrice.mul(exchangeRate).toDecimalPlaces(4),
-            direction: allocationDirection(sourceFirm.kind),
-            subjectType: 'TICKET_ALLOCATION',
-            subjectId: allocation.id,
-            metadata: { note: 'External firm ticket allocation accepted automatically', allocationId: allocation.id },
-          },
-        });
         await writeAuditLog(req, {
           action: 'TICKET_ALLOCATION_AUTO_ACCEPTED',
           entityType: 'ticketAllocation',
@@ -1193,7 +1087,6 @@ export const confirmAllocation = async (req: Request, res: Response) => {
   if (normalizeOptionalString(allocationId)) {
     const resolvedAllocationId = String(allocationId).trim();
     try {
-      const kassaDesk = await resolveKassaDesk(user, req.body?.kassaDeskId);
       const result = await prisma.$transaction(async (tx) => {
         const locked: Array<{ id: string }> = await tx.$queryRaw`
           SELECT id FROM "TicketAllocation" WHERE id = ${resolvedAllocationId} FOR UPDATE
@@ -1227,10 +1120,6 @@ export const confirmAllocation = async (req: Request, res: Response) => {
         const expectedQuantity = allocation.priceRows.reduce((sum, row) => sum + row.quantity, 0);
         if (!tickets.length || tickets.length !== expectedQuantity) throw new Error('Allocation ticket count is inconsistent');
 
-        const exchangeRate = await resolveExchangeRateToUzs(user, {
-          currency: allocation.currency,
-          rateFirmId: allocation.fromFirmId,
-        });
         await tx.ticket.updateMany({
           where: { allocationId: resolvedAllocationId, status: 'PENDING', deletedAt: null },
           data: { status: 'ASSIGNED' },
@@ -1238,29 +1127,6 @@ export const confirmAllocation = async (req: Request, res: Response) => {
         await tx.ticketAllocation.update({
           where: { id: resolvedAllocationId },
           data: { status: 'ACCEPTED', acceptedAt: new Date(), acceptedByUserId: actorUserId || null },
-        });
-        await tx.transaction.createMany({
-          data: tickets.map((ticket) => {
-            const originalAmount = new Prisma.Decimal(String(ticket.basePrice)).toDecimalPlaces(4);
-            return {
-              firmId: allocation.toFirmId,
-              payerFirmId: allocation.toFirmId,
-              receiverFirmId: allocation.fromFirmId,
-              flightId: allocation.flightId,
-              ticketId: String(ticket.id),
-              createdByUserId: actorUserId,
-              kassaDeskId: kassaDesk?.id,
-              type: 'PAYABLE' as const,
-              originalAmount,
-              currency: allocation.currency,
-              exchangeRate: exchangeRate.toDecimalPlaces(6),
-              baseAmount: originalAmount.mul(exchangeRate).toDecimalPlaces(4),
-              direction: allocationDirection(allocation.fromFirm.kind),
-              subjectType: 'TICKET_ALLOCATION',
-              subjectId: allocation.id,
-              metadata: { note: 'Ticket allocation confirmed', allocationId: allocation.id } as any,
-            };
-          }),
         });
         await createFirmNotification(tx, allocation.fromFirmId, {
           title: 'Ajratma tasdiqlandi',
@@ -1293,7 +1159,6 @@ export const confirmAllocation = async (req: Request, res: Response) => {
     if (!requestedFirmId) return res.status(400).json({ error: 'firmId is required' });
     if (!(await canAccessFirm(user, requestedFirmId))) return res.status(403).json({ error: 'Forbidden' });
     try {
-      const kassaDesk = await resolveKassaDesk(user, req.body?.kassaDeskId);
       const result = await prisma.$transaction(async (tx) => {
         const flight = await tx.flight.findUnique({
           where: { id: resolvedFlightId },
@@ -1319,51 +1184,11 @@ export const confirmAllocation = async (req: Request, res: Response) => {
 
         const ticketIds = tickets.map((t) => String(t.id));
         const sourceFirmIds = Array.from(new Set(tickets.map((ticket) => normalizeOptionalString(ticket.allocationSourceFirmId)).filter((value): value is string => Boolean(value))));
-        const sourceFirms = sourceFirmIds.length
-          ? await tx.firm.findMany({ where: { id: { in: sourceFirmIds } }, select: { id: true, kind: true } })
-          : [];
-        const sourceKindById = new Map(sourceFirms.map((firm) => [firm.id, firm.kind] as const));
         await tx.ticket.updateMany({
           where: { id: { in: ticketIds } },
           data: { status: 'ASSIGNED' },
         });
 
-        const transactionRows = await Promise.all(tickets.map(async (t) => {
-          const originalAmount = new Prisma.Decimal(String(t.basePrice)).toDecimalPlaces(4);
-          const currency = normalizeCurrency(t.currency);
-          const exchangeRate = await resolveExchangeRateToUzs(user, {
-            currency,
-            rateFirmId: normalizeOptionalString(t.allocationSourceFirmId) || requestedFirmId,
-          });
-          const baseAmount = originalAmount.mul(exchangeRate).toDecimalPlaces(4);
-
-          return {
-            firmId: requestedFirmId,
-            payerFirmId: requestedFirmId,
-            receiverFirmId: normalizeOptionalString(t.allocationSourceFirmId) || null,
-            flightId: String(t.flightId),
-            ticketId: String(t.id),
-            createdByUserId: actorUserId,
-            kassaDeskId: kassaDesk?.id,
-            type: 'PAYABLE' as const,
-            originalAmount,
-            currency,
-            exchangeRate: exchangeRate.toDecimalPlaces(6),
-            baseAmount,
-            direction: allocationDirection(sourceKindById.get(String(t.allocationSourceFirmId || ''))),
-            metadata: {
-              note: 'Ticket allocation confirmed, receiving firm owes sending firm',
-              airlineId: flight.airline?.id,
-              airlineName: flight.airline?.name,
-              airlineFirmId: flight.airline?.firmId || null,
-              allocationSourceFirmId: normalizeOptionalString(t.allocationSourceFirmId) || null,
-              kassaDeskId: kassaDesk?.id,
-              kassaDeskLabel: kassaDesk?.name,
-            } as any,
-          };
-        }));
-
-        await tx.transaction.createMany({ data: transactionRows });
         await createFirmNotification(tx, requestedFirmId, {
           title: 'Ticket allocation accepted',
           body: `${ticketIds.length} ticket(s) for ${flight.flightNumber || 'flight'} are now active in your firm inventory.`,
@@ -1396,7 +1221,6 @@ export const confirmAllocation = async (req: Request, res: Response) => {
   }
 
   try {
-    const kassaDesk = await resolveKassaDesk(user, req.body?.kassaDeskId);
     await prisma.$transaction(async (tx) => {
       const tickets: any[] = await tx.$queryRaw`
         SELECT *, "allocatedFirmId" AS "assignedFirmId", "price" AS "basePrice"
@@ -1422,50 +1246,13 @@ export const confirmAllocation = async (req: Request, res: Response) => {
         throw new Error('Not your ticket');
       }
 
-      const originalAmount = new Prisma.Decimal(String(ticket.basePrice));
-      const currency = normalizeCurrency(ticket.currency);
       const sourceFirmId = normalizeOptionalString(ticket.allocationSourceFirmId);
-
-      const exchangeRate = await resolveExchangeRateToUzs(user, {
-        currency,
-        rateFirmId: sourceFirmId || receivingFirmId,
-      });
-      const baseAmount = originalAmount.mul(exchangeRate).toDecimalPlaces(4);
-      const sourceFirm = sourceFirmId
-        ? await tx.firm.findUnique({ where: { id: sourceFirmId }, select: { kind: true } })
-        : null;
 
       await tx.ticket.update({
         where: { id: ticketId },
         data: { status: 'ASSIGNED' },
       });
 
-      await tx.transaction.create({
-        data: {
-          firmId: receivingFirmId,
-          payerFirmId: receivingFirmId,
-          receiverFirmId: sourceFirmId || null,
-          flightId: String(ticket.flightId),
-          ticketId: String(ticketId),
-          createdByUserId: actorUserId,
-          kassaDeskId: kassaDesk?.id,
-          type: 'PAYABLE',
-          originalAmount: originalAmount.toDecimalPlaces(4),
-          currency,
-          exchangeRate: exchangeRate.toDecimalPlaces(6),
-          baseAmount,
-          direction: allocationDirection(sourceFirm?.kind),
-          metadata: {
-            note: 'Ticket allocation confirmed, receiving firm owes sending firm',
-            airlineId: flight.airline?.id,
-            airlineName: flight.airline?.name,
-            airlineFirmId: flight.airline?.firmId || null,
-            allocationSourceFirmId: sourceFirmId || null,
-            kassaDeskId: kassaDesk?.id,
-            kassaDeskLabel: kassaDesk?.name,
-          },
-        },
-      });
       await createFirmNotification(tx, receivingFirmId, {
         title: 'Ticket allocation accepted',
         body: `A ticket for ${flight.flightNumber || 'flight'} is now active in your firm inventory.`,
@@ -1683,10 +1470,6 @@ export const deallocateTicket = async (req: Request, res: Response) => {
         }
 
         const ticketIds = tickets.map((t) => String(t.id));
-        const assignedTicketIds = tickets
-          .filter((t) => String(t.status) === 'ASSIGNED')
-          .map((t) => String(t.id));
-
         for (const ticket of tickets) {
           await tx.ticket.update({
             where: { id: String(ticket.id) },
@@ -1695,55 +1478,6 @@ export const deallocateTicket = async (req: Request, res: Response) => {
               basePrice: ticket.allocationSourcePrice || ticket.basePrice, allocationSourcePrice: null, allocationId: null,
             },
           });
-        }
-
-        if (assignedTicketIds.length > 0) {
-          const payables = await tx.transaction.findMany({
-            where: {
-              ticketId: { in: assignedTicketIds },
-              type: payableDebtTypeFilter,
-              baseAmount: { gt: new Prisma.Decimal(0) },
-            },
-            orderBy: { createdAt: 'desc' },
-          });
-
-          const payableByTicketId = new Map<string, any>();
-          for (const p of payables) {
-            const tid = String(p.ticketId || '');
-            if (!tid) continue;
-            if (!payableByTicketId.has(tid)) payableByTicketId.set(tid, p);
-          }
-
-          const reversalRows = assignedTicketIds.map((tid) => {
-            const payable = payableByTicketId.get(tid);
-            if (!payable) return null;
-
-            const originalAmount = new Prisma.Decimal(String(payable.originalAmount)).mul(-1).toDecimalPlaces(4);
-            const exchangeRate = new Prisma.Decimal(String(payable.exchangeRate)).toDecimalPlaces(6);
-            const baseAmount = new Prisma.Decimal(String(payable.baseAmount)).mul(-1).toDecimalPlaces(4);
-
-            return {
-              firmId: targetFirmId,
-              payerFirmId: payable.payerFirmId || targetFirmId,
-              receiverFirmId: payable.receiverFirmId || null,
-              flightId: String(payable.flightId),
-              ticketId: tid,
-              createdByUserId: actorUserId,
-              type: 'PAYABLE' as const,
-              originalAmount,
-              currency: String(payable.currency),
-              exchangeRate,
-              baseAmount,
-              direction: payable.direction || undefined,
-              metadata: {
-                note: 'Ticket deallocated, debt reversed',
-                reversedTransactionId: String(payable.id),
-              } as any,
-            };
-          });
-
-          const validReversals = reversalRows.filter((row): row is NonNullable<typeof row> => Boolean(row));
-          if (validReversals.length) await tx.transaction.createMany({ data: validReversals });
         }
 
         return { count: ticketIds.length };
@@ -1789,42 +1523,6 @@ export const deallocateTicket = async (req: Request, res: Response) => {
         },
       });
 
-      if (prevStatus === 'ASSIGNED') {
-        const payable = await tx.transaction.findFirst({
-          where: {
-            ticketId: String(ticketId),
-            type: payableDebtTypeFilter,
-            baseAmount: { gt: new Prisma.Decimal(0) },
-          },
-          orderBy: { createdAt: 'desc' },
-        });
-        if (!payable) return;
-
-        const originalAmount = new Prisma.Decimal(String(payable.originalAmount)).mul(-1).toDecimalPlaces(4);
-        const exchangeRate = new Prisma.Decimal(String(payable.exchangeRate)).toDecimalPlaces(6);
-        const baseAmount = new Prisma.Decimal(String(payable.baseAmount)).mul(-1).toDecimalPlaces(4);
-
-        await tx.transaction.create({
-          data: {
-            firmId: prevFirmId,
-            payerFirmId: payable.payerFirmId || prevFirmId,
-            receiverFirmId: payable.receiverFirmId || null,
-            flightId: String(ticket.flightId),
-            ticketId: String(ticketId),
-            createdByUserId: actorUserId,
-            type: 'PAYABLE',
-            originalAmount,
-            currency: String(payable.currency),
-            exchangeRate,
-            baseAmount,
-            direction: payable.direction || undefined,
-            metadata: {
-              note: 'Ticket deallocated, debt reversed',
-              reversedTransactionId: String(payable.id),
-            },
-          },
-        });
-      }
     });
 
     return res.json({ success: true });
@@ -2073,6 +1771,7 @@ export const cancelSale = async (req: Request, res: Response) => {
         where: {
           ticketId: resolvedTicketId,
           type: 'SALE',
+          deletedAt: null,
           baseAmount: { gt: new Prisma.Decimal(0) },
         },
         orderBy: { createdAt: 'desc' },
@@ -2345,6 +2044,7 @@ export const approveSaleCancellationRequest = async (req: Request, res: Response
         where: {
           ticketId,
           type: 'SALE',
+          deletedAt: null,
           baseAmount: { gt: new Prisma.Decimal(0) },
         },
         orderBy: { createdAt: 'desc' },

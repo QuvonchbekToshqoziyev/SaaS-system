@@ -5,6 +5,7 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { usePathname, useRouter } from 'next/navigation';
 import { Plane, PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, Wallet, PackageOpen, BriefcaseBusiness, Users, ShieldCheck, MessageCircle, History, Bell, CheckCheck, Menu, MoreHorizontal, X, Activity } from 'lucide-react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { useEffect, useState } from 'react';
 import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
 import { api } from '@/lib/api';
@@ -59,12 +60,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [currentTime, setCurrentTime] = useState<number | null>(null);
   const normalizedRole = String(user?.role || '').toLowerCase();
+  const isReadOnly = Boolean(user?.readOnlyAccess);
   const firmRole = String(user?.firmRole || 'FIRM_ADMIN').toUpperCase();
   const isAirlineFirm = false;
   const isFirmKassir = normalizedRole === 'firm' && firmRole === 'KASSIR';
   const isFirmManager = normalizedRole === 'firm' && firmRole === 'MANAGER';
   const isKassirAllowedPath = pathname.startsWith('/kassa') || pathname.startsWith('/chat') || pathname.startsWith('/settings');
+
+  useEffect(() => {
+    const id = window.setTimeout(() => setCurrentTime(Date.now()), 0);
+    return () => window.clearTimeout(id);
+  }, []);
 
   useEffect(() => {
     if (!isLoading && isFirmKassir && !isKassirAllowedPath) {
@@ -107,6 +115,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }, [isAccountModalOpen, isMobileMenuOpen, isNotificationsOpen]);
 
   const markNotificationRead = async (id: string) => {
+    if (isReadOnly) return;
     try {
       await api.post(`/notifications/${id}/read`);
       setNotifications((rows) => rows.map((row) => row.id === id ? { ...row, readAt: row.readAt || new Date().toISOString() } : row));
@@ -117,6 +126,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   };
 
   const markAllNotificationsRead = async () => {
+    if (isReadOnly) return;
     try {
       await api.post('/notifications/read-all');
       const now = new Date().toISOString();
@@ -141,7 +151,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <div className="min-h-screen flex items-center justify-center bg-background text-foreground">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 border-[3px] border-primary/20 border-t-primary rounded-full animate-spin"></div>
-          <span className="text-sm font-medium">Authenticating...</span>
+          <span className="text-sm font-medium">Authenticating…</span>
         </div>
       </div>
     );
@@ -228,7 +238,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   });
 
   const pageTitle = t(activeNavLink?.key ?? navLinks[0].key);
-  const subscriptionDays = user.subscriptionEndsAt ? Math.max(0, Math.ceil((new Date(user.subscriptionEndsAt).getTime() - Date.now()) / 86400000)) : null;
+  const subscriptionDays = user.subscriptionEndsAt && currentTime !== null ? Math.max(0, Math.ceil((new Date(user.subscriptionEndsAt).getTime() - currentTime) / 86400000)) : null;
   const subscriptionCountdown = normalizedRole === 'firm' && subscriptionDays !== null ? (
     <div className={`rounded-lg border px-3 py-2 text-center ${subscriptionDays <= 7 ? 'border-red-500/40 bg-red-500/10 text-red-600' : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600'}`}>
       <div className="text-2xl font-black leading-none">{subscriptionDays}</div>
@@ -239,13 +249,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const bottomMoreLinks = navLinks.filter((link) => !bottomNavLinks.some((item) => item.href === link.href));
 
   return (
-    <div className="flex min-h-dvh md:h-screen bg-transparent text-foreground w-full font-sans overflow-x-hidden md:overflow-hidden">
+    <div className="app-shell flex min-h-dvh w-full overflow-x-hidden bg-transparent font-sans text-foreground md:h-screen md:overflow-hidden">
+      <a href="#main-content" className="skip-link">Asosiy qismga o‘tish</a>
       {/* Sidebar (desktop) */}
-      <div className="hidden w-[260px] md:flex flex-col h-full overflow-visible glass-soft border-r border-border z-30">
+      <div className="app-sidebar z-30 hidden h-full w-[272px] flex-col overflow-visible border-r md:flex">
         {/* Sidebar Header */}
         <div className="h-[72px] px-6 flex items-center gap-3 shrink-0 relative border-b border-border">
-          <div className="w-[38px] h-[38px] shrink-0 bg-gradient-to-br from-emerald-500 to-yellow-600 flex items-center justify-center rounded-xl overflow-hidden shadow-sm shadow-primary/20">
-            <img src="/ADO-icon.png" alt="ADO Logo" className="w-full h-full object-contain p-1" />
+          <div className="brand-mark flex h-[38px] w-[38px] shrink-0 items-center justify-center overflow-hidden">
+            <Image src="/ADO-icon.png" alt="ADO Logo" width={38} height={38} priority className="h-full w-full object-contain p-1" />
           </div>
           <div className="flex flex-col justify-center">
             <h1 className="text-[17px] font-bold text-foreground tracking-tight select-none leading-none mb-[2px]">ADO Financial</h1>
@@ -257,7 +268,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="flex-1 min-h-0 overflow-y-auto scroller-minimal py-4 flex flex-col gap-1 px-3">
           {navGroups.map((group) => group.links.length > 0 && (
             <div key={group.label} className="mb-2">
-              <div className="px-2 pb-1 text-[10px] text-muted uppercase tracking-widest font-semibold select-none">
+              <div className="nav-section-label px-2 pb-1 select-none">
                 {group.label}
               </div>
               <div className="flex flex-col gap-1">
@@ -268,11 +279,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                       key={link.href}
                       href={link.href}
                       aria-label={t(link.key)}
-                      className={`flex items-center gap-3 px-3 py-2 rounded-md text-[14px] font-medium tracking-wide ${
-                        isActive
-                          ? 'bg-surface-2 text-foreground border border-border shadow-sm'
-                          : 'text-muted hover:bg-surface-2 hover:text-foreground'
-                      }`}
+                      aria-current={isActive ? 'page' : undefined}
+                      className={`nav-item flex items-center gap-3 px-3 py-2 text-[14px] font-semibold ${isActive ? 'nav-item--active' : ''}`}
                     >
                       <link.icon size={20} strokeWidth={isActive ? 2.5 : 2} className="shrink-0" />
                       <span>{t(link.key)}</span>
@@ -337,7 +345,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
           <button
             onClick={logout}
-            className="flex items-center justify-center gap-2 w-full py-2 bg-surface-2 hover:bg-surface text-foreground rounded-md border border-border text-[13px] font-semibold uppercase tracking-wide"
+            className="flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-[var(--sidebar-border)] bg-[var(--sidebar-2)] py-2 text-[13px] font-semibold uppercase tracking-wide text-[var(--sidebar-foreground)] hover:border-red-400/40 hover:bg-red-500/10 hover:text-red-300"
           >
             <LogOut size={16} />
             <span>{t('signOut')}</span>
@@ -348,7 +356,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {/* Main Container */}
       <div className="flex-1 flex flex-col overflow-hidden relative">
         {/* Top Header */}
-        <header className="h-[64px] md:h-[72px] px-3 sm:px-4 lg:px-6 flex items-center justify-between gap-3 glass-soft border-b border-border shrink-0 sticky top-0 z-20">
+        <header className="app-topbar sticky top-0 z-20 flex h-[64px] shrink-0 items-center justify-between gap-3 border-b px-3 sm:px-4 md:h-[72px] lg:px-6">
           <div className="flex min-w-0 items-center gap-2 md:gap-4">
             <button
               type="button"
@@ -358,18 +366,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             >
               <Menu size={20} />
             </button>
-            <h2 className="truncate text-xl md:text-2xl font-bold tracking-tight text-foreground">
+            <h2 className="app-page-title truncate text-2xl text-foreground md:text-[1.7rem]">
               {pageTitle}
             </h2>
           </div>
           
           <div className="flex items-center gap-2 sm:gap-3">
-            <NewOperationLauncher role={normalizedRole} firmRole={firmRole} />
+            {!isReadOnly && <NewOperationLauncher role={normalizedRole} firmRole={firmRole} />}
             <div className="relative">
               <button
                 type="button"
                 onClick={() => setIsNotificationsOpen((open) => !open)}
-                className="relative p-2 bg-surface-2 border border-border hover:border-primary text-muted rounded-full transition-all shadow-sm"
+                className="relative rounded-full border border-border bg-surface-2 p-2 text-muted shadow-sm transition-[color,border-color,background-color,box-shadow] hover:border-primary"
                 aria-label="Notifications"
               >
                 <Bell size={18} />
@@ -397,7 +405,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                       <div className="text-xs text-muted">{unreadCount > 0 ? `${unreadCount} unread` : 'You are all caught up'}</div>
                     </div>
                     <div className="flex items-center gap-1">
-                      {unreadCount > 0 && (
+                      {unreadCount > 0 && !isReadOnly && (
                         <button type="button" onClick={markAllNotificationsRead} className="inline-flex min-h-10 items-center gap-1 rounded-lg px-2 text-xs font-semibold text-muted hover:bg-surface-2 hover:text-foreground">
                           <CheckCheck size={15} />
                           Mark all
@@ -424,6 +432,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                           key={item.id}
                           type="button"
                           onClick={() => markNotificationRead(item.id)}
+                          aria-disabled={isReadOnly}
                           className={`block min-h-[76px] w-full border-b border-border px-4 py-3 text-left transition hover:bg-surface-2 ${unread ? 'bg-primary/10' : 'bg-transparent'}`}
                         >
                           <div className="flex items-start justify-between gap-2">
@@ -449,7 +458,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <button
               type="button"
               onClick={() => setIsAccountModalOpen(true)}
-              className="md:hidden p-2 bg-surface-2 border border-border hover:border-primary text-muted rounded-full transition-all shadow-sm"
+              className="rounded-full border border-border bg-surface-2 p-2 text-muted shadow-sm transition-[color,border-color,background-color,box-shadow] hover:border-primary md:hidden"
               aria-label={t('account')}
             >
               <UserCircle size={18} />
@@ -457,7 +466,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
         </header>
 
-        <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-flow-col auto-cols-fr border-t border-border bg-surface/95 px-1 pb-[max(env(safe-area-inset-bottom),0.25rem)] pt-1 backdrop-blur-xl md:hidden">
+        <nav className="app-topbar fixed inset-x-0 bottom-0 z-40 grid grid-flow-col auto-cols-fr border-t px-1 pb-[max(env(safe-area-inset-bottom),0.25rem)] pt-1 md:hidden">
           {bottomNavLinks.map((link) => {
             const isActive = pathname === link.href || (link.href !== '/firm' && link.href !== '/admin' && pathname.startsWith(link.href));
             return (
@@ -487,8 +496,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </nav>
 
         {/* Scrollable Page Content */}
-        <main className="relative flex-1 overflow-y-auto overscroll-contain p-3 pb-24 scroller-minimal sm:p-4 sm:pb-24 md:p-5">
-          <div className="max-w-[1600px] mx-auto w-full relative z-10 min-h-full">
+        <main id="main-content" tabIndex={-1} className="app-main scroller-minimal relative flex-1 overflow-y-auto overscroll-contain p-3 pb-24 sm:p-4 sm:pb-24 md:p-6">
+          <div className="app-content relative z-10 mx-auto min-h-full w-full max-w-[1680px]">
+            {isReadOnly && (
+              <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm font-semibold text-amber-700 dark:text-amber-300">
+                Faqat ko‘rish rejimi — barcha o‘zgartirish, qo‘shish va o‘chirish amallari serverda bloklangan.
+              </div>
+            )}
             {children}
           </div>
         </main>
@@ -497,7 +511,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {isMobileMenuOpen && (
         <div className="fixed inset-0 z-[90] md:hidden">
           <button className="absolute inset-0 bg-black/60" aria-label="Close navigation" onClick={() => setIsMobileMenuOpen(false)} />
-          <aside className="absolute left-0 top-0 flex h-dvh w-[min(86vw,360px)] flex-col border-r border-border bg-surface p-4 shadow-2xl">
+          <aside className="app-sidebar absolute left-0 top-0 flex h-dvh w-[min(86vw,360px)] flex-col border-r p-4 shadow-2xl">
             <div className="mb-4 flex items-center justify-between gap-3 border-b border-border pb-4">
               <div className="min-w-0">
                 <div className="text-lg font-bold text-foreground">ADO Financial</div>

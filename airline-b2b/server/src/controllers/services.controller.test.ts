@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canEditFirmService, firmServiceVisibilityWhere, isPurchasedServiceInputValid } from './services.controller';
+import { adminServiceVisibilityWhere, canEditFirmService, firmServiceVisibilityWhere, isPurchasedServiceInputValid } from './services.controller';
 
 describe('purchased service input', () => {
   const valid = { name: 'Visa', providerName: 'Provider LLC', quantity: 20, unitPrice: 50, currency: 'USD', paymentStatus: 'DEBT' };
@@ -14,6 +14,11 @@ describe('purchased service input', () => {
 describe('service visibility', () => {
   it('limits a firm to its own purchased service inventory', () => {
     expect(firmServiceVisibilityWhere('firm-1')).toEqual({ ownerFirmId: 'firm-1' });
+  });
+
+  it('limits a platform admin to explicitly assigned firms', () => {
+    expect(adminServiceVisibilityWhere(['firm-1', 'firm-2'])).toEqual({ ownerFirmId: { in: ['firm-1', 'firm-2'] } });
+    expect(adminServiceVisibilityWhere([])).toEqual({ ownerFirmId: { in: [] } });
   });
 });
 

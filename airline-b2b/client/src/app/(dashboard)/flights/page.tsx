@@ -10,6 +10,7 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getApiErrorMessage, isCancelledFlight, type AirlineOption, type LocalFlight } from '@/features/flights/model';
+import ActionButtons from '@/components/ui/ActionButtons';
 
 type FlightFormData = {
   flightNumber: string; route: string; airlineMode: string; airlineId: string; airlineName: string; airlineCode: string;
@@ -773,7 +774,8 @@ export default function FlightsPage() {
                       <button
                         type="button"
                         onClick={submitCreateRow}
-                        className="px-3 py-2 bg-primary hover:bg-primary-hover text-ink rounded-lg transition text-xs font-bold uppercase tracking-wider"
+                        disabled={Boolean(validateFlightForm()) || (formData.airlineMode === 'LISTED' ? !formData.airlineId : !formData.airlineName.trim())}
+                        className="px-3 py-2 bg-primary hover:bg-primary-hover text-ink rounded-lg transition text-xs font-bold uppercase tracking-wider disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         {tr('Create', 'Yaratish')}
                       </button>
@@ -1112,23 +1114,13 @@ export default function FlightsPage() {
                 </div>
               )}
               
-              <div className="mt-6 flex justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="px-4 py-2 bg-surface-2 hover:bg-surface text-foreground rounded-lg transition"
-                >
-                  {tr('Cancel', 'Bekor qilish')}
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg transition"
-                >
-                  {modalMode === 'create'
-                    ? tr('Create Flight', 'Reys yaratish')
-                    : tr('Save Changes', "O'zgarishlarni saqlash")}
-                </button>
-              </div>
+              <ActionButtons
+                className="mt-6"
+                cancelLabel={tr('Cancel', 'Bekor qilish')}
+                confirmLabel={tr('Confirm', 'Tasdiqlash')}
+                canConfirm={!validateFlightForm() && (formData.airlineMode === 'LISTED' ? Boolean(formData.airlineId) : Boolean(formData.airlineName.trim()))}
+                onCancel={() => setIsModalOpen(false)}
+              />
             </form>
           </div>
         </div>

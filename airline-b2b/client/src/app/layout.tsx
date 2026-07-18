@@ -1,15 +1,14 @@
 import type { Metadata, Viewport } from 'next';
-import { Inter, Outfit, Playfair_Display, DM_Mono } from 'next/font/google';
+import { Barlow_Condensed, IBM_Plex_Mono, Manrope } from 'next/font/google';
 import './globals.css';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { LanguageProvider } from '@/contexts/LanguageContext';
 import AppProvider from '@/components/providers/Provider';
 import { Toaster } from 'react-hot-toast';
 
-const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
-const outfit = Outfit({ subsets: ['latin'], variable: '--font-outfit', weight: ['300', '400', '500', '600'] });
-const playfair = Playfair_Display({ subsets: ['latin'], variable: '--font-playfair', weight: ['400', '600', '700'] });
-const dm_mono = DM_Mono({ subsets: ['latin'], variable: '--font-mono', weight: ['300', '400', '500'] });
+const manrope = Manrope({ subsets: ['latin'], variable: '--font-body', weight: ['400', '500', '600', '700', '800'] });
+const barlowCondensed = Barlow_Condensed({ subsets: ['latin'], variable: '--font-display', weight: ['600', '700'] });
+const ibmPlexMono = IBM_Plex_Mono({ subsets: ['latin'], variable: '--font-data', weight: ['400', '500', '600'] });
 
 export const metadata: Metadata = {
   title: 'ADO Financial Accounting — Airline Platform',
@@ -56,7 +55,7 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <script dangerouslySetInnerHTML={{ __html: langInitScript }} />
       </head>
-      <body className={`${inter.variable} ${outfit.variable} ${playfair.variable} ${dm_mono.variable} font-sans`}>
+      <body className={`${manrope.variable} ${barlowCondensed.variable} ${ibmPlexMono.variable} font-sans`}>
         <AppProvider>
           <AuthProvider>
             <LanguageProvider>

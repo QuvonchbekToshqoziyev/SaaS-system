@@ -19,7 +19,7 @@ describe('ticket input policy', () => {
     expect(canManageFlightInventory('other-firm', 'agency-owner', 'airline-firm', 0)).toBe(false);
   });
 
-  it('requires an airline connection only for the first allocation', () => {
+  it('requires an airline connection only when the source firm is the airline owner', () => {
     expect(requiresAirlineConnectionForAllocation(true)).toBe(true);
     expect(requiresAirlineConnectionForAllocation(false)).toBe(false);
   });

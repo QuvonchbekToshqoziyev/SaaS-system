@@ -1,6 +1,6 @@
 # ADO B2B tizimidan foydalanish bo‘yicha to‘liq qo‘llanma
 
-**Versiya:** 2026-yil 13-iyul
+**Versiya:** 2026-yil 18-iyul
 **Kimlar uchun:** superadmin, admin, firma administratori, menejer, kassir va taklif orqali yangi kirayotgan foydalanuvchilar.
 
 Bu hujjat ADO B2B tizimida kundalik ishlash uchun mo‘ljallangan. Unda har bir foydalanuvchi turi, menyular, tugmalar, asosiy biznes jarayonlari va moliyaviy amallar bosqichma-bosqich tushuntiriladi.
@@ -32,8 +32,10 @@ Tizimda ikkita darajadagi rol mavjud: platforma roli va firma ichidagi rol.
 | Rol | Vazifasi | Asosiy imkoniyatlari |
 |---|---|---|
 | `SUPERADMIN` | Butun platforma egasi va nazoratchisi | Barcha firmalar, adminlar, aviakompaniyalar, audit, monitoring, moliya, tuzatish va sozlamalar |
-| `ADMIN` | Operatsion platforma xodimi | Faqat biriktirilgan firmalar doirasidagi amaliy ishlar, kassa, to‘lov, hodim, hisobot va support |
+| `ADMIN` | Operatsion platforma xodimi | Faqat biriktirilgan firmalar doirasidagi amaliy ishlar, kassa, to‘lov, hodim, hisobot va support; bu rol `FIRM_ADMIN` emas |
 | `FIRM` | Mijoz yoki hamkor firma foydalanuvchisi | O‘z firmasi va ruxsat berilgan hamkorlar doirasidagi reys, bilet, tur, xizmat, moliya va chat ishlari |
+
+`SUPERADMIN` akkauntini `Faqat ko‘ruvchi superadmin` sifatida yaratish ham mumkin. Bunday foydalanuvchi superadmin ko‘radigan barcha ma’lumotni ko‘radi, lekin hech narsa qo‘sha, tahrirlay, o‘chira, parol almashtira yoki boshqa o‘zgartirish amalini bajara olmaydi.
 
 ### 2.2. Firma ichidagi rollar
 
@@ -195,8 +197,9 @@ Admin va superadmin uchun umumiy operatsion ko‘rsatkichlarni beradi. Kartalarn
 
 Firma foydalanuvchisiga o‘z firmasining:
 
-- bilet va reys holati;
-- qarz, to‘lov va qoldiq ko‘rsatkichlari;
+- eng yaqin uchadigan 5 ta reysi;
+- bizdan qarzdor firmalar va biz qarz bo‘lgan airline/firmalarni qarzi kattadan kichikka;
+- savdo, ikki yo‘nalishdagi to‘lov va joriy debitor/kreditor qoldiqlarini valyuta bo‘yicha;
 - so‘nggi tranzaksiyalar;
 - muhim amallar va bildirishnomalarini ko‘rsatadi.
 
@@ -211,8 +214,9 @@ Dashboarddagi raqam bilan batafsil sahifadagi raqam farq qilsa, sana, valyuta va
 1. `Adminlar` sahifasini oching.
 2. `Email`, to‘liq ism, telefon va boshlang‘ich parolni kiriting.
 3. `ADMIN` yoki zarur bo‘lsa `SUPERADMIN` rolini tanlang.
-4. Admin ishlashi mumkin bo‘lgan firmalarni belgilang.
-5. `Yaratish`ni bosing.
+4. Hisob faqat nazorat uchun bo‘lsa, `Faqat ko‘ruvchi superadmin`ni belgilang.
+5. Admin ishlashi mumkin bo‘lgan firmalarni belgilang.
+6. `Yaratish`ni bosing.
 
 ### Adminni tahrirlash
 
@@ -224,7 +228,8 @@ Dashboarddagi raqam bilan batafsil sahifadagi raqam farq qilsa, sana, valyuta va
 
 - O‘zingizni o‘chira olmaysiz.
 - O‘zingizdan superadmin rolini olib tashlay olmaysiz.
-- Oxirgi superadminni pasaytirish yoki o‘chirish mumkin emas.
+- Oxirgi o‘zgartirish huquqiga ega superadminni pasaytirish, o‘chirish yoki faqat ko‘ruvchi qilish mumkin emas.
+- Faqat ko‘ruvchi superadmin barcha superadmin bo‘limlarini ochadi, ammo barcha yaratish, tahrirlash va o‘chirish amallari server tomonidan bloklanadi.
 - Adminning firma accessi uning qaysi firmalar ma’lumotini ko‘rishini belgilaydi; bu firma ichidagi rol emas.
 
 ## 7. Aviakompaniyalar
@@ -356,7 +361,7 @@ Natija `PENDING` bo‘ladi. Yetarli bo‘sh bilet bo‘lmasa, amal bajarilmaydi.
 Natija:
 
 - bilet `ASSIGNED` bo‘ladi;
-- bilet summasiga `PAYABLE` qarzdorlik tranzaksiyasi yaratiladi.
+- tasdiqlangan ajratmaning o‘zi agent qarzi va hisobot uchun moliyaviy hujjat bo‘ladi.
 
 Shuning uchun noto‘g‘ri narx yoki miqdorni tasdiqlamasdan avval reys egasi bilan aniqlashtiring.
 
@@ -372,7 +377,7 @@ Natija `SOLD` bo‘ladi va `SALE` tranzaksiyasi yaratiladi.
 
 ### 9.8. Ajratishni bekor qilish
 
-Admin/superadmin `PENDING` yoki ruxsatli `ASSIGNED` biletni qayta `AVAILABLE` holatiga qaytarishi mumkin. `ASSIGNED` bilet qaytarilsa, oldingi qarzni teskari yozuv bilan bekor qiluvchi tranzaksiya yaratiladi. Sotilgan biletning ajratilishini bevosita bekor qilish mumkin emas.
+Admin/superadmin `PENDING` yoki ruxsatli `ASSIGNED` biletni qayta `AVAILABLE` holatiga qaytarishi mumkin. Ajratma qarzi ajratmaning yangi holati va summasidan qayta hisoblanadi. Sotilgan biletning ajratilishini bevosita bekor qilish mumkin emas.
 
 ### 9.9. Sotuvni bekor qilish
 
@@ -406,6 +411,14 @@ Bir dona tur narxi bilet narxi va xizmat narxi yig‘indisiga mos bo‘lishi ker
 5. `Sotish`ni bosing.
 
 Natijada mavjud miqdor kamayadi va firmalararo `SALE` tranzaksiyasi yaratiladi. Sotuvchi va xaridor bitta firma bo‘la olmaydi.
+
+### Sotilgan turni tahrirlash yoki o‘chirish
+
+1. `Tur sotuvlari jurnali`dan kerakli sotuvni toping.
+2. `Tahrirlash` orqali xaridor, soni yoki dona narxini tuzating va sababini yozing.
+3. `O‘chirish`da sababni kiriting va tasdiqlang.
+
+Tuzatishda bilet segmentlari, xizmat rezervlari, tur qoldig‘i va moliyaviy yozuv birgalikda yangilanadi. Bu amallar faqat sotuvchi firmaning administratori/menejeri yoki superadmin uchun ochiq.
 
 ### Eksport
 
@@ -478,10 +491,10 @@ Har bir hisobning qoldig‘i alohida yuritiladi.
 3. Summa, valyuta/kurs va izohni kiriting.
 4. Saqlang va yangi qoldiqni tekshiring.
 
-### 12.5. Mijoz to‘lovini qayd etish
+### 12.5. Airline yoki firmaga to‘lovni qayd etish
 
 1. `To‘lovni qayd etish` bo‘limini oching.
-2. Firmalarni ko‘rish huquqi bo‘lsa, to‘lovchi firmani tanlang.
+2. `Kimga (to‘lov oluvchi)` maydonida pul oladigan airline yoki firmani tanlang. To‘lovchi — tanlangan kassa egasi bo‘lgan firma.
 3. Summa va valyutani kiriting.
 4. To‘lov usulini tanlang: `Naqd`, `Karta` yoki `Bank o‘tkazmasi`.
 5. Naqd to‘lov uchun sana kiriting.
@@ -489,15 +502,18 @@ Har bir hisobning qoldig‘i alohida yuritiladi.
 7. Reys va izohni kerak bo‘lsa kiriting.
 8. Saqlang.
 
+Bu to‘lov kassa yoki karta qoldig‘ini kamaytiradi. Mijozdan kelgan pulni `Kassa kirim / chiqim` bo‘limida `Kirim` sifatida kiriting.
+
 Kassa yopiq bo‘lsa, naqd/karta amali rad etilishi mumkin. Avval tegishli kun va kassani oching.
 
 ### 12.6. Kassa kirim-chiqimi
 
 1. `Kassa kirim / chiqim` bo‘limini oching.
-2. `Kirim` yoki `Chiqim`ni tanlang.
-3. Firma, summa, valyuta, sana va usulni kiriting.
-4. Zarur bo‘lsa karta, reys va izohni tanlang.
-5. Saqlang.
+2. Firma va kontragentni tanlang, zarur bo‘lsa `Reys (ixtiyoriy)` maydonida pul tegishli bo‘lgan reysni belgilang.
+3. `Kirim` yoki `Chiqim`ni tanlang.
+4. Summa, valyuta, sana va usulni kiriting.
+5. Zarur bo‘lsa karta va izohni tanlang.
+6. Saqlang.
 
 ### 12.7. Tahrirlash va o‘chirish qoidasi
 
@@ -528,8 +544,8 @@ Bir kassirni to‘g‘ri kassaga biriktirish monitoring va javobgarlik uchun muh
 
 ### 13.3. Kassani ochish
 
-1. Ish sanasini tanlang.
-2. Boshlang‘ich naqd qoldiqni kiriting.
+1. Ish sanasini tanlang. Oldingi sanalarni ham tanlash mumkin.
+2. Tizim shu sanadan oldingi, qoldig‘i mavjud eng yaqin kassa kunini topib UZS va USD qoldiqlarini alohida olib keladi. Qoldiqsiz yopilgan kunlar o‘tkazib yuboriladi; bu birinchi kun bo‘lsa `0` dan boshlanadi.
 3. `Kassani ochish`ni bosing.
 
 Bir sana uchun bir kassani ikki marta ochib bo‘lmaydi. Boshlang‘ich qoldiq manfiy bo‘lmasligi kerak.
@@ -550,11 +566,30 @@ Karta to‘lovida karta valyutasi to‘lov valyutasiga mos bo‘lishi kerak. Kar
 
 `To‘lov qo‘shish` hamda `Kassa kirim / chiqim` shakllari Tranzaksiyalar bo‘limidagi qoidalarga amal qiladi. Ma’lumot kiritilgach:
 
-1. Kun tranzaksiyalarini tekshiring.
+1. `To‘lov qo‘shish` airline/firma uchun chiqim, `Kassa kirim / chiqim` esa tanlangan turiga qarab kirim yoki chiqim ekanini tekshiring.
 2. Naqd va karta summalarini alohida solishtiring.
 3. Noto‘g‘ri yozuvni oddiy yangi yozuv bilan yashirmang; tegishli tuzatish amalidan foydalaning.
 
-### 13.7. Kassani yopish
+Oldingi sanadagi yozuvni tuzatish kerak bo‘lsa, aynan o‘sha sana va kassani qayta oching, tuzatishni bajaring va kunni yana yoping.
+
+### 13.7. Eski Kassa ma’lumotlarini Excel orqali yuklash
+
+1. `Kassa` sahifasida kerakli firma va kassani tanlang.
+2. `Eski Kassa ma’lumotlarini yuklash` bo‘limini oching.
+3. `Excel shablonni yuklab olish`ni bosing. Shablon aynan tanlangan firma va kassaga bog‘lanadi.
+4. `Kassa importi` varag‘ida har bir eski naqd kirim/chiqim uchun yagona `Import ID`, sana, `KIRIM` yoki `CHIQIM`, summa, `UZS` yoki `USD`, tarixiy UZS kursi va izohni kiriting.
+5. Faylni saqlab, `To‘ldirilgan shablonni tanlash` orqali yuklang.
+6. Tekshiruv natijasini ko‘ring. Xato bo‘lsa, birorta yozuv saqlanmaydi.
+7. Barcha qator tayyor bo‘lsa, `Yuklashni tasdiqlash`ni bosing.
+
+Muhim qoidalar:
+
+- Har bir qatordagi sana uchun shu kassa kuni `Ochiq` bo‘lishi kerak; yopiq kunni avval qayta oching.
+- `Import ID` qayta ishlatilsa, bir xil yozuv dublikat qilinmaydi. Boshqa ma’lumotga shu ID berilsa, tizim xato sifatida ko‘rsatadi.
+- UZS kursi `1`; USD uchun operatsiya sanasidagi UZS kursini kiriting.
+- Bir faylda ko‘pi bilan 500 qator. Import faqat naqd Kassa kirim/chiqimiga tegishli; bilet ajratmasi, tur va xizmat zaxirasi tranzaksiya yaratmaydi.
+
+### 13.8. Kassani yopish
 
 1. Kun oxirida jismoniy naqd pulni sanang.
 2. `Kassani yopish` bo‘limini oching.
@@ -565,9 +600,9 @@ Karta to‘lovida karta valyutasi to‘lov valyutasiga mos bo‘lishi kerak. Kar
 
 Farq nol bo‘lmasa, yopishdan avval sababini topish tavsiya etiladi.
 
-### 13.8. Yopilgan kassani qayta ochish
+### 13.9. Yopilgan kassani qayta ochish
 
-**Kim:** faqat superadmin.
+**Kim:** superadmin, doiradagi admin, firma administratori, menejer yoki o‘ziga biriktirilgan kassadagi kassir.
 
 1. Yopilgan sana va kassani tanlang.
 2. `Kassani qayta ochish`ni bosing.
@@ -576,7 +611,7 @@ Farq nol bo‘lmasa, yopishdan avval sababini topish tavsiya etiladi.
 
 Qayta ochish mavjud tranzaksiyalarni o‘chirmaydi va auditda saqlanadi.
 
-### 13.9. Kunlik nazorat va eksport
+### 13.10. Kunlik nazorat va eksport
 
 - kutilgan qoldiqni haqiqiy qoldiq bilan solishtiring;
 - kassani kim ochgan/yopganini tekshiring;
@@ -681,6 +716,7 @@ Access o‘chirilganda eski tarix saqlanadi, yangi yozishma yopiladi.
 - **Rentabellik** — foyda va xarajatlar tahlili;
 - **Pul oqimi** — kirim va chiqim;
 - **Qarzlar** — debitor va kreditor tarkibi;
+- **Agentlar hisoboti** — agent nomi, eski qoldiq, jami bilet/tur, savdo, to‘lov va real qoldiq;
 - **Reys rentabelligi** — reys kesimidagi natija.
 
 ### Hisobotdan foydalanish
@@ -690,6 +726,10 @@ Access o‘chirilganda eski tarix saqlanadi, yangi yozishma yopiladi.
 3. `Yangilash`ni bosing.
 4. Kartalar va jadvallarni bir xil valyuta/sana doirasida solishtiring.
 5. Kerak bo‘lsa CSV/Excel eksport qiling.
+
+`Debitor / Kreditor`da `Olinadigan qarz` ostida bizdan qarzi bor firmalar, `To‘lanadigan qarz` ostida esa biz qarz bo‘lgan airline/firmalar nomma-nom va joriy qoldig‘i bilan chiqadi. Qarz hisobida bilet ajratmasi, tur, reys inventari tannarxi, olingan/sotilgan xizmatlar, firma bizga qilgan `PAYMENT` yoki `KASSA_IN` to‘lovi va biz qilgan `KASSA_OUT` to‘lovi birga hisoblanadi.
+
+`Agentlar hisoboti`dagi agent qatorini bossangiz, u bizdan olgan reys/bilet/tur, biz undan olgan reys va xizmatlar, `Bizga to‘lagan` hamda `Biz to‘lagan` kassa/tranzaksiya yozuvlari sana, reys va usuli bilan ochiladi.
 
 Firma foydalanuvchisi faqat o‘z doirasidagi ma’lumotni ko‘radi. Superadmin platforma bo‘yicha umumiy va mahsulot monitoring ko‘rsatkichlarini ko‘ra oladi.
 
@@ -732,7 +772,7 @@ Parol, token va sirlar auditda ochiq saqlanmasligi kerak.
 
 ### 19.1. Ma’lumot shablonlari
 
-Firmalar, hodimlar, tranzaksiyalar va tur paketlari uchun tayyor o‘zbekcha Excel yoki CSV shablonlarini yuklab oling.
+Eski naqd Kassa kirim-chiqimlarini saytga kiritish uchun `Kassa` sahifasidagi firma va kassaga bog‘langan Excel import shablonidan foydalaning. Sahifalardagi joriy ro‘yxatlarni CSV yoki Excel ko‘rinishida eksport qilish mumkin.
 
 ### 19.2. Ko‘rinish va til
 

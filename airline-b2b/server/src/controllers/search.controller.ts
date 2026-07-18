@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma } from '@prisma/client';
+import { visibleTransactionWhere } from '../utils/transaction-visibility';
 
 type AuthUser = {
   userId?: string;
@@ -72,7 +73,7 @@ export const globalSearch = async (req: Request, res: Response) => {
       select: { id: true, flightNumber: true, route: true },
     }),
     prisma.transaction.findMany({
-      where: txWhere,
+      where: visibleTransactionWhere(txWhere),
       take: 6,
       orderBy: { createdAt: 'desc' },
       include: { firm: { select: { name: true } }, flight: { select: { flightNumber: true } }, ledgerEntries: true },

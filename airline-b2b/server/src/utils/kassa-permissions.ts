@@ -55,6 +55,6 @@ export async function canOperateKassa(authUser: KassaAuthUser): Promise<boolean>
 
 export async function assertCanOperateKassa(authUser: KassaAuthUser) {
   if (!(await canOperateKassa(authUser))) {
-    throw new Error('Only superadmin, firm admin, or an active kassir can operate kassa');
+    throw new Error('Only platform admins, firm admins, managers, or active kassirs can operate kassa');
   }
 }

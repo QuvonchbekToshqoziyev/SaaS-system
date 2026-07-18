@@ -8,6 +8,7 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import ExportActions from '@/components/ui/ExportActions';
+import ActionButtons from '@/components/ui/ActionButtons';
 
 type FirmOption = {
   id: string;
@@ -67,6 +68,7 @@ type TourComponent = {
 };
 
 type SelectedServiceRow = { serviceId: string; quantityPerTour: number; exchangeRate: string };
+type SellRow = { buyerFirmId: string; quantity: number; unitPrice: string; exchangeRate: string };
 
 const emptyCreateRow = {
   ownerFirmId: '',
@@ -86,6 +88,8 @@ const emptyServiceRow = {
   name: '', providerFirmId: '', providerName: '', flightId: '', quantity: '1',
   unitPrice: '', currency: 'UZS', exchangeRate: '', paymentStatus: 'DEBT', description: '',
 };
+
+const emptySellRow: SellRow = { buyerFirmId: '', quantity: 1, unitPrice: '', exchangeRate: '' };
 
 export default function ToursPage() {
   const { user } = useAuth();
@@ -107,14 +111,15 @@ export default function ToursPage() {
   const [isCreating, setIsCreating] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [sellingId, setSellingId] = useState<string | null>(null);
+  const [editingSaleId, setEditingSaleId] = useState<string | null>(null);
   const [isAddingService, setIsAddingService] = useState(false);
   const [serviceRow, setServiceRow] = useState(emptyServiceRow);
   const [createRow, setCreateRow] = useState(emptyCreateRow);
-  const [sellRows, setSellRows] = useState<Record<string, { buyerFirmId: string; quantity: number; unitPrice: string; exchangeRate: string }>>({});
+  const [sellRows, setSellRows] = useState<Record<string, SellRow>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [filters, setFilters] = useState({ q: '', firmId: 'ALL', status: 'ACTIVE' });
 
-  const firmNameById = useMemo(() => new Map(firms.map((f) => [f.id, f.name])), [firms]);
   const flightNameById = useMemo(() => new Map(flights.map((flight) => [flight.id, `${flight.flightNumber} - ${flight.route}`])), [flights]);
   const visiblePackages = useMemo(() => {
     const q = filters.q.trim().toLowerCase();
@@ -284,9 +289,13 @@ export default function ToursPage() {
   };
 
   const createService = async () => {
+    if (!serviceDraftValid) {
+      toast.error(tr('Fill all required service fields correctly', 'Xizmatning barcha majburiy maydonlarini to‘g‘ri to‘ldiring'));
+      return;
+    }
     try {
       setBusyId('service');
-      await api.post('/services', {
+      const response = await api.post('/services', {
         ...serviceRow,
         providerFirmId: serviceRow.providerFirmId || undefined,
         flightId: serviceRow.flightId || undefined,
@@ -294,6 +303,11 @@ export default function ToursPage() {
         quantity: Number(serviceRow.quantity),
         unitPrice: Number(serviceRow.unitPrice),
       });
+      const created = response.data as ServiceOffering;
+      setServices((current) => [...current.filter((service) => service.id !== created.id), created].sort((a, b) => a.name.localeCompare(b.name)));
+      setSelectedServices((current) => current.some((row) => row.serviceId === created.id)
+        ? current
+        : [...current, { serviceId: created.id, quantityPerTour: 1, exchangeRate: '' }]);
       toast.success(tr('Service recorded', 'Xizmat qayd etildi'));
       setServiceRow(emptyServiceRow);
       setIsAddingService(false);
@@ -304,33 +318,94 @@ export default function ToursPage() {
     }
   };
 
-  const updateSellRow = (packageId: string, patch: Partial<{ buyerFirmId: string; quantity: number; unitPrice: string; exchangeRate: string }>) => {
+  const updateSellRow = (packageId: string, patch: Partial<SellRow>) => {
     setSellRows((current) => ({
       ...current,
-      [packageId]: { ...(current[packageId] || { buyerFirmId: '', quantity: 1, unitPrice: '', exchangeRate: '' }), ...patch },
+      [packageId]: { ...(current[packageId] || emptySellRow), ...patch },
     }));
   };
 
+  const openSale = (packageId: string) => {
+    setSellRows((current) => ({ ...current, [packageId]: { ...emptySellRow } }));
+    setEditingSaleId(null);
+    setSellingId(packageId);
+  };
+
+  const closeSale = (packageId: string) => {
+    setSellRows((current) => ({ ...current, [packageId]: { ...emptySellRow } }));
+    setEditingSaleId(null);
+    setSellingId(null);
+  };
+
+  const editSale = (sale: any) => {
+    setSellRows((current) => ({ ...current, [sale.packageId]: {
+      buyerFirmId: String(sale.buyerFirmId || ''), quantity: Number(sale.quantity || 1),
+      unitPrice: String(sale.unitPrice || ''), exchangeRate: String(sale.transaction?.exchangeRate || ''),
+    } }));
+    setEditingSaleId(sale.id);
+    setSellingId(sale.packageId);
+  };
+
   const sellPackage = async (pkg: TourPackage) => {
-    const row = sellRows[pkg.id] || { buyerFirmId: '', quantity: 1, unitPrice: '', exchangeRate: '' };
+    const row = sellRows[pkg.id] || emptySellRow;
     if (!row.buyerFirmId) {
       toast.error(tr('Select buyer firm', 'Xaridor firmani tanlang'));
       return;
     }
     const currency = String(pkg.currency || 'UZS').trim().toUpperCase();
+    const editingSale = editingSaleId ? sales.find((sale) => sale.id === editingSaleId) : null;
+    const maxQuantity = pkg.availableQuantity + Number(editingSale?.quantity || 0);
+    if (!Number.isInteger(Number(row.quantity)) || Number(row.quantity) < 1 || Number(row.quantity) > maxQuantity) {
+      toast.error(tr('Enter a valid quantity within the available stock', 'Mavjud qoldiq doirasida to‘g‘ri son kiriting'));
+      return;
+    }
+    if (row.unitPrice && Number(row.unitPrice) <= 0) {
+      toast.error(tr('Sale price must be greater than zero', 'Sotuv narxi noldan katta bo‘lishi kerak'));
+      return;
+    }
+    if (currency !== 'UZS' && Number(row.exchangeRate) <= 0) {
+      toast.error(tr('Enter a valid exchange rate', 'To‘g‘ri valyuta kursini kiriting'));
+      return;
+    }
     try {
       setBusyId(pkg.id);
-      await api.post(`/tour-packages/${pkg.id}/sell`, {
+      const payload: any = {
         buyerFirmId: row.buyerFirmId,
         quantity: row.quantity,
         unitPrice: row.unitPrice || undefined,
         exchangeRate: currency !== 'UZS' ? row.exchangeRate.trim() : undefined,
-      });
-      toast.success(tr('Tour package sold', 'Tur paket sotildi'));
-      setSellRows((current) => ({ ...current, [pkg.id]: { buyerFirmId: '', quantity: 1, unitPrice: '', exchangeRate: '' } }));
+      };
+      if (editingSale) {
+        const reason = window.prompt(tr('Why is this sale being corrected?', 'Sotuv nima sababdan tahrirlanmoqda?'))?.trim();
+        if (!reason) return;
+        payload.reason = reason;
+        await api.patch(`/tour-packages/sales/${editingSale.id}`, payload);
+        toast.success(tr('Tour sale updated', 'Tur sotuv tahrirlandi'));
+      } else {
+        await api.post(`/tour-packages/${pkg.id}/sell`, payload);
+        toast.success(tr('Tour package sold', 'Tur paket sotildi'));
+      }
+      setSellRows((current) => ({ ...current, [pkg.id]: { ...emptySellRow } }));
+      setEditingSaleId(null);
+      setSellingId(null);
       await loadData();
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to sell tour package', 'Tur paketni sotib bo\'lmadi'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const deleteSale = async (sale: any) => {
+    const reason = window.prompt(tr('Why should this sale be deleted?', 'Sotuv nima sababdan o‘chirilmoqda?'))?.trim();
+    if (!reason || !window.confirm(tr('Delete this sold tour and restore its inventory?', 'Sotilgan turni o‘chirib, inventarni qaytarasizmi?'))) return;
+    try {
+      setBusyId(`delete-sale-${sale.id}`);
+      await api.delete(`/tour-packages/sales/${sale.id}`, { data: { reason } });
+      toast.success(tr('Tour sale deleted', 'Tur sotuv o‘chirildi'));
+      await loadData();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || tr('Failed to delete tour sale', 'Tur sotuvini o‘chirib bo‘lmadi'));
     } finally {
       setBusyId(null);
     }
@@ -347,6 +422,43 @@ export default function ToursPage() {
   };
 
   const buyerOptionsFor = (pkg: TourPackage) => firms.filter((f) => f.id !== pkg.ownerFirmId);
+  const sellingPackage = packages.find((pkg) => pkg.id === sellingId) || null;
+  const serviceDraftValid = Boolean(
+    serviceRow.name.trim()
+    && serviceRow.providerName.trim()
+    && Number.isInteger(Number(serviceRow.quantity))
+    && Number(serviceRow.quantity) > 0
+    && Number(serviceRow.unitPrice) > 0
+    && /^[A-Z]{3}$/.test(String(serviceRow.currency || '').trim().toUpperCase())
+  );
+  const selectedCreateFlight = flights.find((flight) => flight.id === createRow.flightId);
+  const createAvailableUnits = createRow.ticketProductType === 'ROUND_TRIP'
+    ? Number(selectedCreateFlight?.availableRoundTripCount || 0)
+    : createRow.ticketDirection === 'RETURN'
+      ? Number(selectedCreateFlight?.availableReturnCount || 0)
+      : Number(selectedCreateFlight?.availableOutboundCount || 0);
+  const createRequiredUnits = Number(createRow.quantity || 0) * Number(createRow.ticketsPerTour || 0);
+  const selectedServicesValid = selectedServices.every((row, index) => {
+    const service = selectedService(row.serviceId);
+    if (!service || !Number.isInteger(Number(row.quantityPerTour)) || Number(row.quantityPerTour) < 1) return false;
+    if (selectedServices.some((other, otherIndex) => otherIndex !== index && other.serviceId === row.serviceId)) return false;
+    if (String(service.currency).toUpperCase() !== String(createRow.currency).toUpperCase() && Number(row.exchangeRate) <= 0) return false;
+    return Boolean(editingId) || Number(createRow.quantity) * Number(row.quantityPerTour) <= service.availableQuantity;
+  });
+  const ticketNeedsRate = Boolean(selectedCreateFlight?.currency && selectedCreateFlight.currency !== createRow.currency);
+  const tourDraftValid = Boolean(
+    createRow.ownerFirmId
+    && createRow.flightId
+    && createRow.name.trim()
+    && createRow.destination.trim()
+    && Number.isInteger(Number(createRow.quantity))
+    && Number(createRow.quantity) > 0
+    && Number.isInteger(Number(createRow.ticketsPerTour))
+    && Number(createRow.ticketsPerTour) > 0
+    && (Boolean(editingId) || createRequiredUnits <= createAvailableUnits)
+    && (!ticketNeedsRate || Number(createRow.ticketExchangeRate) > 0)
+    && selectedServicesValid
+  );
 
   return (
     <div className="space-y-6">
@@ -370,7 +482,10 @@ export default function ToursPage() {
         {canCreateTours && (
           <button
             type="button"
-            onClick={() => setIsAddingService((value) => !value)}
+            onClick={() => {
+              setServiceRow((current) => ({ ...current, flightId: current.flightId || createRow.flightId }));
+              setIsAddingService((value) => !value);
+            }}
             className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-surface px-4 py-2 text-sm font-bold uppercase tracking-wider text-foreground hover:border-primary hover:text-primary"
           >
             <BriefcaseBusiness size={16} />
@@ -391,32 +506,38 @@ export default function ToursPage() {
       </div>
 
       {isAddingService && canCreateTours && (
-        <div className="grid gap-3 rounded-lg border border-border bg-surface p-4 md:grid-cols-3">
-          <input className="compact-control" placeholder={tr('Service name, e.g. Visa', 'Xizmat nomi, masalan Viza')} value={serviceRow.name} onChange={(e) => setServiceRow({ ...serviceRow, name: e.target.value })} required />
-          <select className="compact-control" value={serviceRow.providerFirmId} onChange={(e) => {
+        <div className="operation-form form-grid">
+          <div className="form-heading"><div><h3 className="form-heading__title">{tr('Add service inventory', 'Xizmat inventarini qo‘shish')}</h3><p className="form-heading__description">{tr('Record the service once, then connect it to one or more tour packages.', 'Xizmatni bir marta qayd eting, so‘ng uni bir yoki bir nechta tur paketiga bog‘lang.')}</p></div></div>
+          <label className="form-field--wide"><span className="compact-label">{tr('Service name', 'Xizmat nomi')}</span><input className="compact-control" placeholder={tr('For example: Visa support', 'Masalan: Viza xizmati')} value={serviceRow.name} onChange={(e) => setServiceRow({ ...serviceRow, name: e.target.value })} required /></label>
+          <label className="form-field--wide"><span className="compact-label">{tr('Provider firm', 'Ta’minotchi firma')}</span><select className="compact-control" value={serviceRow.providerFirmId} onChange={(e) => {
             const providerFirmId = e.target.value;
             setServiceRow({ ...serviceRow, providerFirmId, providerName: firms.find((firm) => firm.id === providerFirmId)?.name || '' });
           }}>
             <option value="">{tr('Custom provider', 'Boshqa ta’minotchi')}</option>
             {firms.filter((firm) => firm.id !== ownFirmId).map((firm) => <option key={firm.id} value={firm.id}>{firm.name}</option>)}
-          </select>
-          <input className="compact-control" placeholder={tr('Provider name', 'Xizmat ko‘rsatuvchi nomi')} value={serviceRow.providerName} onChange={(e) => setServiceRow({ ...serviceRow, providerName: e.target.value, providerFirmId: '' })} required />
-          <select className="compact-control" value={serviceRow.flightId} onChange={(e) => setServiceRow({ ...serviceRow, flightId: e.target.value })}>
+          </select></label>
+          <label className="form-field--wide"><span className="compact-label">{tr('Provider name', 'Xizmat ko‘rsatuvchi nomi')}</span><input className="compact-control" placeholder={tr('Full provider name', 'Ta’minotchining to‘liq nomi')} value={serviceRow.providerName} onChange={(e) => setServiceRow({ ...serviceRow, providerName: e.target.value, providerFirmId: '' })} required /></label>
+          <label className="form-field--wide"><span className="compact-label">{tr('Related flight', 'Bog‘langan reys')}</span><select className="compact-control" value={serviceRow.flightId} onChange={(e) => setServiceRow({ ...serviceRow, flightId: e.target.value })}>
             <option value="">{tr('No flight', 'Reyssiz')}</option>
             {flights.map((flight) => <option key={flight.id} value={flight.id}>{flight.flightNumber} · {flight.route}</option>)}
-          </select>
-          <input className="compact-control" type="number" min="1" value={serviceRow.quantity} onChange={(e) => setServiceRow({ ...serviceRow, quantity: e.target.value })} required />
-          <input className="compact-control" type="number" min="0.01" step="0.01" placeholder={tr('Unit price', 'Bir dona narxi')} value={serviceRow.unitPrice} onChange={(e) => setServiceRow({ ...serviceRow, unitPrice: e.target.value })} required />
-          <select className="compact-control" value={serviceRow.currency} onChange={(e) => setServiceRow({ ...serviceRow, currency: e.target.value })}><option>UZS</option><option>USD</option></select>
-          {serviceRow.currency === 'USD' && <input className="compact-control" inputMode="decimal" placeholder={tr('Firm rate (optional)', 'Firma kursi (ixtiyoriy)')} value={serviceRow.exchangeRate} onChange={(e) => setServiceRow({ ...serviceRow, exchangeRate: e.target.value })} />}
-          <select className="compact-control" value={serviceRow.paymentStatus} onChange={(e) => setServiceRow({ ...serviceRow, paymentStatus: e.target.value })}>
+          </select></label>
+          <label className="form-field--compact"><span className="compact-label">{tr('Quantity', 'Soni')}</span><input className="compact-control text-right" type="number" min="1" value={serviceRow.quantity} onChange={(e) => setServiceRow({ ...serviceRow, quantity: e.target.value })} required /></label>
+          <label className="form-field--compact"><span className="compact-label">{tr('Unit price', 'Bir dona narxi')}</span><input className="compact-control text-right" type="number" min="0.01" step="0.01" placeholder="0.00" value={serviceRow.unitPrice} onChange={(e) => setServiceRow({ ...serviceRow, unitPrice: e.target.value })} required /></label>
+          <label className="form-field--compact"><span className="compact-label">{tr('Currency', 'Valyuta')}</span><select className="compact-control" value={serviceRow.currency} onChange={(e) => setServiceRow({ ...serviceRow, currency: e.target.value })}><option>UZS</option><option>USD</option></select></label>
+          {serviceRow.currency === 'USD' && <label className="form-field--compact"><span className="compact-label">{tr('Firm rate', 'Firma kursi')}</span><input className="compact-control text-right" inputMode="decimal" placeholder={tr('Optional', 'Ixtiyoriy')} value={serviceRow.exchangeRate} onChange={(e) => setServiceRow({ ...serviceRow, exchangeRate: e.target.value })} /></label>}
+          <label className="form-field--compact"><span className="compact-label">{tr('Payment status', 'To‘lov holati')}</span><select className="compact-control" value={serviceRow.paymentStatus} onChange={(e) => setServiceRow({ ...serviceRow, paymentStatus: e.target.value })}>
             <option value="DEBT">{tr('Debt', 'Qarz')}</option><option value="PAID">{tr('Paid', 'To‘langan')}</option>
-          </select>
-          <textarea className="compact-control md:col-span-2" placeholder={tr('Notes', 'Izoh')} value={serviceRow.description} onChange={(e) => setServiceRow({ ...serviceRow, description: e.target.value })} />
-          <div className="flex gap-2">
-            <button type="button" onClick={createService} disabled={busyId === 'service'} className="rounded bg-primary px-4 py-2 font-semibold text-primary-foreground disabled:opacity-50">{busyId === 'service' ? tr('Saving...', 'Saqlanmoqda...') : tr('Record service', 'Xizmatni qayd etish')}</button>
-            <button type="button" onClick={() => setIsAddingService(false)} className="rounded border border-border px-4 py-2">{tr('Cancel', 'Bekor qilish')}</button>
-          </div>
+          </select></label>
+          <label className="form-field--full"><span className="compact-label">{tr('Notes and service details', 'Izoh va xizmat tafsilotlari')}</span><textarea className="compact-control" rows={4} placeholder={tr('Add conditions or other useful information…', 'Shartlar yoki boshqa kerakli tafsilotlarni kiriting…')} value={serviceRow.description} onChange={(e) => setServiceRow({ ...serviceRow, description: e.target.value })} /></label>
+          <ActionButtons
+            cancelLabel={tr('Cancel', 'Bekor qilish')}
+            confirmLabel={tr('Record service', 'Xizmatni qayd etish')}
+            busyLabel={tr('Saving...', 'Saqlanmoqda...')}
+            busy={busyId === 'service'}
+            canConfirm={serviceDraftValid}
+            onCancel={() => { setServiceRow(emptyServiceRow); setIsAddingService(false); }}
+            onConfirm={createService}
+          />
         </div>
       )}
 
@@ -452,7 +573,7 @@ export default function ToursPage() {
       </div>
 
       {canCorrectTours && isCreating && (
-        <div className="glass-panel p-4">
+        <div className="operation-form">
           <div className="mb-4 flex items-center justify-between gap-3">
             <h3 className="text-sm font-bold uppercase tracking-wider text-foreground">{editingId ? tr('Edit tour package', 'Tur paketini tahrirlash') : tr('New tour package', 'Yangi tur paket')}</h3>
             <button type="button" onClick={() => { setIsCreating(false); setEditingId(null); setSelectedServices([]); }} className="px-3 py-2 bg-surface border border-border rounded-lg text-xs font-semibold uppercase">
@@ -460,13 +581,13 @@ export default function ToursPage() {
             </button>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <label className="block">
+          <div className="form-grid">
+            <label className="form-field--wide">
               <span className="compact-label">{tr('Tour', 'Tur')}</span>
               <input className="compact-control" value={createRow.name} onChange={(e) => setCreateRow({ ...createRow, name: e.target.value })} placeholder={tr('Tour name', 'Tur nomi')} />
             </label>
 
-            <label className="block">
+            <label className="form-field--wide">
               <span className="compact-label">{tr('Flight', 'Reys')}</span>
               <select className="compact-control" value={createRow.flightId} onChange={(e) => {
                 const flight = flights.find((row) => row.id === e.target.value);
@@ -483,7 +604,7 @@ export default function ToursPage() {
               </select>
             </label>
 
-            <label className="block">
+            <label>
               <span className="compact-label">{tr('Ticket product', 'Bilet mahsuloti')}</span>
               <select className="compact-control" value={createRow.ticketProductType} onChange={(e) => setCreateRow({ ...createRow, ticketProductType: e.target.value as 'ROUND_TRIP' | 'ONE_WAY' })}>
                 <option value="ROUND_TRIP">RT — borish–kelish</option>
@@ -491,7 +612,7 @@ export default function ToursPage() {
               </select>
             </label>
 
-            {createRow.ticketProductType === 'ONE_WAY' && <label className="block">
+            {createRow.ticketProductType === 'ONE_WAY' && <label>
               <span className="compact-label">{tr('Ticket direction', 'Bilet yo‘nalishi')}</span>
               <select className="compact-control" value={createRow.ticketDirection} onChange={(e) => setCreateRow({ ...createRow, ticketDirection: e.target.value as 'OUTBOUND' | 'RETURN' })}>
                 <option value="OUTBOUND">OUTBOUND ({flights.find((flight) => flight.id === createRow.flightId)?.availableOutboundCount || 0})</option>
@@ -499,22 +620,22 @@ export default function ToursPage() {
               </select>
             </label>}
 
-            <label className="block">
+            <label className="form-field--wide">
               <span className="compact-label">{tr('Destination', 'Manzil')}</span>
               <input className="compact-control" value={createRow.destination} onChange={(e) => setCreateRow({ ...createRow, destination: e.target.value })} placeholder={tr('Destination', 'Manzil')} />
             </label>
 
-            <label className="block">
+            <label className="form-field--compact">
               <span className="compact-label">{tr('Tour quantity', 'Tur soni')}</span>
               <input type="number" min="1" className="compact-control text-right" value={createRow.quantity} onChange={(e) => setCreateRow({ ...createRow, quantity: Number(e.target.value) })} />
             </label>
 
-            <label className="block">
+            <label className="form-field--compact">
               <span className="compact-label">{tr('Tickets per tour', 'Har bir turga bilet')}</span>
               <input type="number" min="1" className="compact-control text-right" value={createRow.ticketsPerTour} onChange={(e) => setCreateRow({ ...createRow, ticketsPerTour: Number(e.target.value) })} />
             </label>
 
-            <label className="block">
+            <label className="form-field--compact">
               <span className="compact-label">{tr('Currency', 'Valyuta')}</span>
               <select className="compact-control" value={createRow.currency} onChange={(e) => setCreateRow({ ...createRow, currency: e.target.value })}>
                 <option value="UZS">UZS</option>
@@ -522,9 +643,9 @@ export default function ToursPage() {
               </select>
             </label>
             {flights.find((flight) => flight.id === createRow.flightId)?.currency && flights.find((flight) => flight.id === createRow.flightId)?.currency !== createRow.currency && (
-              <label className="block"><span className="compact-label">{tr('Ticket currency rate', 'Bilet valyuta kursi')}</span><input inputMode="decimal" className="compact-control text-right" value={createRow.ticketExchangeRate} onChange={(e) => setCreateRow({ ...createRow, ticketExchangeRate: e.target.value })} placeholder="1 USD = ... UZS" /></label>
+              <label><span className="compact-label">{tr('Ticket currency rate', 'Bilet valyuta kursi')}</span><input inputMode="decimal" className="compact-control text-right" value={createRow.ticketExchangeRate} onChange={(e) => setCreateRow({ ...createRow, ticketExchangeRate: e.target.value })} placeholder="1 USD = ... UZS" /></label>
             )}
-            <label className="block md:col-span-2 xl:col-span-4"><span className="compact-label">{tr('Notes', 'Izoh')}</span><textarea className="compact-control" value={createRow.notes} onChange={(e) => setCreateRow({ ...createRow, notes: e.target.value })} /></label>
+            <label className="form-field--full"><span className="compact-label">{tr('Notes and tour details', 'Izoh va tur tafsilotlari')}</span><textarea className="compact-control" rows={4} placeholder={tr('Add hotel, passenger, transfer or other package details…', 'Mehmonxona, yo‘lovchi, transfer yoki boshqa paket tafsilotlarini kiriting…')} value={createRow.notes} onChange={(e) => setCreateRow({ ...createRow, notes: e.target.value })} /></label>
           </div>
 
           <div className="mt-5 border-t border-border pt-4">
@@ -538,21 +659,30 @@ export default function ToursPage() {
                 const required = Number(createRow.quantity || 0) * Number(row.quantityPerTour || 0);
                 const duplicate = row.serviceId && selectedServices.some((other, otherIndex) => otherIndex !== index && other.serviceId === row.serviceId);
                 const needsRate = service && String(service.currency).toUpperCase() !== String(createRow.currency).toUpperCase();
-                return <div key={index} className="grid gap-2 rounded-lg border border-border bg-surface-2 p-3 md:grid-cols-2 xl:grid-cols-[2fr_1fr_1fr_1fr_1fr_1fr_auto] xl:items-end">
-                  <label><span className="compact-label">{tr('Select service', 'Xizmatni tanlash')}</span><select className="compact-control" value={row.serviceId} onChange={(e) => updateServiceSelection(index, { serviceId: e.target.value })}><option value="">{tr('Choose...', 'Tanlang...')}</option>{services.filter((item) => !item.flightId || item.flightId === createRow.flightId).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.providerFirm?.name || item.providerName || '-'} · {item.availableQuantity} ta</option>)}</select>{duplicate && <span className="text-xs text-danger">{tr('Already added', 'Ushbu xizmat tur paketiga allaqachon qo‘shilgan.')}</span>}</label>
-                  <label><span className="compact-label">{tr('Per tour', 'Har bir turga')}</span><input type="number" min="1" className="compact-control text-right" value={row.quantityPerTour} onChange={(e) => updateServiceSelection(index, { quantityPerTour: Number(e.target.value) })} /></label>
-                  <div><span className="compact-label">{tr('Available', 'Mavjud')}</span><div className="compact-control text-right">{service?.availableQuantity ?? '-'}</div></div>
-                  <div><span className="compact-label">{tr('Unit cost', 'Bir dona tannarx')}</span><div className="compact-control text-right">{service ? `${Number(service.unitPrice).toFixed(2)} ${service.currency}` : '-'}</div></div>
-                  <div><span className="compact-label">{tr('Required', 'Kerak bo‘ladi')}</span><div className={`compact-control text-right ${service && required > service.availableQuantity ? 'text-danger' : ''}`}>{required}</div></div>
-                  {needsRate ? <label><span className="compact-label">{tr('Currency rate', 'Valyuta kursi')}</span><input inputMode="decimal" className="compact-control text-right" value={row.exchangeRate} onChange={(e) => updateServiceSelection(index, { exchangeRate: e.target.value })} placeholder="1 USD = ... UZS" /></label> : <div><span className="compact-label">{tr('Total', 'Jami')}</span><div className="compact-control text-right">{(serviceRowCost(row) * Number(createRow.quantity || 0)).toFixed(2)} {createRow.currency}</div></div>}
-                  <button type="button" title={tr('Remove', 'Olib tashlash')} onClick={() => setSelectedServices((rows) => rows.filter((_, rowIndex) => rowIndex !== index))} className="rounded-lg border border-danger/40 p-2 text-danger"><X size={17} /></button>
-                  {needsRate && <div className="text-right text-sm font-semibold md:col-span-2 xl:col-span-7">{tr('Service total', 'Xizmat jami')}: {(serviceRowCost(row) * Number(createRow.quantity || 0)).toFixed(2)} {createRow.currency}</div>}
+                return <div key={index} className="form-grid form-subsection">
+                  <label className="form-field--wide"><span className="compact-label">{tr('Select service', 'Xizmatni tanlash')}</span><select className="compact-control" value={row.serviceId} onChange={(e) => updateServiceSelection(index, { serviceId: e.target.value })}><option value="">{tr('Choose...', 'Tanlang...')}</option>{services.filter((item) => !item.flightId || item.flightId === createRow.flightId).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.providerFirm?.name || item.providerName || '-'} · {item.availableQuantity} ta</option>)}</select>{duplicate && <span className="text-xs text-danger">{tr('Already added', 'Ushbu xizmat tur paketiga allaqachon qo‘shilgan.')}</span>}</label>
+                  <label className="form-field--compact"><span className="compact-label">{tr('Per tour', 'Har bir turga')}</span><input type="number" min="1" className="compact-control text-right" value={row.quantityPerTour} onChange={(e) => updateServiceSelection(index, { quantityPerTour: Number(e.target.value) })} /></label>
+                  <div className="form-field form-field--compact"><span className="compact-label">{tr('Available', 'Mavjud')}</span><div className="form-readout">{service?.availableQuantity ?? '-'}</div></div>
+                  <div className="form-field form-field--compact"><span className="compact-label">{tr('Unit cost', 'Bir dona tannarx')}</span><div className="form-readout">{service ? `${Number(service.unitPrice).toFixed(2)} ${service.currency}` : '-'}</div></div>
+                  <div className="form-field form-field--compact"><span className="compact-label">{tr('Required', 'Kerak bo‘ladi')}</span><div className={`form-readout ${service && required > service.availableQuantity ? 'text-danger' : ''}`}>{required}</div></div>
+                  {needsRate ? <label><span className="compact-label">{tr('Currency rate', 'Valyuta kursi')}</span><input inputMode="decimal" className="compact-control text-right" value={row.exchangeRate} onChange={(e) => updateServiceSelection(index, { exchangeRate: e.target.value })} placeholder="1 USD = ... UZS" /></label> : <div className="form-field"><span className="compact-label">{tr('Total', 'Jami')}</span><div className="form-readout">{(serviceRowCost(row) * Number(createRow.quantity || 0)).toFixed(2)} {createRow.currency}</div></div>}
+                  <button type="button" title={tr('Remove', 'Olib tashlash')} onClick={() => setSelectedServices((rows) => rows.filter((_, rowIndex) => rowIndex !== index))} className="form-row-remove rounded-lg border border-danger/40 p-2 text-danger"><X size={17} /></button>
+                  {needsRate && <div className="form-preview">{tr('Service total', 'Xizmat jami')}: {(serviceRowCost(row) * Number(createRow.quantity || 0)).toFixed(2)} {createRow.currency}</div>}
                 </div>;
               })}
               {!selectedServices.length && <p className="rounded-lg border border-dashed border-border p-4 text-center text-sm text-muted">{tr('No services selected. Add one if this tour includes purchased services.', 'Xizmat tanlanmagan. Turda oldindan olingan xizmat bo‘lsa, qo‘shing.')}</p>}
             </div>
           </div>
-          <div className="mt-4 flex justify-end"><button type="button" onClick={createPackage} disabled={busyId === 'create'} className="px-5 py-2 bg-primary text-ink rounded-lg text-xs font-bold uppercase disabled:opacity-50">{busyId === 'create' ? tr('Saving...', 'Saqlanmoqda...') : editingId ? tr('Save changes', 'O‘zgarishlarni saqlash') : tr('Create', 'Yaratish')}</button></div>
+          <ActionButtons
+            className="mt-4"
+            cancelLabel={tr('Cancel', 'Bekor qilish')}
+            confirmLabel={editingId ? tr('Confirm changes', 'O‘zgarishlarni tasdiqlash') : tr('Create', 'Yaratish')}
+            busyLabel={tr('Saving...', 'Saqlanmoqda...')}
+            busy={busyId === 'create'}
+            canConfirm={tourDraftValid}
+            onCancel={() => { setIsCreating(false); setEditingId(null); setCreateRow(emptyCreateRow); setSelectedServices([]); }}
+            onConfirm={createPackage}
+          />
         </div>
       )}
 
@@ -583,7 +713,6 @@ export default function ToursPage() {
                 </td>
               </tr>
             ) : visiblePackages.map((pkg) => {
-              const sellRow = sellRows[pkg.id] || { buyerFirmId: '', quantity: 1, unitPrice: '', exchangeRate: '' };
               const canSell = isAdmin || pkg.ownerFirmId === ownFirmId;
               return (
                 <tr key={pkg.id}>
@@ -608,30 +737,19 @@ export default function ToursPage() {
                   <td className="text-right font-mono">{Number(pkg.totalCost || Number(pkg.unitPrice) * pkg.quantity).toFixed(2)} {pkg.currency}</td>
                   <td>
                     {canSell ? (
-                      <div className="flex min-w-[34rem] items-center gap-2">
-                        <select className="compact-control min-w-44" value={sellRow.buyerFirmId} onChange={(e) => updateSellRow(pkg.id, { buyerFirmId: e.target.value })}>
-                          <option value="">{tr('Buyer firm', 'Xaridor firma')}</option>
-                          {buyerOptionsFor(pkg).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-                        </select>
-                        <input type="number" min="1" max={pkg.availableQuantity} className="compact-control w-20 text-right" value={sellRow.quantity} onChange={(e) => updateSellRow(pkg.id, { quantity: Number(e.target.value) })} />
-                        <input type="number" min="0" className="compact-control w-28 text-right" placeholder={String(pkg.unitPrice)} value={sellRow.unitPrice} onChange={(e) => updateSellRow(pkg.id, { unitPrice: e.target.value })} />
-                        {String(pkg.currency || 'UZS').trim().toUpperCase() !== 'UZS' && (
-                          <input inputMode="decimal" className="compact-control w-28 text-right" placeholder={tr('Rate to UZS', 'UZS kursi')} value={sellRow.exchangeRate} onChange={(e) => updateSellRow(pkg.id, { exchangeRate: e.target.value })} />
-                        )}
-                        <button type="button" onClick={() => sellPackage(pkg)} disabled={busyId === pkg.id || pkg.availableQuantity <= 0} className="px-3 py-2 bg-primary text-ink rounded-lg text-xs font-bold uppercase disabled:opacity-50">
-                          {tr('Sell', 'Sotish')}
-                        </button>
-                      </div>
+                      <button type="button" onClick={() => openSale(pkg.id)} disabled={pkg.availableQuantity < 1} className="action-button action-button--primary disabled:opacity-50">
+                        {tr('Sell', 'Sotish')}
+                      </button>
                     ) : (
                       <span className="text-muted">{tr('Only owner can sell', 'Faqat egasi sotadi')}</span>
                     )}
                   </td>
-                  <td><div className="flex min-w-36 gap-1">
-                    <button type="button" title={tr('Details', 'Tafsilotlar')} onClick={() => setDetailId(detailId === pkg.id ? null : pkg.id)} className="rounded border border-border p-2 hover:text-primary"><Eye size={15} /></button>
-                    <button type="button" title={tr('History', 'Tarix')} onClick={() => viewHistory(pkg)} className="rounded border border-border p-2 hover:text-primary"><History size={15} /></button>
-                    <button type="button" title={tr('Report', 'Hisobot')} onClick={() => { window.location.href = '/reports'; }} className="rounded border border-border p-2 hover:text-primary"><BarChart3 size={15} /></button>
-                    {canCorrectTours && (role === 'SUPERADMIN' || pkg.ownerFirmId === ownFirmId) && !pkg.deletedAt && <button type="button" title={tr('Edit', 'Tahrirlash')} onClick={() => startEdit(pkg)} className="rounded border border-border p-2 hover:text-primary"><Pencil size={15} /></button>}
-                    {canCorrectTours && (role === 'SUPERADMIN' || pkg.ownerFirmId === ownFirmId) && pkg.status !== 'CANCELLED' && <button type="button" title={tr('Cancel', 'Bekor qilish')} onClick={() => cancelPackage(pkg)} disabled={busyId === `cancel-${pkg.id}`} className="rounded border border-danger/40 p-2 text-danger disabled:opacity-50"><Trash2 size={15} /></button>}
+                  <td><div className="flex min-w-56 gap-2">
+                    <button type="button" aria-label={tr('Details', 'Tafsilotlar')} title={tr('Details', 'Tafsilotlar')} onClick={() => setDetailId(detailId === pkg.id ? null : pkg.id)} className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-border bg-surface hover:border-primary hover:text-primary"><Eye size={17} /></button>
+                    <button type="button" aria-label={tr('History', 'Tarix')} title={tr('History', 'Tarix')} onClick={() => viewHistory(pkg)} className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-border bg-surface hover:border-primary hover:text-primary"><History size={17} /></button>
+                    <button type="button" aria-label={tr('Report', 'Hisobot')} title={tr('Report', 'Hisobot')} onClick={() => { window.location.href = '/reports'; }} className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-border bg-surface hover:border-primary hover:text-primary"><BarChart3 size={17} /></button>
+                    {canCorrectTours && (role === 'SUPERADMIN' || pkg.ownerFirmId === ownFirmId) && !pkg.deletedAt && <button type="button" aria-label={tr('Edit', 'Tahrirlash')} title={tr('Edit', 'Tahrirlash')} onClick={() => startEdit(pkg)} className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-border bg-surface hover:border-primary hover:text-primary"><Pencil size={17} /></button>}
+                    {canCorrectTours && (role === 'SUPERADMIN' || pkg.ownerFirmId === ownFirmId) && pkg.status !== 'CANCELLED' && <button type="button" aria-label={tr('Cancel', 'Bekor qilish')} title={tr('Cancel', 'Bekor qilish')} onClick={() => cancelPackage(pkg)} disabled={busyId === `cancel-${pkg.id}`} className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-danger/40 bg-surface text-danger disabled:opacity-50"><Trash2 size={17} /></button>}
                   </div></td>
                 </tr>
               );
@@ -639,6 +757,55 @@ export default function ToursPage() {
           </tbody>
         </table>
       </div>
+
+      {sellingPackage && (() => {
+        const sellRow = sellRows[sellingPackage.id] || emptySellRow;
+        const editingSale = editingSaleId ? sales.find((sale) => sale.id === editingSaleId) : null;
+        const maxQuantity = sellingPackage.availableQuantity + Number(editingSale?.quantity || 0);
+        const needsRate = String(sellingPackage.currency || 'UZS').trim().toUpperCase() !== 'UZS';
+        return <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) closeSale(sellingPackage.id); }}
+        >
+          <section role="dialog" aria-modal="true" aria-labelledby="tour-sale-title" className="operation-form max-h-[90vh] w-full max-w-3xl overflow-y-auto shadow-2xl">
+            <div className="form-heading mb-4">
+              <div>
+                <h3 id="tour-sale-title" className="form-heading__title">{editingSale ? tr('Edit sold tour', 'Sotilgan turni tahrirlash') : tr('Sell tour package', 'Tur paketini sotish')}</h3>
+                <p className="form-heading__description">{sellingPackage.name} · {maxQuantity} {tr('available for this operation', 'bu amal uchun mavjud')} · {sellingPackage.currency}</p>
+              </div>
+              <button type="button" onClick={() => closeSale(sellingPackage.id)} aria-label={tr('Close', 'Yopish')} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-foreground"><X size={20} /></button>
+            </div>
+            <div className="form-grid">
+              <label className="form-field--wide"><span className="compact-label">{tr('Buyer firm', 'Xaridor firma')}</span><select className="compact-control" value={sellRow.buyerFirmId} onChange={(e) => updateSellRow(sellingPackage.id, { buyerFirmId: e.target.value })}>
+                <option value="">{tr('Select buyer firm', 'Xaridor firmani tanlang')}</option>
+                {buyerOptionsFor(sellingPackage).map((firm) => <option key={firm.id} value={firm.id}>{firm.name}</option>)}
+              </select></label>
+              <label className="form-field--compact"><span className="compact-label">{tr('Quantity', 'Soni')}</span><input type="number" min="1" max={maxQuantity} className="compact-control text-right" value={sellRow.quantity} onChange={(e) => updateSellRow(sellingPackage.id, { quantity: Number(e.target.value) })} /></label>
+              <label className="form-field--compact"><span className="compact-label">{tr('Unit price', 'Bir dona narxi')}</span><input type="number" min="0.01" step="0.01" className="compact-control text-right" placeholder={String(sellingPackage.unitPrice)} value={sellRow.unitPrice} onChange={(e) => updateSellRow(sellingPackage.id, { unitPrice: e.target.value })} /></label>
+              {needsRate && <label className="form-field--compact"><span className="compact-label">{tr('Rate to UZS', 'UZS kursi')}</span><input type="number" inputMode="decimal" min="0.000001" step="any" className="compact-control text-right" placeholder="0.00" value={sellRow.exchangeRate} onChange={(e) => updateSellRow(sellingPackage.id, { exchangeRate: e.target.value })} /></label>}
+              <div className="form-preview">
+                {tr('Sale preview', 'Sotuv ko‘rinishi')}: {sellRow.quantity} × {sellRow.unitPrice || sellingPackage.unitPrice} {sellingPackage.currency} → {firms.find((firm) => firm.id === sellRow.buyerFirmId)?.name || tr('buyer not selected', 'xaridor tanlanmagan')}
+              </div>
+              <ActionButtons
+                cancelLabel={tr('Cancel', 'Bekor qilish')}
+                confirmLabel={editingSale ? tr('Save changes', 'O‘zgarishni saqlash') : tr('Sell', 'Sotish')}
+                busyLabel={editingSale ? tr('Saving...', 'Saqlanmoqda...') : tr('Selling...', 'Sotilmoqda...')}
+                busy={busyId === sellingPackage.id}
+                canConfirm={Boolean(
+                  sellRow.buyerFirmId
+                  && Number.isInteger(Number(sellRow.quantity))
+                  && Number(sellRow.quantity) > 0
+                  && Number(sellRow.quantity) <= maxQuantity
+                  && (!sellRow.unitPrice || Number(sellRow.unitPrice) > 0)
+                  && (!needsRate || Number(sellRow.exchangeRate) > 0)
+                )}
+                onCancel={() => closeSale(sellingPackage.id)}
+                onConfirm={() => sellPackage(sellingPackage)}
+              />
+            </div>
+          </section>
+        </div>;
+      })()}
 
       {detailId && (() => {
         const pkg = packages.find((item) => item.id === detailId);
@@ -666,11 +833,12 @@ export default function ToursPage() {
                 <th>{tr('Buyer', 'Xaridor')}</th>
                 <th className="text-right">{tr('Qty', 'Soni')}</th>
                 <th className="text-right">{tr('Total', 'Jami')}</th>
+                <th>{tr('Actions', 'Amallar')}</th>
               </tr>
             </thead>
             <tbody>
               {visibleSales.length === 0 ? (
-                <tr><td colSpan={6} className="text-center text-muted">{tr('No tour sales yet.', 'Hali tur sotuvlari yo\'q.')}</td></tr>
+                <tr><td colSpan={7} className="text-center text-muted">{tr('No tour sales yet.', 'Hali tur sotuvlari yo\'q.')}</td></tr>
               ) : visibleSales.map((sale) => (
                 <tr key={sale.id}>
                   <td>{new Date(sale.createdAt).toLocaleString()}</td>
@@ -679,6 +847,10 @@ export default function ToursPage() {
                   <td>{sale.buyerFirm?.name || sale.buyerFirmId}</td>
                   <td className="text-right font-mono">{sale.quantity}</td>
                   <td className="text-right font-mono">{Number(sale.totalAmount).toFixed(2)} {sale.currency}</td>
+                  <td>{canCorrectTours && (role === 'SUPERADMIN' || sale.sellerFirmId === ownFirmId) ? <div className="flex gap-2">
+                    <button type="button" aria-label={tr('Edit', 'Tahrirlash')} title={tr('Edit', 'Tahrirlash')} onClick={() => editSale(sale)} className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-border bg-surface hover:border-primary hover:text-primary"><Pencil size={17} /></button>
+                    <button type="button" aria-label={tr('Delete', 'O‘chirish')} title={tr('Delete', 'O‘chirish')} onClick={() => deleteSale(sale)} disabled={busyId === `delete-sale-${sale.id}`} className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-danger/40 bg-surface text-danger disabled:opacity-50"><Trash2 size={17} /></button>
+                  </div> : <span className="text-muted">—</span>}</td>
                 </tr>
               ))}
             </tbody>

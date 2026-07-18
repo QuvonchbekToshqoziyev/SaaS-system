@@ -38,6 +38,8 @@ Roles are stored as Prisma enum values and normalized at frontend/backend bounda
 - `ADMIN`: operational role for assigned firms. Can manage flights, tickets, firms within access, payments, reports, kassa operations, employees, and some support workflows.
 - `FIRM`: partner firm role. Can see firm-scoped data, confirm allocations, sell assigned tickets, request sale cancellation, create tour packages, sell owned tour packages, add partner firm records, manage employees for its firm, use kassa cash adjustment where allowed, and use chat.
 
+`User.readOnlyAccess` can restrict a `SUPERADMIN` to observation only. The account retains all superadmin GET visibility, while authenticated `POST`, `PUT`, `PATCH`, and `DELETE` requests are rejected centrally with `403 READ_ONLY_ACCOUNT`. The guard reloads the flag from the database on every mutation, so an older JWT cannot bypass a newly applied restriction.
+
 Firm scoping is handled through:
 
 - `User.firmId` for firm users.
@@ -98,7 +100,7 @@ Flow:
 
 1. User submits email and password.
 2. Backend validates credentials with bcrypt.
-3. Backend signs JWT with `userId`, `role`, and `firmId`.
+3. Backend signs JWT with `userId`, `role`, `firmId`, and `readOnlyAccess`.
 4. Frontend stores `token` and normalized `user` in local storage.
 5. Firm users redirect to `/firm`.
 6. Admin and superadmin users redirect to `/admin`.
@@ -120,9 +122,9 @@ Frontend:
 - Page: `/settings`
 - API: `POST /auth/change-password`
 
-Allowed roles:
+Allowed accounts:
 
-- Any authenticated user.
+- Any authenticated user except an account with `readOnlyAccess`.
 
 Flow:
 
@@ -153,6 +155,7 @@ Allowed role:
 Actions:
 
 - Create `ADMIN` or `SUPERADMIN`.
+- Mark a `SUPERADMIN` as read-only.
 - Assign firm access to admins.
 - Edit email, full name, phone, role, password, and firm access.
 - Delete admin accounts.
@@ -161,7 +164,8 @@ Guards:
 
 - Cannot delete own account.
 - Cannot remove own superadmin role.
-- Cannot delete or demote the last superadmin.
+- Cannot delete, demote, or make read-only the last writable superadmin.
+- A read-only superadmin can list admins but cannot create, edit, delete, change a password, or mutate any other business data.
 - Admin list excludes firm accounts.
 
 Audit:
@@ -699,19 +703,22 @@ Frontend:
   - `POST /kassa/close`
   - `POST /kassa/reopen`
   - `POST /transactions/cash`
+  - `POST /transactions/import/historical-kassa`
   - `POST /payments`
 
 ### View Kassa Day
 
 Allowed roles:
 
-- Authenticated users.
+- `SUPERADMIN`, assigned `ADMIN`, `FIRM_ADMIN`, `MANAGER`, and `KASSIR`.
 
 Scope:
 
 - Superadmin sees all.
 - Admin sees accessible firms.
-- Firm sees scoped firm data.
+- Firm admin and manager see their firm's active desks.
+- Kassir sees only the active desk assigned through `assignedCashierUserId`.
+- The same scope applies to day details, cards, transactions, and history.
 
 Output:
 
@@ -727,14 +734,15 @@ Output:
 
 Allowed roles:
 
-- `SUPERADMIN`, `ADMIN`.
+- `SUPERADMIN`, assigned `ADMIN`, `FIRM_ADMIN`, `MANAGER`, and the desk's assigned `KASSIR`.
 
 Flow:
 
-1. User selects business date and opening cash balance.
-2. Backend creates a `KassaDay` row if the date does not already exist.
-3. Existing open day is rejected.
-4. Existing closed day is not opened through this route.
+1. User selects any business date, including a past date, and a Kassa desk.
+2. Backend finds the latest earlier closed business day with a usable remainder, independently for UZS and USD.
+3. A closed day with no actual, calculated, or expected remainder is skipped. If no earlier usable day exists, the opening suggestion is zero.
+4. Backend creates a `KassaDay` row if the desk/date does not already exist. A closed row is handled through reopen.
+5. Platform admins, firm admins, and managers may adjust the inherited opening balance with a reason; kassirs cannot override it.
 
 Audit:
 
@@ -744,7 +752,7 @@ Audit:
 
 Allowed roles:
 
-- `SUPERADMIN`, `ADMIN`.
+- The same scoped Kassa operators as open.
 
 Flow:
 
@@ -759,9 +767,9 @@ Audit:
 
 ### Reopen Kassa
 
-Allowed role:
+Allowed roles:
 
-- `SUPERADMIN`.
+- The same scoped Kassa operators as open and close.
 
 API:
 
@@ -769,7 +777,7 @@ API:
 
 Flow:
 
-1. Superadmin selects a closed business date and optional reason.
+1. User selects a closed business date and a desk in their allowed scope.
 2. Backend requires an existing closed `KassaDay`.
 3. Day status changes back to `OPEN`.
 4. Close-only fields are cleared: `closedAt`, `closedByUserId`, `closingBalance`, `expectedCash`, and `variance`.
@@ -780,50 +788,26 @@ Audit:
 
 - Kassa reopen is logged.
 
-### Open Kassa
+### Import Historical Kassa Cash Movements
 
 Allowed roles:
 
-- `SUPERADMIN`, `ADMIN`.
+- `SUPERADMIN`, assigned `ADMIN`, `FIRM_ADMIN`, `MANAGER`, and the desk's assigned `KASSIR`.
+- Read-only superadmins remain blocked from every import mutation and the client hides the control.
 
 Flow:
 
-1. User selects business date and opening balance.
-2. Backend validates no existing open/closed day for date.
-3. Backend creates `KassaDay` with status `OPEN`.
-
-Guards:
-
-- Cannot reopen closed day.
-- Cannot open same date twice.
-- Opening balance cannot be negative.
+1. The operator selects one scoped active Kassa desk and downloads its `.xlsx` template.
+2. The template stores the exact `firmId` and `kassaDeskId`; the client refuses to upload it under a different desk.
+3. The operator fills up to 500 cash `KIRIM`/`CHIQIM` rows with a unique import reference, `YYYY-MM-DD` business date, positive amount, UZS/USD currency, historical UZS exchange rate, and optional note.
+4. `POST /transactions/import/historical-kassa` with `dryRun: true` validates the entire file, desk/firm scope, open Kassa session for every date, and existing idempotency keys without writing.
+5. The confirmed request uses `dryRun: false`. If any row is invalid, no transaction rows are created. Valid rows are stored as `ADJUSTMENT` + `KASSA_IN`/`KASSA_OUT`, `sourceMode: HISTORICAL_IMPORT`, and `paymentMethod: cash` with the original business date in both metadata and `createdAt`.
+6. Re-uploading an identical import reference is skipped. Reusing it for different financial data is rejected.
 
 Audit:
 
-- Kassa open is logged.
-
-### Close Kassa
-
-Allowed roles:
-
-- `SUPERADMIN`, `ADMIN`.
-
-Flow:
-
-1. User enters closing balance and optional notes.
-2. Backend loads day transactions.
-3. Backend computes expected cash: opening balance plus cash total.
-4. Backend computes variance: closing balance minus expected cash.
-5. Backend updates day to `CLOSED`.
-
-Guards:
-
-- Day must exist and be open.
-- Closing balance cannot be negative.
-
-Audit:
-
-- Kassa close is logged.
+- One audit entry records the batch ID, desk, created count, skipped count, and import references.
+- Imported rows remain editable/deletable through the existing open-day Kassa correction rules.
 
 ### Payment Cards
 
@@ -1352,8 +1336,9 @@ Behavior:
 - Arbitrary Prisma model names and arbitrary request-body fields are never accepted.
 - Correction actions record the actor, reason, before/after state, and linked records
   where applicable.
-- Same-day cash edits and removals require a correction reason even when the
-  original creator performs the action.
+- Daily cash edits and removals require the selected Kassa day to be open and a
+  correction reason even when the original creator performs the action. This also
+  supports past dates after the relevant day is reopened.
 
 ## Financial Trust And Reconciliation
 
@@ -1380,9 +1365,9 @@ rate rather than edited or deleted.
 
 ## Data Templates And Exports
 
-Settings provides downloadable Uzbek templates for firms, employees,
-transactions, and tour packages. Users can download one formatted Excel workbook
-with four sheets or a separate UTF-8 CSV template for each dataset.
+Kassa provides a desk-bound Uzbek Excel template for importing historical cash
+income and expense rows. The completed workbook is parsed in the browser, then
+validated and committed through the scoped historical Kassa import endpoint.
 
 The Firms, Employees, Transactions, and Tours pages export their currently loaded
 rows as CSV or Excel. CSV downloads include a UTF-8 byte-order mark for Excel

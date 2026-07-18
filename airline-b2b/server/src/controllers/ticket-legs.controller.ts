@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { Prisma, TicketLegDirection, TicketProductType } from '@prisma/client';
+import { Prisma, TicketProductType } from '@prisma/client';
 import { prisma } from '../db';
 import { canAccessFirm } from '../utils/access';
 import { canManageFirmWork } from '../utils/firm-user-roles';
@@ -9,13 +9,13 @@ import { writeAuditLog } from '../utils/audit';
 import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
 import { activeFlightWhere } from '../domains/flights/flight-scope';
 import {
-  allocationDirection,
   normalizeCurrency,
   normalizeOptionalString,
   parseAllocationRows,
   parsePositiveDecimal,
   parsePositiveInt,
   parsePurchaserInfo,
+  requiresAirlineConnectionForAllocation,
   requiresAllocationApproval,
   validateAllocationRejectionReason,
 } from '../domains/tickets/ticket-input';
@@ -53,9 +53,10 @@ async function resolveSourceFirm(user: any, flightId: string, requestedSourceFir
     prisma.firm.findUnique({ where: { id: sourceFirmId }, select: { id: true, name: true, kind: true } }),
   ]);
   if (!flight || !sourceFirm) throw new Error('Flight not found');
+  const isAirlineOwner = flight.airline?.firmId === sourceFirmId;
   const isOriginOwner = flight.ownerFirmId === sourceFirmId || (!flight.ownerFirmId && flight.airline?.firmId === sourceFirmId);
   if (!isOriginOwner && flight._count.ticketLegs === 0) throw new Error('Flight not found');
-  return { sourceFirmId, sourceFirm, flight, isOriginOwner };
+  return { sourceFirmId, sourceFirm, flight, isAirlineOwner, isOriginOwner };
 }
 
 async function resolveTargetFirm(source: Awaited<ReturnType<typeof resolveSourceFirm>>, targetFirmId: string) {
@@ -68,7 +69,7 @@ async function resolveTargetFirm(source: Awaited<ReturnType<typeof resolveSource
     },
   });
   if (!target) throw new Error('Firm not found');
-  if (source.isOriginOwner && source.flight.airline?.firmId) {
+  if (requiresAirlineConnectionForAllocation(source.isAirlineOwner) && source.flight.airline?.firmId) {
     const connection = await prisma.airlineFirmConnection.findFirst({
       where: { airlineFirmId: source.flight.airline.firmId, firmId: targetFirmId, status: 'ACTIVE' },
       select: { id: true },
@@ -99,38 +100,6 @@ function allocationPriceRows(body: any, quantity: number) {
   return rows as Array<{ quantity: number; unitPrice: Prisma.Decimal }>;
 }
 
-export async function createAllocationPayable(tx: Prisma.TransactionClient, input: {
-  allocation: { id: string; flightId: string; fromFirmId: string; toFirmId: string; totalAmount: Prisma.Decimal; currency: string; productType: TicketProductType; direction: TicketLegDirection | null; parentTicketCount: number; segmentCount: number };
-  sourceKind: unknown;
-  exchangeRate: Prisma.Decimal;
-  createdByUserId?: string;
-}) {
-  return tx.transaction.create({
-    data: {
-      firmId: input.allocation.toFirmId,
-      payerFirmId: input.allocation.toFirmId,
-      receiverFirmId: input.allocation.fromFirmId,
-      flightId: input.allocation.flightId,
-      createdByUserId: input.createdByUserId,
-      type: 'PAYABLE',
-      originalAmount: input.allocation.totalAmount,
-      currency: input.allocation.currency,
-      exchangeRate: input.exchangeRate.toDecimalPlaces(6),
-      baseAmount: input.allocation.totalAmount.mul(input.exchangeRate).toDecimalPlaces(4),
-      direction: allocationDirection(input.sourceKind),
-      subjectType: 'TICKET_ALLOCATION',
-      subjectId: input.allocation.id,
-      sourceMode: 'AUTO_ALLOCATION',
-      status: 'CONFIRMED',
-      metadata: {
-        note: 'Ticket segment allocation accepted', allocationId: input.allocation.id,
-        productType: input.allocation.productType, direction: input.allocation.direction,
-        parentTicketCount: input.allocation.parentTicketCount, segmentCount: input.allocation.segmentCount,
-      },
-    },
-  });
-}
-
 export const allocateTicketLegs = async (req: Request, res: Response) => {
   const user = (req as any).user;
   const body = req.body || {};
@@ -152,13 +121,11 @@ export const allocateTicketLegs = async (req: Request, res: Response) => {
     const currency = normalizeCurrency(body.currency || source.flight.currency);
     if (!/^[A-Z]{3}$/.test(currency)) throw new Error('currency must be a 3-letter code');
     const approvalRequired = requiresAllocationApproval(target._count.users, target._count.userAccesses);
-    const exchangeRate = approvalRequired ? new Prisma.Decimal(1) : await resolveExchangeRateToUzs(user, { currency, rateFirmId: source.sourceFirmId });
     const result = await prisma.$transaction(async (tx) => {
       const allocated = await allocateLegInventory(tx, {
         flightId, sourceFirmId: source.sourceFirmId, targetFirmId, productType, direction, quantity, ticketId,
         currency, priceRows, approvalRequired, createdByUserId: normalizeOptionalString(user?.userId), note: normalizeOptionalString(body.note),
       });
-      if (!approvalRequired) await createAllocationPayable(tx, { allocation: allocated.allocation, sourceKind: source.sourceFirm.kind, exchangeRate });
       await createFirmNotification(tx, targetFirmId, {
         title: approvalRequired ? 'Ticket allocation pending' : 'Ticket allocation accepted',
         body: `${source.flight.flightNumber}: ${quantity} ${productType === 'ROUND_TRIP' ? 'RT' : `OW ${direction}`} — ${allocated.totalAmount.toString()} ${currency}`,
@@ -192,10 +159,8 @@ export const confirmTicketLegAllocation = async (req: Request, res: Response) =>
       || (role === 'FIRM' && canManageFirmWork(user) && String(user?.firmId || '') === allocation.toFirmId)
       || (role === 'ADMIN' && await canAccessFirm(user, allocation.toFirmId));
     if (!mayAct) return res.status(403).json({ error: 'Forbidden' });
-    const exchangeRate = await resolveExchangeRateToUzs(user, { currency: allocation.currency, rateFirmId: allocation.fromFirmId });
     const result = await prisma.$transaction(async (tx) => {
       const accepted = await acceptLegAllocation(tx, { allocationId, acceptedByUserId: normalizeOptionalString(user?.userId) });
-      await createAllocationPayable(tx, { allocation: accepted.allocation, sourceKind: accepted.fromFirmKind, exchangeRate, createdByUserId: normalizeOptionalString(user?.userId) });
       await createFirmNotification(tx, allocation.fromFirmId, {
         title: 'Ajratma tasdiqlandi', body: `${allocation.parentTicketCount} ta ${allocation.productType === 'ROUND_TRIP' ? 'RT' : `OW ${allocation.direction}`} tasdiqlandi.`,
         type: 'TICKET_ALLOCATION_ACCEPTED', entityType: 'ticketAllocation', entityId: allocation.id,

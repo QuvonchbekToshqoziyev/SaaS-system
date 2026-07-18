@@ -22,7 +22,6 @@ import {
   Paperclip,
   Reply,
   Search,
-  Send,
   Settings,
   Info,
   Sparkles,
@@ -33,6 +32,7 @@ import {
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
+import ActionButtons from '@/components/ui/ActionButtons';
 
 type ChatType = 'PERSONAL' | 'DEPARTMENT' | 'BRANCH' | 'COMPANY' | 'SUPPORT' | 'AI';
 type MessageKind = 'TEXT' | 'EMOJI' | 'FILE' | 'IMAGE' | 'PDF' | 'EXCEL' | 'VOICE';
@@ -167,6 +167,8 @@ export default function ChatPage() {
   const [firmBId, setFirmBId] = useState('');
   const [savingPermission, setSavingPermission] = useState(false);
   const [showGroupInfo, setShowGroupInfo] = useState(false);
+  const [creatingConversation, setCreatingConversation] = useState(false);
+  const [sendingMessage, setSendingMessage] = useState(false);
 
   const { data: conversations = [], isLoading: conversationsLoading } = useQuery<Conversation[]>({
     queryKey: ['chat-conversations'],
@@ -286,6 +288,7 @@ export default function ChatPage() {
 
     const mentions = Array.from(text.matchAll(/@([\w.-]+)/g)).map((match) => match[1]);
     try {
+      setSendingMessage(true);
       if (editing) {
         await api.patch(`/chat/messages/${editing.id}`, { content: text });
         toast.success(tr('Message edited', 'Xabar tahrirlandi'));
@@ -303,6 +306,8 @@ export default function ChatPage() {
       queryClient.invalidateQueries({ queryKey: ['chat-messages', activeId] });
     } catch (err: unknown) {
       toast.error(apiErrorMessage(err) || tr('Failed to send message', 'Xabar yuborilmadi'));
+    } finally {
+      setSendingMessage(false);
     }
   };
 
@@ -351,6 +356,7 @@ export default function ChatPage() {
       return;
     }
     try {
+      setCreatingConversation(true);
       const response = await api.post('/chat/conversations', {
         type: newType,
         title: title || undefined,
@@ -370,6 +376,8 @@ export default function ChatPage() {
       toast.success(tr('Chat created', 'Chat yaratildi'));
     } catch (err: unknown) {
       toast.error(apiErrorMessage(err) || tr('Failed to create chat', 'Chat yaratilmadi'));
+    } finally {
+      setCreatingConversation(false);
     }
   };
 
@@ -397,6 +405,21 @@ export default function ChatPage() {
   };
 
   const canCreateSelectedType = newType === 'PERSONAL' || (newType === 'DEPARTMENT' && role !== 'FIRM') || (newType === 'SUPPORT' && isFirmAdminLike);
+  const conversationDraftValid = Boolean(
+    canCreateSelectedType
+    && (newType !== 'PERSONAL' || newUserId)
+    && (newType !== 'DEPARTMENT' || newTitle.trim())
+    && (newType !== 'SUPPORT' || (supportSubject.trim() && supportMessage.trim()))
+  );
+  const resetConversationDraft = () => {
+    setNewType('PERSONAL');
+    setNewTitle('');
+    setNewUserId('');
+    setSupportSubject('');
+    setSupportCategory('TECHNICAL');
+    setSupportPriority('NORMAL');
+    setSupportMessage('');
+  };
   const canViewGroupInfo = isFirmAdminLike && Boolean(selectedConversation && ['DEPARTMENT', 'BRANCH', 'COMPANY', 'SUPPORT'].includes(selectedConversation.type));
   const firms = firmSettings?.firms || [];
   const permissions = firmSettings?.permissions || [];
@@ -473,7 +496,7 @@ export default function ChatPage() {
               <option value="AI" disabled>{tr('AI assistant is automatic', 'AI yordamchi avtomatik')}</option>
             </select>
             {newType === 'PERSONAL' && (
-              <select value={newUserId} onChange={(e) => setNewUserId(e.target.value)} className="compact-control">
+              <select value={newUserId} onChange={(e) => setNewUserId(e.target.value)} className="compact-control" required>
                 <option value="">{tr('Select user', 'User tanlang')}</option>
                 {chatUsers.filter((row) => row.id !== user?.id).map((row) => (
                   <option key={row.id} value={row.id}>{row.fullName || row.email}</option>
@@ -487,6 +510,7 @@ export default function ChatPage() {
                   onChange={(e) => setSupportSubject(e.target.value)}
                   placeholder={tr('Support subject', 'Support mavzusi')}
                   className="compact-control"
+                  required
                 />
                 <div className="grid grid-cols-2 gap-2">
                   <select value={supportCategory} onChange={(e) => setSupportCategory(e.target.value)} className="compact-control">
@@ -504,21 +528,28 @@ export default function ChatPage() {
                   rows={3}
                   placeholder={tr('What should ADO support check?', 'ADO support nimani tekshirsin?')}
                   className="compact-control min-h-[74px] resize-none"
+                  required
                 />
               </div>
             )}
-            <div className="flex gap-2">
+            <div>
               <input
                 value={newTitle}
                 onChange={(e) => setNewTitle(e.target.value)}
                 placeholder={newType === 'DEPARTMENT' ? tr('Department name', 'Department nomi') : tr('Chat title', 'Chat nomi')}
                 className="compact-control min-w-0"
                 disabled={!canCreateSelectedType || newType === 'SUPPORT'}
+                required={newType === 'DEPARTMENT'}
               />
-              <button type="submit" disabled={!canCreateSelectedType} className="px-3 rounded-md bg-primary text-primary-foreground disabled:opacity-40">
-                <Send size={16} />
-              </button>
             </div>
+            <ActionButtons
+              cancelLabel={tr('Cancel', 'Bekor qilish')}
+              confirmLabel={tr('Create', 'Yaratish')}
+              busyLabel={tr('Creating...', 'Yaratilmoqda...')}
+              busy={creatingConversation}
+              canConfirm={conversationDraftValid}
+              onCancel={resetConversationDraft}
+            />
           </form>
         </div>
         )}
@@ -788,11 +819,18 @@ export default function ChatPage() {
                     rows={2}
                     placeholder={kind === 'TEXT' ? tr('Message... Use @ to mention', 'Xabar... Eslatish uchun @ yozing') : tr('Type caption or file name...', 'Izoh yoki fayl nomini yozing...')}
                     className="compact-control min-h-[52px] w-full resize-none"
+                    required
                   />
                 </div>
-                <button type="submit" className="min-h-[52px] w-12 shrink-0 rounded-md bg-primary text-primary-foreground flex items-center justify-center">
-                  <Send size={18} />
-                </button>
+                <ActionButtons
+                  className="shrink-0 self-end"
+                  cancelLabel={tr('Cancel', 'Bekor qilish')}
+                  confirmLabel={editing ? tr('Confirm edit', 'Tahrirni tasdiqlash') : tr('Send', 'Yuborish')}
+                  busyLabel={tr('Sending...', 'Yuborilmoqda...')}
+                  busy={sendingMessage}
+                  canConfirm={Boolean(activeId && canWriteSelected && message.trim())}
+                  onCancel={resetComposer}
+                />
               </div>
             </form>
             ) : (

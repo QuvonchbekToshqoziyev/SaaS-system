@@ -4,10 +4,11 @@ import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import type { AxiosError } from 'axios';
-import { Plus, Save, ShieldCheck, Trash2 } from 'lucide-react';
+import { Save, ShieldCheck, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
+import ActionButtons from '@/components/ui/ActionButtons';
 
 type ApiErrorResponse = { error?: string };
 
@@ -24,6 +25,7 @@ type AdminRow = {
   fullName?: string | null;
   phone?: string | null;
   role: 'ADMIN' | 'SUPERADMIN';
+  readOnlyAccess: boolean;
   firmAccesses?: { firmId: string; firm?: FirmRow | null }[];
   createdAt?: string;
 };
@@ -33,8 +35,13 @@ type AdminDraft = {
   fullName: string;
   phone: string;
   role: 'ADMIN' | 'SUPERADMIN';
+  readOnlyAccess: boolean;
   password: string;
   firmIds: string[];
+};
+
+const emptyAdminDraft: AdminDraft = {
+  email: '', fullName: '', phone: '', role: 'ADMIN', readOnlyAccess: false, password: '', firmIds: [],
 };
 
 function getApiErrorMessage(error: unknown): string | undefined {
@@ -48,6 +55,7 @@ function initialDraft(admin: AdminRow): AdminDraft {
     fullName: admin.fullName || '',
     phone: admin.phone || '',
     role: admin.role === 'SUPERADMIN' ? 'SUPERADMIN' : 'ADMIN',
+    readOnlyAccess: admin.role === 'SUPERADMIN' && admin.readOnlyAccess === true,
     password: '',
     firmIds: (admin.firmAccesses || []).map((access) => access.firmId),
   };
@@ -59,18 +67,12 @@ export default function AdminsPage() {
   const queryClient = useQueryClient();
 
   const isSuperAdmin = String(user?.role || '').toUpperCase() === 'SUPERADMIN';
+  const canManageAdmins = isSuperAdmin && !user?.readOnlyAccess;
   const [search, setSearch] = useState('');
   const [savingId, setSavingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, AdminDraft>>({});
-  const [newAdmin, setNewAdmin] = useState<AdminDraft>({
-    email: '',
-    fullName: '',
-    phone: '',
-    role: 'ADMIN',
-    password: '',
-    firmIds: [],
-  });
+  const [newAdmin, setNewAdmin] = useState<AdminDraft>(emptyAdminDraft);
   const [creating, setCreating] = useState(false);
 
   const { data: admins = [], isLoading: loadingAdmins } = useQuery<AdminRow[]>({
@@ -135,10 +137,11 @@ export default function AdminsPage() {
         fullName: newAdmin.fullName.trim(),
         phone: newAdmin.phone.trim(),
         role: newAdmin.role,
+        readOnlyAccess: newAdmin.role === 'SUPERADMIN' && newAdmin.readOnlyAccess,
         password: newAdmin.password,
         firmIds: newAdmin.role === 'ADMIN' ? newAdmin.firmIds : [],
       });
-      setNewAdmin({ email: '', fullName: '', phone: '', role: 'ADMIN', password: '', firmIds: [] });
+      setNewAdmin(emptyAdminDraft);
       toast.success(tr('Admin created', 'Admin yaratildi'));
       queryClient.invalidateQueries({ queryKey: ['admins'] });
     } catch (error: unknown) {
@@ -161,6 +164,7 @@ export default function AdminsPage() {
         fullName: draft.fullName.trim(),
         phone: draft.phone.trim(),
         role: draft.role,
+        readOnlyAccess: draft.role === 'SUPERADMIN' && draft.readOnlyAccess,
         password: draft.password || undefined,
         firmIds: draft.role === 'ADMIN' ? draft.firmIds : [],
       });
@@ -229,7 +233,7 @@ export default function AdminsPage() {
         <div>
           <h2 className="text-3xl font-bold text-foreground">{tr('Admins', 'Adminlar')}</h2>
           <p className="mt-1 text-sm text-muted">
-            {tr('Manage admin accounts, firm access, and login details.', 'Admin akkauntlari, firma accesslari va login ma\'lumotlarini boshqaring.')}
+            {tr('Manage platform admin accounts, firm access, and login details.', 'Platforma admin akkauntlari, firma accesslari va login ma\'lumotlarini boshqaring.')}
           </p>
         </div>
         <div className="inline-flex items-center gap-2 text-sm font-semibold text-muted">
@@ -238,8 +242,9 @@ export default function AdminsPage() {
         </div>
       </div>
 
-      <div className="glass-panel p-4">
-        <h3 className="mb-4 text-lg font-semibold text-foreground">{tr('Create admin', 'Admin yaratish')}</h3>
+      {canManageAdmins && <div className="glass-panel p-4">
+        <h3 className="mb-1 text-lg font-semibold text-foreground">{tr('Create platform admin', 'Platforma adminini yaratish')}</h3>
+        <p className="mb-4 text-sm text-muted">{tr('A firm administrator is a different role and must be created from Firms.', 'Firma administratori boshqa rol: uni Firmalar bo‘limidan yaratish kerak.')}</p>
         <form onSubmit={createAdmin} className="grid gap-3 lg:grid-cols-[1fr_1fr_1fr_150px_1fr_auto] lg:items-end">
           <div>
             <label className="compact-label">{tr('Email', 'Email')}</label>
@@ -255,19 +260,29 @@ export default function AdminsPage() {
           </div>
           <div>
             <label className="compact-label">{tr('Role', 'Rol')}</label>
-            <select value={newAdmin.role} onChange={(e) => setNewAdmin({ ...newAdmin, role: e.target.value as AdminDraft['role'], firmIds: e.target.value === 'SUPERADMIN' ? [] : newAdmin.firmIds })} className="compact-control">
-              <option value="ADMIN">ADMIN</option>
+            <select value={newAdmin.role} onChange={(e) => setNewAdmin({ ...newAdmin, role: e.target.value as AdminDraft['role'], readOnlyAccess: e.target.value === 'SUPERADMIN' && newAdmin.readOnlyAccess, firmIds: e.target.value === 'SUPERADMIN' ? [] : newAdmin.firmIds })} className="compact-control">
+              <option value="ADMIN">{tr('PLATFORM ADMIN', 'PLATFORMA ADMINI')}</option>
               <option value="SUPERADMIN">SUPERADMIN</option>
             </select>
+            {newAdmin.role === 'SUPERADMIN' && (
+              <label className="mt-2 flex items-center gap-2 text-xs font-semibold text-muted">
+                <input type="checkbox" checked={newAdmin.readOnlyAccess} onChange={(e) => setNewAdmin({ ...newAdmin, readOnlyAccess: e.target.checked })} className="h-4 w-4 accent-[var(--primary)]" />
+                {tr('Read-only superadmin', 'Faqat ko‘ruvchi superadmin')}
+              </label>
+            )}
           </div>
           <div>
             <label className="compact-label">{tr('Password', 'Parol')}</label>
-            <input value={newAdmin.password} onChange={(e) => setNewAdmin({ ...newAdmin, password: e.target.value })} type="password" className="compact-control" required />
+            <input value={newAdmin.password} onChange={(e) => setNewAdmin({ ...newAdmin, password: e.target.value })} type="password" minLength={6} className="compact-control" required />
           </div>
-          <button type="submit" disabled={creating} className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-bold uppercase tracking-wide text-ink hover:bg-primary-hover disabled:opacity-50">
-            <Plus size={16} />
-            {creating ? tr('Creating', 'Yaratilmoqda') : tr('Create', 'Yaratish')}
-          </button>
+          <ActionButtons
+            className="lg:col-span-6"
+            cancelLabel={tr('Cancel', 'Bekor qilish')}
+            confirmLabel={tr('Confirm', 'Tasdiqlash')}
+            busyLabel={tr('Creating', 'Yaratilmoqda')}
+            busy={creating}
+            onCancel={() => setNewAdmin(emptyAdminDraft)}
+          />
         </form>
         {newAdmin.role === 'ADMIN' && (
           <div className="mt-3">
@@ -275,7 +290,7 @@ export default function AdminsPage() {
             {firmCheckboxes(newAdmin.firmIds, (firmIds) => setNewAdmin({ ...newAdmin, firmIds }))}
           </div>
         )}
-      </div>
+      </div>}
 
       <div className="glass-panel">
         <div className="border-b border-border px-3 py-2">
@@ -307,48 +322,66 @@ export default function AdminsPage() {
                 return (
                   <tr key={admin.id}>
                     <td>
-                      <input value={draft.email} onChange={(e) => setDraft(admin, { email: e.target.value })} className="compact-control min-w-[220px] font-semibold" />
+                      <input value={draft.email} disabled={!canManageAdmins} onChange={(e) => setDraft(admin, { email: e.target.value })} className="compact-control min-w-[220px] font-semibold disabled:opacity-70" />
                       <div className="mt-1 font-mono text-xs text-muted">{admin.id.slice(0, 8)}...</div>
                     </td>
                     <td>
                       <div className="grid min-w-[220px] gap-2">
-                        <input value={draft.fullName} onChange={(e) => setDraft(admin, { fullName: e.target.value })} className="compact-control" placeholder={tr('Full name', 'To\'liq ism')} />
-                        <input value={draft.phone} onChange={(e) => setDraft(admin, { phone: e.target.value })} className="compact-control" placeholder={tr('Phone', 'Telefon')} />
+                        <input value={draft.fullName} disabled={!canManageAdmins} onChange={(e) => setDraft(admin, { fullName: e.target.value })} className="compact-control disabled:opacity-70" placeholder={tr('Full name', 'To\'liq ism')} />
+                        <input value={draft.phone} disabled={!canManageAdmins} onChange={(e) => setDraft(admin, { phone: e.target.value })} className="compact-control disabled:opacity-70" placeholder={tr('Phone', 'Telefon')} />
                       </div>
                     </td>
                     <td>
                       <select
                         value={draft.role}
-                        disabled={isSelf}
-                        onChange={(e) => setDraft(admin, { role: e.target.value as AdminDraft['role'], firmIds: e.target.value === 'SUPERADMIN' ? [] : draft.firmIds })}
+                        disabled={isSelf || !canManageAdmins}
+                        onChange={(e) => setDraft(admin, { role: e.target.value as AdminDraft['role'], readOnlyAccess: e.target.value === 'SUPERADMIN' && draft.readOnlyAccess, firmIds: e.target.value === 'SUPERADMIN' ? [] : draft.firmIds })}
                         className="compact-control min-w-[150px]"
                       >
-                        <option value="ADMIN">ADMIN</option>
+                        <option value="ADMIN">{tr('PLATFORM ADMIN', 'PLATFORMA ADMINI')}</option>
                         <option value="SUPERADMIN">SUPERADMIN</option>
                       </select>
+                      {draft.role === 'SUPERADMIN' && (
+                        <label className="mt-2 flex items-center gap-2 text-xs font-semibold text-muted">
+                          <input type="checkbox" checked={draft.readOnlyAccess} disabled={!canManageAdmins} onChange={(e) => setDraft(admin, { readOnlyAccess: e.target.checked })} className="h-4 w-4 accent-[var(--primary)]" />
+                          {tr('Read-only', 'Faqat ko‘rish')}
+                        </label>
+                      )}
                     </td>
                     <td>
                       {draft.role === 'SUPERADMIN' ? (
                         <span className="inline-flex rounded-md border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground">
                           {tr('All firms', 'Barcha firmalar')}
                         </span>
-                      ) : firmCheckboxes(draft.firmIds, (firmIds) => setDraft(admin, { firmIds }))}
+                      ) : firmCheckboxes(draft.firmIds, (firmIds) => setDraft(admin, { firmIds }), !canManageAdmins)}
                     </td>
                     <td>
-                      <input value={draft.password} onChange={(e) => setDraft(admin, { password: e.target.value })} type="password" className="compact-control min-w-[160px]" placeholder={tr('Leave blank', 'Bo\'sh qoldiring')} />
+                      <input value={draft.password} disabled={!canManageAdmins} onChange={(e) => setDraft(admin, { password: e.target.value })} type="password" className="compact-control min-w-[160px] disabled:opacity-70" placeholder={tr('Leave blank', 'Bo\'sh qoldiring')} />
                     </td>
                     <td>{admin.createdAt ? new Date(admin.createdAt).toLocaleDateString() : '-'}</td>
                     <td>
-                      <div className="flex flex-wrap gap-2">
-                        <button type="button" onClick={() => saveAdmin(admin)} disabled={savingId === admin.id} className="inline-flex items-center gap-1 border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50">
+                      {canManageAdmins ? <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => saveAdmin(admin)}
+                          disabled={savingId === admin.id || !draft.email.trim() || (draft.password.length > 0 && draft.password.length < 6)}
+                          className="inline-flex items-center gap-1 border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50"
+                        >
                           <Save size={14} />
-                          {savingId === admin.id ? tr('Saving', 'Saqlanmoqda') : tr('Update', 'Yangilash')}
+                          {savingId === admin.id ? tr('Saving', 'Saqlanmoqda') : tr('Confirm', 'Tasdiqlash')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDrafts((current) => { const next = { ...current }; delete next[admin.id]; return next; })}
+                          className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface"
+                        >
+                          {tr('Cancel', 'Bekor qilish')}
                         </button>
                         <button type="button" onClick={() => deleteAdmin(admin)} disabled={isSelf || deletingId === admin.id} className="inline-flex items-center gap-1 border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-500/20 disabled:opacity-50">
                           <Trash2 size={14} />
                           {deletingId === admin.id ? tr('Deleting', 'O\'chirilmoqda') : tr('Delete', 'O\'chirish')}
                         </button>
-                      </div>
+                      </div> : <span className="text-xs font-semibold text-muted">{tr('View only', 'Faqat ko‘rish')}</span>}
                     </td>
                   </tr>
                 );

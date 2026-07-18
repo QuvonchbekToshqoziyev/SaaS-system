@@ -7,11 +7,13 @@ import { ERROR_CODES } from '../errors/catalog';
 import { mapKnownError } from '../errors/app-error';
 import { sendApiError } from '../errors/http';
 import { buildCreatedAtFilter, dateKeyUtc, normalizePaymentMethod, parseDateParam, parseMonthParam, resolveReportFirmIds, sumToNumber } from '../domains/reports/report-query';
-import { getAccessibleFirmIds } from '../utils/access';
+import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
 import { buildTicketInventorySummary } from '../domains/tickets/inventory-summary';
 import { canManageFirmWork } from '../utils/firm-user-roles';
 import { writeAuditLog } from '../utils/audit';
-import { activeFlightWhere } from '../domains/flights/flight-scope';
+import { activeFlightWhere, firmFlightParticipationWhere } from '../domains/flights/flight-scope';
+import { visibleTransactionWhere } from '../utils/transaction-visibility';
+import { buildAgentLedgerReport, buildAgentLedgerReports } from '../services/reporting/agent-ledger.service';
 
 type AuthUser = {
   userId?: string;
@@ -99,13 +101,12 @@ export const getFlightReport = async (req: Request, res: Response) => {
 
   const allocationIds = flight.ticketAllocations.map((allocation) => allocation.id);
   const transactions = await prisma.transaction.findMany({
-    where: {
-      deletedAt: null,
+    where: visibleTransactionWhere({
       AND: [
         { OR: [{ flightId: flight.id }, ...(allocationIds.length ? [{ subjectType: 'TICKET_ALLOCATION', subjectId: { in: allocationIds } }] : [])] },
         ...(role === 'FIRM' ? [{ OR: [{ firmId: authFirmId }, { payerFirmId: authFirmId }, { receiverFirmId: authFirmId }] }] : []),
       ],
-    },
+    }),
     select: {
       id: true, type: true, firmId: true, payerFirmId: true, receiverFirmId: true, subjectType: true, subjectId: true,
       originalAmount: true, baseAmount: true, currency: true, sourceMode: true, status: true,
@@ -236,13 +237,12 @@ export const reconcileFlightInventory = async (req: Request, res: Response) => {
 
   const allocationIds = relevantAllocations.map((row) => row.id);
   const transactions = await prisma.transaction.findMany({
-    where: {
-      deletedAt: null,
+    where: visibleTransactionWhere({
       AND: [
         { OR: [{ flightId }, ...(allocationIds.length ? [{ subjectType: 'TICKET_ALLOCATION', subjectId: { in: allocationIds } }] : [])] },
         { OR: [{ firmId: reportFirmId }, { payerFirmId: reportFirmId }, { receiverFirmId: reportFirmId }] },
       ],
-    },
+    }),
     select: { id: true, type: true, status: true, sourceMode: true, originalAmount: true, currency: true, reversedTransactionId: true },
   });
   const reversedIds = new Set(transactions.map((row) => row.reversedTransactionId).filter((id): id is string => Boolean(id)));
@@ -305,13 +305,13 @@ export const getFirmReport = async (req: Request, res: Response) => {
   const [byType, byFlightAndType, ticketsByStatus, ticketsByFlightAndStatus, paymentsByMethod] = await Promise.all([
     prisma.transaction.groupBy({
       by: ['type'],
-      where: txWhere,
+      where: visibleTransactionWhere(txWhere),
       _sum: { baseAmount: true },
       _count: { _all: true },
     }),
     prisma.transaction.groupBy({
       by: ['flightId', 'type'],
-      where: txWhere,
+      where: visibleTransactionWhere(txWhere),
       _sum: { baseAmount: true },
       _count: { _all: true },
     }),
@@ -327,7 +327,7 @@ export const getFirmReport = async (req: Request, res: Response) => {
     }),
     prisma.transaction.groupBy({
       by: ['paymentMethod'],
-      where: { ...txWhere, type: 'PAYMENT' },
+      where: visibleTransactionWhere({ ...txWhere, type: 'PAYMENT' }),
       _sum: { baseAmount: true },
       _count: { _all: true },
     }),
@@ -484,6 +484,21 @@ export const getFirmReport = async (req: Request, res: Response) => {
   });
 };
 
+export const getAgentLedgerReport = async (req: Request, res: Response) => {
+  const authUser = getAuthUser(req);
+  const role = normalizeRole(authUser.role);
+  const ownerFirmId = role === 'FIRM'
+    ? String(authUser.firmId || '').trim()
+    : String(req.query.companyId || req.query.firmId || req.query.firm_id || '').trim();
+  if (!ownerFirmId) return res.status(400).json({ error: 'Hisobot uchun firma tanlang.' });
+  if (!(await canAccessFirm(authUser, ownerFirmId))) return res.status(403).json({ error: 'Forbidden' });
+  try {
+    return res.json(await buildAgentLedgerReport(ownerFirmId));
+  } catch (error: any) {
+    return res.status(error?.message === 'Firm not found' ? 404 : 400).json({ error: error?.message || 'Agentlar hisobotini yuklab bo‘lmadi.' });
+  }
+};
+
 export const getPaymentsReport = async (req: Request, res: Response) => {
   const authUser = getAuthUser(req);
   const role = normalizeRole(authUser.role);
@@ -511,19 +526,19 @@ export const getPaymentsReport = async (req: Request, res: Response) => {
 
   const [totals, byMethod, byCurrency] = await Promise.all([
     prisma.transaction.aggregate({
-      where,
+      where: visibleTransactionWhere(where),
       _sum: { baseAmount: true, originalAmount: true },
       _count: { _all: true },
     }),
     prisma.transaction.groupBy({
       by: ['paymentMethod'],
-      where,
+      where: visibleTransactionWhere(where),
       _sum: { baseAmount: true, originalAmount: true },
       _count: { _all: true },
     }),
     prisma.transaction.groupBy({
       by: ['currency'],
-      where,
+      where: visibleTransactionWhere(where),
       _sum: { baseAmount: true, originalAmount: true },
       _count: { _all: true },
     }),
@@ -586,28 +601,28 @@ export const getTransactionsReport = async (req: Request, res: Response) => {
 
   const [totals, byType, byCurrency, byKassaDesk] = await Promise.all([
     prisma.transaction.aggregate({
-      where,
+      where: visibleTransactionWhere(where),
       _sum: { baseAmount: true, originalAmount: true },
       _count: { _all: true },
     }),
     prisma.transaction.groupBy({
       by: ['type'],
-      where,
+      where: visibleTransactionWhere(where),
       _sum: { baseAmount: true, originalAmount: true },
       _count: { _all: true },
     }),
     prisma.transaction.groupBy({
       by: ['currency'],
-      where,
+      where: visibleTransactionWhere(where),
       _sum: { baseAmount: true, originalAmount: true },
       _count: { _all: true },
     }),
     prisma.transaction.groupBy({
       by: ['kassaDeskId', 'paymentMethod'],
-      where: {
+      where: visibleTransactionWhere({
         ...where,
         kassaDeskId: { not: null },
-      },
+      }),
       _sum: { baseAmount: true, originalAmount: true },
       _count: { _all: true },
     }),
@@ -700,7 +715,7 @@ export const getInteractionsReport = async (req: Request, res: Response) => {
     }),
     prisma.transaction.groupBy({
       by: ['createdByUserId', 'firmId', 'type'],
-      where: txWhere,
+      where: visibleTransactionWhere(txWhere),
       _sum: { baseAmount: true },
       _count: { _all: true },
     }),
@@ -939,7 +954,7 @@ export const getCalendarReport = async (req: Request, res: Response) => {
       },
     }),
     prisma.transaction.findMany({
-      where: txWhere,
+      where: visibleTransactionWhere(txWhere),
       orderBy: { createdAt: 'asc' },
       select: {
         id: true,
@@ -983,191 +998,85 @@ export const getDashboardReport = async (req: Request, res: Response) => {
   try {
     const authUser = getAuthUser(req);
     const role = normalizeRole(authUser.role);
-
-    const firmScopeId = role === 'FIRM'
-      ? (authUser.firmId ? String(authUser.firmId) : undefined)
-      : undefined;
-    const adminFirmIds = role === 'ADMIN' ? await getAccessibleFirmIds(authUser) || [] : undefined;
-    
-    if (role === 'FIRM' && !firmScopeId) {
+    if (role === 'FIRM' && !authUser.firmId) {
       return res.status(400).json({ error: 'Firm account is missing firmId' });
     }
+    const ownerFirmIds = role === 'FIRM'
+      ? [String(authUser.firmId)]
+      : role === 'ADMIN'
+        ? await getAccessibleFirmIds(authUser) || []
+        : (await prisma.firm.findMany({
+            where: { deletedAt: null, status: { not: 'DELETED' } },
+            select: { id: true },
+          })).map((firm) => firm.id);
 
-    if (role === 'FIRM') {
-      const [pendingGroups, dueGroups] = await Promise.all([
-        prisma.ticket.groupBy({
-          by: ['flightId'],
-          where: { assignedFirmId: firmScopeId, status: 'PENDING', deletedAt: null, flight: activeFlightWhere() },
-          _count: { _all: true },
-        }),
-        prisma.transaction.groupBy({
-          by: ['type'],
-          where: {
-            firmId: firmScopeId,
-            type: payableAndPaymentTypeFilter,
-          },
-          _sum: { baseAmount: true },
-        }),
-      ]);
-
-      const pendingFlightIds = pendingGroups.map((g) => g.flightId).filter((id): id is string => !!id);
-      const flightIds = Array.from(new Set([...pendingFlightIds]));
-
-      const flights = flightIds.length
-        ? await prisma.flight.findMany({
-            where: { id: { in: flightIds } },
-            select: { id: true, flightNumber: true, departure: true, arrival: true },
-          })
-        : [];
-      const flightById = new Map(flights.map((f) => [f.id, f] as const));
-
-      const pendingItems = pendingGroups
-        .map((g) => {
-          const f = flightById.get(g.flightId || '');
-          return {
-            flightId: g.flightId,
-            flightNumber: f?.flightNumber || null,
-            departure: f?.departure || null,
-            count: g._count?._all || 0,
-          };
-        })
-        .sort((a, b) => String(a.departure || '').localeCompare(String(b.departure || '')));
-
-      let debt = 0;
-      let paid = 0;
-      for (const row of dueGroups) {
-        const val = sumToNumber(row._sum?.baseAmount);
-        if (isPayableDebtType(row.type)) debt += val;
-        if (row.type === 'PAYMENT') paid += val;
-      }
-
-      const balance = paid - debt;
-      const totalOutstanding = Math.max(-balance, 0);
-
-      const pendingTotal = pendingItems.reduce((acc, i) => acc + (i.count || 0), 0);
-
-      return res.json({
-        role,
-        todos: [
-          { key: 'pending_allocations', label: 'Confirm pending allocations', count: pendingTotal },
-          { key: 'due_payments', label: 'Make payments (outstanding balance)', count: totalOutstanding > 0 ? 1 : 0, amount: totalOutstanding },
-        ],
-        pendingAllocations: {
-          total: pendingTotal,
-          byFlight: pendingItems,
+    const flightScope = role === 'SUPERADMIN'
+      ? undefined
+      : ownerFirmIds.length
+        ? firmFlightParticipationWhere(ownerFirmIds)
+        : { id: { in: [] } } satisfies Prisma.FlightWhereInput;
+    const [ledgerReports, upcomingFlights, pendingTotal] = await Promise.all([
+      buildAgentLedgerReports(ownerFirmIds),
+      prisma.flight.findMany({
+        where: {
+          AND: [
+            activeFlightWhere(),
+            { departure: { gte: new Date() } },
+            ...(flightScope ? [flightScope] : []),
+          ],
         },
-        duePayments: {
-          totalOutstanding,
-          balance,
-          debt,
-          paid,
-          byFlight: [],
+        select: {
+          id: true, flightNumber: true, route: true, departure: true, arrival: true, currency: true,
+          airline: { select: { name: true } }, ownerFirm: { select: { id: true, name: true } },
         },
-      });
-    }
-
-    // Admin / Superadmin Dashboard logic
-    const [pendingGroups, dueGroups] = await Promise.all([
-      prisma.ticket.groupBy({
-        by: ['assignedFirmId', 'flightId'],
-        where: { status: 'PENDING', assignedFirmId: adminFirmIds ? { in: adminFirmIds } : { not: null }, deletedAt: null, flight: activeFlightWhere() },
-        _count: { _all: true },
+        orderBy: { departure: 'asc' },
+        take: 5,
       }),
-      prisma.transaction.groupBy({
-        by: ['firmId', 'type'],
-        where: { type: payableAndPaymentTypeFilter, ...(adminFirmIds ? { firmId: { in: adminFirmIds } } : {}) },
-        _sum: { baseAmount: true },
+      prisma.ticket.count({
+        where: {
+          status: 'PENDING', deletedAt: null, flight: activeFlightWhere(),
+          ...(role === 'SUPERADMIN' ? {} : { assignedFirmId: { in: ownerFirmIds } }),
+        },
       }),
     ]);
 
-    const firmIds = new Set<string>();
-    const flightIds = new Set<string>();
-    for (const g of pendingGroups) {
-      if (g.assignedFirmId) firmIds.add(String(g.assignedFirmId));
-      if (g.flightId) flightIds.add(String(g.flightId));
-    }
-    for (const g of dueGroups) {
-      if (g.firmId) firmIds.add(String(g.firmId));
-    }
-
-    const [firms, flights] = await Promise.all([
-      firmIds.size
-        ? prisma.firm.findMany({
-            where: { id: { in: Array.from(firmIds) } },
-            select: { id: true, name: true },
-          })
-        : Promise.resolve([]),
-      flightIds.size
-        ? prisma.flight.findMany({
-            where: { id: { in: Array.from(flightIds) } },
-            select: { id: true, flightNumber: true, departure: true, arrival: true },
-          })
-        : Promise.resolve([]),
-    ]);
-    const firmById = new Map(firms.map((f) => [f.id, f] as const));
-    const flightById = new Map(flights.map((f) => [f.id, f] as const));
-
-    const pendingItems = pendingGroups
-      .map((g) => {
-        const firmIdVal = g.assignedFirmId ? String(g.assignedFirmId) : '';
-        const firm = firmIdVal ? firmById.get(firmIdVal) : undefined;
-        const flightIdVal = g.flightId ? String(g.flightId) : '';
-        const flight = flightIdVal ? flightById.get(flightIdVal) : undefined;
-        return {
-          firmId: firmIdVal,
-          firmName: firm?.name || null,
-          flightId: flightIdVal,
-          flightNumber: flight?.flightNumber || null,
-          departure: flight?.departure || null,
-          count: g._count?._all || 0,
-        };
-      })
-      .filter((r) => r.firmId)
-      .sort((a, b) => (a.firmName || a.firmId).localeCompare(b.firmName || b.firmId));
-
-    const debtByFirm = new Map<string, number>();
-    const paidByFirm = new Map<string, number>();
-    for (const row of dueGroups) {
-      const val = sumToNumber(row._sum?.baseAmount);
-      const firmId = row.firmId || '';
-      if (!firmId) continue;
-      if (isPayableDebtType(row.type)) debtByFirm.set(firmId, (debtByFirm.get(firmId) || 0) + val);
-      if (row.type === 'PAYMENT') paidByFirm.set(firmId, (paidByFirm.get(firmId) || 0) + val);
-    }
-
-    const dueItems = Array.from(new Set([...debtByFirm.keys(), ...paidByFirm.keys()]))
-      .map((firmId) => {
-        const f = firmById.get(firmId);
-        const debt = debtByFirm.get(firmId) || 0;
-        const paid = paidByFirm.get(firmId) || 0;
-        const outstanding = debt - paid;
-        return {
-          firmId,
-          firmName: f?.name || null,
-          debt,
-          paid,
-          outstanding,
-        };
-      })
-      .filter((r) => r.outstanding > 0)
-      .sort((a, b) => b.outstanding - a.outstanding);
-
-    const pendingTotal = pendingItems.reduce((acc, i) => acc + (i.count || 0), 0);
-    const totalOutstanding = dueItems.reduce((acc, i) => acc + i.outstanding, 0);
+    type MoneyRow = { currency: string; total: number };
+    type LedgerDebtRow = { firmId: string; firmName: string; currency: string; charged: number; paid: number; currentDebt: number };
+    const mergeMoney = (items: MoneyRow[][]) => {
+      const totals = new Map<string, number>();
+      for (const rows of items) for (const row of rows || []) totals.set(row.currency, (totals.get(row.currency) || 0) + Number(row.total || 0));
+      return Array.from(totals, ([currency, total]) => ({ currency, total: Number(total.toFixed(4)) })).filter((row) => Math.abs(row.total) > 0.000001).sort((a, b) => a.currency.localeCompare(b.currency));
+    };
+    const agents = ledgerReports.flatMap((report) => report.agents);
+    const receivables = ledgerReports.flatMap((report) => (report.receivables as LedgerDebtRow[]).map((row) => ({
+      ...row, ownerFirmId: report.ownerFirm.id, ownerFirmName: report.ownerFirm.name,
+    }))).sort((a, b) => Number(b.currentDebt) - Number(a.currentDebt));
+    const payables = ledgerReports.flatMap((report) => (report.payables as LedgerDebtRow[]).map((row) => ({
+      ...row, ownerFirmId: report.ownerFirm.id, ownerFirmName: report.ownerFirm.name,
+    }))).sort((a, b) => Number(b.currentDebt) - Number(a.currentDebt));
+    const summary = {
+      totalSales: mergeMoney(agents.map((agent) => agent.totalSales)),
+      totalPurchases: mergeMoney(agents.map((agent) => agent.totalPurchases)),
+      paymentsReceived: mergeMoney(agents.map((agent) => agent.totalPaid)),
+      paymentsMade: mergeMoney(agents.map((agent) => agent.totalPaidByUs)),
+      receivableTotals: mergeMoney(ledgerReports.map((report) => report.receivableTotals)),
+      payableTotals: mergeMoney(ledgerReports.map((report) => report.payableTotals)),
+    };
 
     return res.json({
       role,
+      summary,
+      upcomingFlights,
+      debts: { receivables, payables },
       todos: [
-        { key: 'pending_allocations', label: 'Pending firm confirmations', count: pendingTotal },
-        { key: 'due_payments', label: 'Firms with outstanding balance', count: dueItems.length, amount: totalOutstanding },
+        { key: 'pending_allocations', label: 'Tasdiqlanmagan ajratmalar', count: pendingTotal, href: '/flights' },
+        { key: 'receivables', label: 'Bizdan qarzdor firmalar', count: receivables.length, href: '/reports' },
+        { key: 'payables', label: 'Biz qarz bo‘lgan firmalar', count: payables.length, href: '/reports' },
       ],
-      pendingAllocations: {
-        total: pendingTotal,
-        byFirmFlight: pendingItems,
-      },
+      pendingAllocations: { total: pendingTotal },
       duePayments: {
-        totalOutstanding,
-        byFirm: dueItems,
+        totalOutstanding: summary.payableTotals.reduce((sum, row) => sum + row.total, 0),
+        byFirm: payables.map((row) => ({ firmId: row.firmId, firmName: row.firmName, outstanding: row.currentDebt, currency: row.currency })),
       },
     });
   } catch (error) {

@@ -3,6 +3,7 @@ import { prisma } from '../../db';
 import { canAccessFirm, getAccessibleFirmIds, normalizeRole, ScopedAuthUser } from '../../utils/access';
 import { isPayableDebtType } from '../../utils/transaction-types';
 import { activeFlightWhere } from '../../domains/flights/flight-scope';
+import { visibleTransactionWhere } from '../../utils/transaction-visibility';
 import {
   calcClosingCash,
   calcCurrentRatio,
@@ -153,7 +154,7 @@ function buildTxWhere(scope: Awaited<ReturnType<typeof resolveScope>>, period: {
 
 async function loadTransactions(scope: Awaited<ReturnType<typeof resolveScope>>, period: { from: Date; to: Date }) {
   return prisma.transaction.findMany({
-    where: buildTxWhere(scope, period),
+    where: visibleTransactionWhere(buildTxWhere(scope, period)),
     include: {
       firm: { select: { id: true, name: true, kind: true } },
       payerFirm: { select: { id: true, name: true, kind: true } },
@@ -176,7 +177,7 @@ async function loadCashBefore(scope: Awaited<ReturnType<typeof resolveScope>>, f
       { type: 'ADJUSTMENT', paymentMethod: { not: null } },
     ],
   };
-  const rows = await prisma.transaction.findMany({ where, select: { type: true, direction: true, baseAmount: true } });
+  const rows = await prisma.transaction.findMany({ where: visibleTransactionWhere(where), select: { type: true, direction: true, baseAmount: true } });
   return rows.reduce((sum, tx) => sum + cashSignedAmount(tx as Pick<TxRow, 'type' | 'direction' | 'baseAmount'>), 0);
 }
 
@@ -185,6 +186,7 @@ async function loadPaymentAllocations(scope: Awaited<ReturnType<typeof resolveSc
     where: {
       createdAt: { gte: period.from, lte: period.to },
       ...(scope.firmIds ? { companyId: { in: scope.firmIds } } : {}),
+      payment: visibleTransactionWhere(),
     },
     select: { companyId: true, documentType: true, documentId: true, allocatedAmount: true },
   });
@@ -369,7 +371,7 @@ async function buildFlightProfitability(transactions: TxRow[], scope: Awaited<Re
     include: {
       airline: { select: { name: true, firmId: true } },
       tickets: { where: { deletedAt: null }, select: { status: true } },
-      tourPackages: { where: { deletedAt: null }, select: { quantity: true, availableQuantity: true, sales: { select: { quantity: true } } } },
+      tourPackages: { where: { deletedAt: null }, select: { quantity: true, availableQuantity: true, sales: { where: { status: 'CONFIRMED', deletedAt: null }, select: { quantity: true } } } },
     },
   });
   const txByFlight = new Map<string, TxRow[]>();

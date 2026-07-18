@@ -139,16 +139,16 @@ async function selectInventoryUnits(tx: Prisma.TransactionClient, input: {
       SELECT ticket.id AS "ticketId"
       FROM "Ticket" ticket
       JOIN "TicketLeg" outbound ON outbound."ticketId" = ticket.id AND outbound.direction = 'OUTBOUND'
-      JOIN "TicketLeg" returning ON returning."ticketId" = ticket.id AND returning.direction = 'RETURN'
+      JOIN "TicketLeg" return_leg ON return_leg."ticketId" = ticket.id AND return_leg.direction = 'RETURN'
       WHERE ticket."flightId" = ${input.flightId}
         AND ticket."deletedAt" IS NULL
         AND outbound."currentOwnerFirmId" = ${input.sourceFirmId}
-        AND returning."currentOwnerFirmId" = ${input.sourceFirmId}
+        AND return_leg."currentOwnerFirmId" = ${input.sourceFirmId}
         AND outbound.status IN ('AVAILABLE', 'ASSIGNED')
-        AND returning.status IN ('AVAILABLE', 'ASSIGNED')
+        AND return_leg.status IN ('AVAILABLE', 'ASSIGNED')
         ${ticketFilter}
       ORDER BY ticket."createdAt" ASC
-      FOR UPDATE OF outbound, returning SKIP LOCKED
+      FOR UPDATE OF outbound, return_leg SKIP LOCKED
       LIMIT ${input.quantity}
     `);
     if (rows.length < input.quantity) {
@@ -493,7 +493,7 @@ function rowsFromUnitPrices(prices: Prisma.Decimal[]) {
 /**
  * Applies an allocation price/note edit or an audited partial/full cancellation.
  * Quantity increases use the normal allocation flow; quantity decreases use CANCEL,
- * so every restored segment and debt adjustment remains explicit in history.
+ * so every restored segment remains explicit in allocation history.
  */
 export async function changeLegAllocation(tx: Prisma.TransactionClient, input: {
   allocation: AllocationWithLegItems;
@@ -501,8 +501,6 @@ export async function changeLegAllocation(tx: Prisma.TransactionClient, input: {
   type: 'EDIT' | 'CANCEL';
   proposed: any;
   actorUserId?: string;
-  exchangeRate: Prisma.Decimal;
-  debtDirection: string;
 }) {
   const { allocation } = input;
   const units = groupAllocationUnits(allocation);
@@ -542,20 +540,6 @@ export async function changeLegAllocation(tx: Prisma.TransactionClient, input: {
   }
 
   for (const unit of cancelledUnits) {
-    if (allocation.status === 'ACCEPTED') {
-      const unitPrice = unit.items[0].productUnitPriceSnapshot;
-      await tx.transaction.create({
-        data: {
-          firmId: allocation.toFirmId, payerFirmId: allocation.toFirmId, receiverFirmId: allocation.fromFirmId,
-          flightId: allocation.flightId, ticketId: unit.ticketId, createdByUserId: input.actorUserId,
-          type: 'PAYABLE', originalAmount: unitPrice.negated(), currency: allocation.currency,
-          exchangeRate: input.exchangeRate.toDecimalPlaces(6), baseAmount: unitPrice.negated().mul(input.exchangeRate).toDecimalPlaces(4),
-          direction: input.debtDirection, subjectType: 'TICKET_ALLOCATION_ADJUSTMENT', subjectId: input.requestId,
-          sourceMode: 'AUTO_DEBT_ADJUSTMENT', status: 'CONFIRMED',
-          metadata: { allocationId: allocation.id, changeRequestId: input.requestId, note: 'Allocation segment cancellation adjustment' },
-        },
-      });
-    }
     for (const item of unit.items) {
       await tx.ticketLeg.update({
         where: { id: item.ticketLegId },
@@ -577,22 +561,7 @@ export async function changeLegAllocation(tx: Prisma.TransactionClient, input: {
   if (input.type === 'EDIT') {
     for (const [unitIndex, unit] of units.entries()) {
       const nextPrice = nextPrices[unitIndex];
-      const oldPrice = unit.items[0].productUnitPriceSnapshot;
       const legPrices = splitUnitPrice(nextPrice, unit.items.map((item) => item.ticketLeg));
-      if (allocation.status === 'ACCEPTED' && !nextPrice.eq(oldPrice)) {
-        const delta = nextPrice.sub(oldPrice);
-        await tx.transaction.create({
-          data: {
-            firmId: allocation.toFirmId, payerFirmId: allocation.toFirmId, receiverFirmId: allocation.fromFirmId,
-            flightId: allocation.flightId, ticketId: unit.ticketId, createdByUserId: input.actorUserId,
-            type: 'PAYABLE', originalAmount: delta, currency: allocation.currency,
-            exchangeRate: input.exchangeRate.toDecimalPlaces(6), baseAmount: delta.mul(input.exchangeRate).toDecimalPlaces(4),
-            direction: input.debtDirection, subjectType: 'TICKET_ALLOCATION_ADJUSTMENT', subjectId: input.requestId,
-            sourceMode: 'AUTO_DEBT_ADJUSTMENT', status: 'CONFIRMED',
-            metadata: { allocationId: allocation.id, changeRequestId: input.requestId, note: 'Allocation price adjustment' },
-          },
-        });
-      }
       for (const [itemIndex, item] of unit.items.entries()) {
         const legPrice = legPrices[itemIndex];
         await tx.ticketAllocationLeg.update({

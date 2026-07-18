@@ -10,6 +10,7 @@ import {
 	getDashboardReport,
 	getCashFlowAnalyticsReport,
 	getFinancialAnalytics,
+	getAgentLedgerReport,
 	getFinancialHealthReport,
 	getFlightProfitabilityReport,
 	getPayablesAnalyticsReport,
@@ -33,6 +34,7 @@ router.get('/monthly', getMonthlyReport);
 router.get('/calendar', getCalendarReport);
 router.get('/dashboard', getDashboardReport);
 router.get('/analytics', getFinancialAnalytics);
+router.get('/agents', getAgentLedgerReport);
 router.get('/financial-health', getFinancialHealthReport);
 router.get('/profitability', getProfitabilityAnalyticsReport);
 router.get('/cash-flow', getCashFlowAnalyticsReport);

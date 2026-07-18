@@ -19,13 +19,13 @@ const packageInclude = {
   ownerFirm: { select: { id: true, name: true } },
   flight: { select: { id: true, flightNumber: true, route: true, tripType: true, departure: true, arrival: true, returnDeparture: true, returnArrival: true, currency: true } },
   components: { include: { service: { include: { providerFirm: { select: { id: true, name: true } } } } }, orderBy: { createdAt: 'asc' as const } },
-  sales: { include: { buyerFirm: { select: { id: true, name: true } }, sellerFirm: { select: { id: true, name: true } }, transaction: true }, orderBy: { createdAt: 'desc' as const } },
+  sales: { where: { status: 'CONFIRMED', deletedAt: null }, include: { buyerFirm: { select: { id: true, name: true } }, sellerFirm: { select: { id: true, name: true } }, transaction: true }, orderBy: { createdAt: 'desc' as const } },
 };
 
 export const firmTourVisibilityWhere = (firmId: string): Prisma.TourPackageWhereInput => ({
   OR: [
     { ownerFirmId: firmId },
-    { sales: { some: { buyerFirmId: firmId } } },
+    { sales: { some: { buyerFirmId: firmId, status: 'CONFIRMED', deletedAt: null } } },
   ],
 });
 
@@ -65,11 +65,11 @@ async function reserveTickets(tx: Prisma.TransactionClient, input: {
     const rows = await tx.$queryRaw<Array<{ ticketId: string }>>(Prisma.sql`
       SELECT ticket.id AS "ticketId" FROM "Ticket" ticket
       JOIN "TicketLeg" outbound ON outbound."ticketId" = ticket.id AND outbound.direction = 'OUTBOUND'
-      JOIN "TicketLeg" returning ON returning."ticketId" = ticket.id AND returning.direction = 'RETURN'
+      JOIN "TicketLeg" return_leg ON return_leg."ticketId" = ticket.id AND return_leg.direction = 'RETURN'
       WHERE ticket."flightId" = ${input.flightId} AND ticket."deletedAt" IS NULL
-        AND outbound."currentOwnerFirmId" = ${input.firmId} AND returning."currentOwnerFirmId" = ${input.firmId}
-        AND outbound.status IN ('AVAILABLE', 'ASSIGNED') AND returning.status IN ('AVAILABLE', 'ASSIGNED')
-      ORDER BY ticket."createdAt" ASC FOR UPDATE OF outbound, returning SKIP LOCKED LIMIT ${input.count}
+        AND outbound."currentOwnerFirmId" = ${input.firmId} AND return_leg."currentOwnerFirmId" = ${input.firmId}
+        AND outbound.status IN ('AVAILABLE', 'ASSIGNED') AND return_leg.status IN ('AVAILABLE', 'ASSIGNED')
+      ORDER BY ticket."createdAt" ASC FOR UPDATE OF outbound, return_leg SKIP LOCKED LIMIT ${input.count}
     `);
     ticketIds = rows.map((row) => row.ticketId);
     if (ticketIds.length === input.count) {
@@ -118,6 +118,31 @@ async function releaseTourLegs(tx: Prisma.TransactionClient, tourId: string, leg
   }
   await syncParentTickets(tx, legs.map((leg) => leg.ticketId));
   return legs;
+}
+
+type SaleLeg = { id: string; ticketId: string; direction: TicketLegDirection };
+
+export function selectTourSaleLegs(legs: SaleLeg[], input: { productType: TicketProductType; ticketDirection?: TicketLegDirection | null; parentTicketCount: number }) {
+  if (input.productType === TicketProductType.ONE_WAY) {
+    const selected = legs.filter((leg) => !input.ticketDirection || leg.direction === input.ticketDirection).slice(0, input.parentTicketCount);
+    if (selected.length !== input.parentTicketCount) fail('Tur uchun kerakli OW biletlar yetarli emas.');
+    return selected;
+  }
+  const byTicket = new Map<string, SaleLeg[]>();
+  legs.forEach((leg) => byTicket.set(leg.ticketId, [...(byTicket.get(leg.ticketId) || []), leg]));
+  const ticketIds = Array.from(byTicket.entries())
+    .filter(([, ticketLegs]) => ticketLegs.some((leg) => leg.direction === TicketLegDirection.OUTBOUND) && ticketLegs.some((leg) => leg.direction === TicketLegDirection.RETURN))
+    .slice(0, input.parentTicketCount)
+    .map(([ticketId]) => ticketId);
+  if (ticketIds.length !== input.parentTicketCount) fail('Tur uchun kerakli to‘liq RT biletlar yetarli emas.');
+  return legs.filter((leg) => ticketIds.includes(leg.ticketId));
+}
+
+function transactionLegIds(transaction: { metadata: unknown } | null | undefined) {
+  const metadata = transaction?.metadata && typeof transaction.metadata === 'object' && !Array.isArray(transaction.metadata)
+    ? transaction.metadata as Record<string, unknown>
+    : {};
+  return Array.isArray(metadata.ticketLegIds) ? metadata.ticketLegIds.map(String).filter(Boolean) : [];
 }
 
 async function loadAndValidateServices(tx: Prisma.TransactionClient, firmId: string, flightId: string, packageCurrency: string, quantity: number, rawServices: unknown) {
@@ -426,17 +451,7 @@ export const sellTourPackage = async (req: Request, res: Response) => {
         where: { tourPackageId: packageId, status: TicketLegStatus.RESERVED_FOR_TOUR, ...(pkg.ticketProductType === TicketProductType.ONE_WAY && pkg.ticketDirection ? { direction: pkg.ticketDirection } : {}) },
         orderBy: { createdAt: 'asc' },
       });
-      let soldLegs = reservedLegs;
-      if (pkg.ticketProductType === TicketProductType.ROUND_TRIP) {
-        const byTicket = new Map<string, typeof reservedLegs>();
-        reservedLegs.forEach((leg) => byTicket.set(leg.ticketId, [...(byTicket.get(leg.ticketId) || []), leg]));
-        const ticketIds = Array.from(byTicket.entries()).filter(([, legs]) => legs.some((leg) => leg.direction === 'OUTBOUND') && legs.some((leg) => leg.direction === 'RETURN')).slice(0, ticketCount).map(([ticketId]) => ticketId);
-        if (ticketIds.length !== ticketCount) fail('Tur uchun band qilingan to‘liq RT biletlar yetarli emas.');
-        soldLegs = reservedLegs.filter((leg) => ticketIds.includes(leg.ticketId));
-      } else {
-        soldLegs = reservedLegs.slice(0, ticketCount);
-        if (soldLegs.length !== ticketCount) fail('Tur uchun band qilingan OW segmentlar yetarli emas.');
-      }
+      const soldLegs = selectTourSaleLegs(reservedLegs, { productType: pkg.ticketProductType, ticketDirection: pkg.ticketDirection, parentTicketCount: ticketCount });
       await tx.ticketLeg.updateMany({ where: { id: { in: soldLegs.map((leg) => leg.id) }, status: TicketLegStatus.RESERVED_FOR_TOUR }, data: { status: TicketLegStatus.SOLD } });
       await syncParentTickets(tx, soldLegs.map((leg) => leg.ticketId));
       await tx.tourComponent.updateMany({ where: { tourId: packageId, componentType: 'TICKET' }, data: { consumedQuantity: { increment: ticketCount } } });
@@ -459,8 +474,149 @@ export const sellTourPackage = async (req: Request, res: Response) => {
   } catch (error) { return sendError(res, error, 'Tur paketini sotib bo‘lmadi.'); }
 };
 
+export const updateTourPackageSale = async (req: Request, res: Response) => {
+  const saleId = String(req.params.saleId || '').trim();
+  const body = req.body || {};
+  const reason = String(body.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'Tahrirlash sababini kiriting.' });
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "TourPackageSale" WHERE id = ${saleId} FOR UPDATE`;
+      const sale = await tx.tourPackageSale.findUnique({
+        where: { id: saleId },
+        include: {
+          package: { include: { components: true, flight: { select: { flightNumber: true, route: true } } } },
+          sellerFirm: { select: { id: true, name: true } }, buyerFirm: { select: { id: true, name: true } }, transaction: true,
+        },
+      });
+      if (!sale || sale.deletedAt || sale.status !== 'CONFIRMED') fail('Faol tur sotuv topilmadi.', 404);
+      if (sale.package.deletedAt || sale.package.status !== 'ACTIVE') fail('Bekor qilingan tur sotuvini tahrirlab bo‘lmaydi.');
+      await assertOwnerOrSuperadmin(req, sale.sellerFirmId, reason);
+      const buyerFirmId = String(body.buyerFirmId || sale.buyerFirmId).trim();
+      const saleQuantity = integer(body.quantity ?? sale.quantity);
+      const unitPrice = new Prisma.Decimal(String(body.unitPrice ?? sale.unitPrice));
+      if (!buyerFirmId || buyerFirmId === sale.sellerFirmId) fail('Xaridor sotuvchidan boshqa firma bo‘lishi kerak.');
+      if (saleQuantity <= 0 || !unitPrice.gt(0)) fail('Soni va bir dona narxi musbat bo‘lishi kerak.');
+      const buyer = await tx.firm.findUnique({ where: { id: buyerFirmId }, select: { id: true, name: true } });
+      if (!buyer) fail('Xaridor firma topilmadi.', 404);
+      if (!sale.transactionId || !sale.transaction) fail('Sotuvning moliyaviy yozuvi topilmadi.');
+      const currentLegIds = transactionLegIds(sale.transaction);
+      if (!currentLegIds.length) fail('Eski sotuv bilet bog‘lanishlari topilmadi. Qo‘lda tekshirish kerak.');
+      const currentLegs = await tx.ticketLeg.findMany({
+        where: { id: { in: currentLegIds }, tourPackageId: sale.packageId, status: TicketLegStatus.SOLD },
+        select: { id: true, ticketId: true, direction: true }, orderBy: { createdAt: 'asc' },
+      });
+      if (currentLegs.length !== currentLegIds.length) fail('Sotilgan tur biletlarining holati o‘zgargan. Qo‘lda tekshirish kerak.');
+      const delta = saleQuantity - sale.quantity;
+      const changedParentTickets = Math.abs(delta) * sale.package.ticketsPerTour;
+      let nextLegs = currentLegs;
+      if (delta > 0) {
+        if (sale.package.availableQuantity < delta) fail('Tur paketi qoldig‘i yetarli emas.');
+        const reservedLegs = await tx.ticketLeg.findMany({
+          where: { tourPackageId: sale.packageId, status: TicketLegStatus.RESERVED_FOR_TOUR, ...(sale.package.ticketProductType === TicketProductType.ONE_WAY && sale.package.ticketDirection ? { direction: sale.package.ticketDirection } : {}) },
+          select: { id: true, ticketId: true, direction: true }, orderBy: { createdAt: 'asc' },
+        });
+        const added = selectTourSaleLegs(reservedLegs, { productType: sale.package.ticketProductType, ticketDirection: sale.package.ticketDirection, parentTicketCount: changedParentTickets });
+        const changed = await tx.ticketLeg.updateMany({ where: { id: { in: added.map((leg) => leg.id) }, status: TicketLegStatus.RESERVED_FOR_TOUR }, data: { status: TicketLegStatus.SOLD } });
+        if (changed.count !== added.length) fail('Tur bilet inventari bir vaqtda o‘zgardi. Qayta urinib ko‘ring.');
+        nextLegs = [...currentLegs, ...added];
+      } else if (delta < 0) {
+        const removed = selectTourSaleLegs(currentLegs, { productType: sale.package.ticketProductType, ticketDirection: sale.package.ticketDirection, parentTicketCount: changedParentTickets });
+        const changed = await tx.ticketLeg.updateMany({ where: { id: { in: removed.map((leg) => leg.id) }, status: TicketLegStatus.SOLD }, data: { status: TicketLegStatus.RESERVED_FOR_TOUR } });
+        if (changed.count !== removed.length) fail('Tur bilet inventari bir vaqtda o‘zgardi. Qayta urinib ko‘ring.');
+        const removedIds = new Set(removed.map((leg) => leg.id));
+        nextLegs = currentLegs.filter((leg) => !removedIds.has(leg.id));
+      }
+      if (delta) {
+        const ticketComponent = sale.package.components.find((row) => row.componentType === 'TICKET');
+        if (ticketComponent) await tx.tourComponent.update({ where: { id: ticketComponent.id }, data: { consumedQuantity: { increment: delta * sale.package.ticketsPerTour } } });
+        for (const component of sale.package.components.filter((row) => row.componentType === 'SERVICE' && row.serviceId)) {
+          const serviceDelta = delta * component.quantityPerTour;
+          if (serviceDelta > 0) {
+            const changed = await tx.serviceOffering.updateMany({ where: { id: component.serviceId!, reservedQuantity: { gte: serviceDelta } }, data: { reservedQuantity: { decrement: serviceDelta }, consumedQuantity: { increment: serviceDelta } } });
+            if (changed.count !== 1) fail('Tur xizmati rezervi yetarli emas.');
+          } else {
+            const restored = -serviceDelta;
+            const changed = await tx.serviceOffering.updateMany({ where: { id: component.serviceId!, consumedQuantity: { gte: restored } }, data: { reservedQuantity: { increment: restored }, consumedQuantity: { decrement: restored } } });
+            if (changed.count !== 1) fail('Tur xizmati sarfi bilan sotuv mos emas.');
+          }
+          await tx.tourComponent.update({ where: { id: component.id }, data: { consumedQuantity: { increment: serviceDelta } } });
+        }
+        await tx.tourPackage.update({
+          where: { id: sale.packageId },
+          data: delta > 0
+            ? { availableQuantity: { decrement: delta }, soldQuantity: { increment: delta } }
+            : { availableQuantity: { increment: -delta }, soldQuantity: { decrement: -delta } },
+        });
+        await syncParentTickets(tx, [...currentLegs, ...nextLegs].map((leg) => leg.ticketId));
+      }
+      const totalAmount = unitPrice.mul(saleQuantity).toDecimalPlaces(4);
+      const exchangeRate = body.exchangeRate
+        ? await resolveExchangeRateToUzs(auth(req), { currency: sale.currency, overrideRate: body.exchangeRate, rateFirmId: sale.sellerFirmId })
+        : new Prisma.Decimal(sale.transaction.exchangeRate);
+      const oldMetadata = sale.transaction.metadata && typeof sale.transaction.metadata === 'object' && !Array.isArray(sale.transaction.metadata)
+        ? sale.transaction.metadata as Record<string, unknown>
+        : {};
+      const transaction = await tx.transaction.update({
+        where: { id: sale.transactionId },
+        data: {
+          payerFirmId: buyerFirmId, receiverFirmId: sale.sellerFirmId, originalAmount: totalAmount,
+          exchangeRate: exchangeRate.toDecimalPlaces(6), baseAmount: totalAmount.mul(exchangeRate).toDecimalPlaces(4),
+          metadata: { ...oldMetadata, quantity: saleQuantity, ticketIds: Array.from(new Set(nextLegs.map((leg) => leg.ticketId))), ticketLegIds: nextLegs.map((leg) => leg.id), correctionReason: reason } as Prisma.InputJsonValue,
+        },
+      });
+      const updated = await tx.tourPackageSale.update({
+        where: { id: saleId },
+        data: { buyerFirmId, quantity: saleQuantity, unitPrice, totalAmount, notes: body.notes === undefined ? sale.notes : String(body.notes || '').trim() || null },
+        include: { package: { include: { flight: true } }, sellerFirm: { select: { id: true, name: true } }, buyerFirm: { select: { id: true, name: true } }, transaction: true },
+      });
+      await writeAuditLog(req, { action: 'TOUR_SALE_UPDATED', entityType: 'tourPackageSale', entityId: saleId, entityLabel: sale.package.name, summary: `Tur sotuv tahrirlandi: ${sale.package.name}`, before: sale, after: updated, metadata: { reason, previousTicketLegIds: currentLegIds, nextTicketLegIds: nextLegs.map((leg) => leg.id), transactionId: transaction.id } }, tx);
+      return updated;
+    });
+    return res.json(result);
+  } catch (error) { return sendError(res, error, 'Tur sotuvini tahrirlab bo‘lmadi.'); }
+};
+
+export const deleteTourPackageSale = async (req: Request, res: Response) => {
+  const saleId = String(req.params.saleId || '').trim();
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'O‘chirish sababini kiriting.' });
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "TourPackageSale" WHERE id = ${saleId} FOR UPDATE`;
+      const sale = await tx.tourPackageSale.findUnique({ where: { id: saleId }, include: { package: { include: { components: true } }, transaction: true } });
+      if (!sale || sale.deletedAt || sale.status !== 'CONFIRMED') fail('Faol tur sotuv topilmadi.', 404);
+      if (sale.package.deletedAt || sale.package.status !== 'ACTIVE') fail('Bekor qilingan tur sotuvini o‘chirib bo‘lmaydi.');
+      await assertOwnerOrSuperadmin(req, sale.sellerFirmId, reason);
+      const legIds = transactionLegIds(sale.transaction);
+      if (!legIds.length) fail('Eski sotuv bilet bog‘lanishlari topilmadi. Qo‘lda tekshirish kerak.');
+      const legs = await tx.ticketLeg.findMany({ where: { id: { in: legIds }, tourPackageId: sale.packageId, status: TicketLegStatus.SOLD }, select: { id: true, ticketId: true } });
+      if (legs.length !== legIds.length) fail('Sotilgan tur biletlarining holati o‘zgargan. Qo‘lda tekshirish kerak.');
+      const restored = await tx.ticketLeg.updateMany({ where: { id: { in: legIds }, status: TicketLegStatus.SOLD }, data: { status: TicketLegStatus.RESERVED_FOR_TOUR } });
+      if (restored.count !== legIds.length) fail('Tur bilet inventari bir vaqtda o‘zgardi. Qayta urinib ko‘ring.');
+      const parentTicketCount = sale.quantity * sale.package.ticketsPerTour;
+      const ticketComponent = sale.package.components.find((row) => row.componentType === 'TICKET');
+      if (ticketComponent) await tx.tourComponent.update({ where: { id: ticketComponent.id }, data: { consumedQuantity: { decrement: parentTicketCount } } });
+      for (const component of sale.package.components.filter((row) => row.componentType === 'SERVICE' && row.serviceId)) {
+        const serviceCount = sale.quantity * component.quantityPerTour;
+        const changed = await tx.serviceOffering.updateMany({ where: { id: component.serviceId!, consumedQuantity: { gte: serviceCount } }, data: { reservedQuantity: { increment: serviceCount }, consumedQuantity: { decrement: serviceCount } } });
+        if (changed.count !== 1) fail('Tur xizmati sarfi bilan sotuv mos emas.');
+        await tx.tourComponent.update({ where: { id: component.id }, data: { consumedQuantity: { decrement: serviceCount } } });
+      }
+      await tx.tourPackage.update({ where: { id: sale.packageId }, data: { availableQuantity: { increment: sale.quantity }, soldQuantity: { decrement: sale.quantity } } });
+      await syncParentTickets(tx, legs.map((leg) => leg.ticketId));
+      const deletedAt = new Date();
+      if (sale.transactionId) await tx.transaction.update({ where: { id: sale.transactionId }, data: { status: 'DELETED', deletedAt } });
+      const deleted = await tx.tourPackageSale.update({ where: { id: saleId }, data: { status: 'CANCELLED', deletedAt, deletedByUserId: auth(req).userId || null, deleteReason: reason } });
+      await writeAuditLog(req, { action: 'TOUR_SALE_DELETED', entityType: 'tourPackageSale', entityId: saleId, entityLabel: sale.package.name, summary: `Tur sotuv o‘chirildi: ${sale.package.name}`, before: sale, after: deleted, metadata: { reason, restoredTicketLegIds: legIds, transactionId: sale.transactionId } }, tx);
+      return deleted;
+    });
+    return res.json(result);
+  } catch (error) { return sendError(res, error, 'Tur sotuvini o‘chirib bo‘lmadi.'); }
+};
+
 export const listTourPackageSales = async (req: Request, res: Response) => {
-  const user = auth(req); const where: Prisma.TourPackageSaleWhereInput = {};
+  const user = auth(req); const where: Prisma.TourPackageSaleWhereInput = { status: 'CONFIRMED', deletedAt: null };
   if (role(req) === 'FIRM') where.OR = [{ sellerFirmId: user.firmId || '__missing__' }, { buyerFirmId: user.firmId || '__missing__' }];
   if (role(req) === 'ADMIN') { const ids = await getAccessibleFirmIds(user); where.OR = [{ sellerFirmId: { in: ids } }, { buyerFirmId: { in: ids } }]; }
   return res.json(await prisma.tourPackageSale.findMany({ where, include: { package: { include: { flight: { select: { id: true, flightNumber: true, route: true, departure: true, arrival: true, currency: true } } } }, sellerFirm: { select: { id: true, name: true } }, buyerFirm: { select: { id: true, name: true } }, transaction: true }, orderBy: { createdAt: 'desc' } }));

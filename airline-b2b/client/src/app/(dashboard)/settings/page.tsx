@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
@@ -5,9 +6,10 @@ import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { Bell, ChevronRight, CircleUserRound, Download, ExternalLink, FileSpreadsheet, KeyRound, Lock, LogIn, MoonStar, Save, Send, Settings2, ShieldCheck, WalletCards } from 'lucide-react';
+import { Bell, ChevronRight, CircleUserRound, Download, ExternalLink, FileSpreadsheet, KeyRound, Lock, LogIn, MoonStar, Send, Settings2, ShieldCheck, WalletCards } from 'lucide-react';
 import { defaultLoginPageContent, normalizeLoginPageContent, resolveLocalizedText, type LoginPageContent } from '@/lib/login-content';
 import { downloadCsv, downloadXlsx, uzbekTemplates } from '@/lib/data-export';
+import ActionButtons from '@/components/ui/ActionButtons';
 
 type LocalizedFieldKey =
   | 'brandName'
@@ -74,11 +76,11 @@ export default function SettingsPage() {
   const [firmCurrency, setFirmCurrency] = useState('UZS');
   const [savingCurrency, setSavingCurrency] = useState(false);
   const [rateDate, setRateDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [rateCurrency, setRateCurrency] = useState('USD');
   const [rateValue, setRateValue] = useState('');
   const [savingRate, setSavingRate] = useState(false);
   const [currencyRates, setCurrencyRates] = useState<Array<{ id: string; targetCurrency: string; rate: string | number; source?: string; recordedAt: string }>>([]);
   const [loginContent, setLoginContent] = useState<LoginPageContent>(defaultLoginPageContent);
+  const [savedLoginContent, setSavedLoginContent] = useState<LoginPageContent>(defaultLoginPageContent);
   const [loadingLoginContent, setLoadingLoginContent] = useState(true);
   const [savingLoginContent, setSavingLoginContent] = useState(false);
   const [telegram, setTelegram] = useState<TelegramStatus | null>(null);
@@ -92,6 +94,11 @@ export default function SettingsPage() {
   const canEditLoginContent = role === 'SUPERADMIN';
   const selectedFirm = useMemo(() => firms.find((firm) => firm.id === selectedFirmId), [firms, selectedFirmId]);
   const editorFieldClassName = 'mt-1 w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition disabled:opacity-60';
+  const loginContentComplete = Object.values(loginContent).every((value) => (
+    typeof value === 'string'
+      ? Boolean(value.trim())
+      : Boolean(value.en.trim() && value.uz.trim())
+  ));
 
   const subscriptionLabel = (value?: string | null) => {
     if (!value) return tr('No subscription date set', 'Obuna muddati belgilanmagan');
@@ -156,9 +163,16 @@ export default function SettingsPage() {
       try {
         setLoadingLoginContent(true);
         const response = await api.get('/site-content/login-page');
-        if (!cancelled) setLoginContent(normalizeLoginPageContent(response.data?.content));
+        if (!cancelled) {
+          const content = normalizeLoginPageContent(response.data?.content);
+          setLoginContent(content);
+          setSavedLoginContent(content);
+        }
       } catch {
-        if (!cancelled) setLoginContent(defaultLoginPageContent);
+        if (!cancelled) {
+          setLoginContent(defaultLoginPageContent);
+          setSavedLoginContent(defaultLoginPageContent);
+        }
       } finally {
         if (!cancelled) setLoadingLoginContent(false);
       }
@@ -263,7 +277,9 @@ export default function SettingsPage() {
     try {
       setSavingLoginContent(true);
       const response = await api.put('/site-content/login-page', { content: loginContent });
-      setLoginContent(normalizeLoginPageContent(response.data?.content));
+      const content = normalizeLoginPageContent(response.data?.content);
+      setLoginContent(content);
+      setSavedLoginContent(content);
       toast.success(tr('Login page content updated', 'Kirish sahifasi matni yangilandi'));
     } catch (error: any) {
       toast.error(error?.response?.data?.error || tr('Failed to update login page content', "Kirish sahifasi matnini yangilab bo'lmadi"));
@@ -480,15 +496,15 @@ export default function SettingsPage() {
                 {tr('Only superadmin can change the public login page content.', 'Public login sahifasini faqat superadmin o‘zgartira oladi.')}
               </p>
             </div>
-            <button
-              type="button"
-              onClick={saveLoginContent}
-              disabled={!canEditLoginContent || savingLoginContent || loadingLoginContent}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-bold uppercase tracking-wider text-ink transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Save size={16} />
-              {savingLoginContent ? tr('Saving...', 'Saqlanmoqda...') : tr('Save', 'Saqlash')}
-            </button>
+            <ActionButtons
+              cancelLabel={tr('Cancel', 'Bekor qilish')}
+              confirmLabel={tr('Confirm', 'Tasdiqlash')}
+              busyLabel={tr('Saving...', 'Saqlanmoqda...')}
+              busy={savingLoginContent}
+              canConfirm={canEditLoginContent && !loadingLoginContent && loginContentComplete}
+              onCancel={() => setLoginContent(savedLoginContent)}
+              onConfirm={saveLoginContent}
+            />
           </div>
 
           <div className="mt-6 max-h-[720px] space-y-6 overflow-y-auto pr-1">
@@ -675,14 +691,16 @@ export default function SettingsPage() {
             />
           </div>
           {(canEditAnyFirm || canEditOwnFirm) && (
-            <button
-              type="button"
-              onClick={saveDefaultCurrency}
-              disabled={savingCurrency || !selectedFirmId}
-              className="inline-flex items-center justify-center px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg transition disabled:opacity-50"
-            >
-              {savingCurrency ? tr('Saving...', 'Saqlanmoqda...') : tr('Save', 'Saqlash')}
-            </button>
+            <ActionButtons
+              className="md:col-span-3"
+              cancelLabel={tr('Cancel', 'Bekor qilish')}
+              confirmLabel={tr('Confirm', 'Tasdiqlash')}
+              busyLabel={tr('Saving...', 'Saqlanmoqda...')}
+              busy={savingCurrency}
+              canConfirm={Boolean(selectedFirmId && /^[A-Z]{3}$/.test(firmCurrency.trim().toUpperCase()))}
+              onCancel={() => setFirmCurrency(String(selectedFirm?.currency || 'UZS'))}
+              onConfirm={saveDefaultCurrency}
+            />
           )}
         </div>
         {selectedFirm && (
@@ -712,14 +730,16 @@ export default function SettingsPage() {
             <label className="compact-label">{tr('Rate to UZS', 'UZS kursi')}</label>
             <input inputMode="decimal" value={rateValue} onChange={(e) => setRateValue(e.target.value)} className="compact-control" placeholder={currencyRates[0] ? Number(currencyRates[0].rate).toLocaleString('en-US') : '12600'} />
           </div>
-          <button
-            type="button"
-            onClick={saveDailyRate}
-            disabled={savingRate}
-            className="inline-flex items-center justify-center px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg transition disabled:opacity-50"
-          >
-            {savingRate ? tr('Saving...', 'Saqlanmoqda...') : tr('Save rate', 'Kursni saqlash')}
-          </button>
+          <ActionButtons
+            className="md:col-span-4"
+            cancelLabel={tr('Cancel', 'Bekor qilish')}
+            confirmLabel={tr('Confirm', 'Tasdiqlash')}
+            busyLabel={tr('Saving...', 'Saqlanmoqda...')}
+            busy={savingRate}
+            canConfirm={Boolean(rateDate && Number(rateValue) > 0)}
+            onCancel={() => setRateValue('')}
+            onConfirm={saveDailyRate}
+          />
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
           {currencyRates.length === 0 ? (
@@ -744,6 +764,7 @@ export default function SettingsPage() {
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}
               type="password"
+              minLength={6}
               className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition placeholder:text-muted"
               placeholder="••••••••"
               required
@@ -756,6 +777,7 @@ export default function SettingsPage() {
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               type="password"
+              minLength={6}
               className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition placeholder:text-muted"
               placeholder={tr('At least 6 characters', 'Kamida 6 ta belgi')}
               required
@@ -768,19 +790,21 @@ export default function SettingsPage() {
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               type="password"
+              minLength={6}
               className="w-full bg-surface border border-border rounded-lg px-4 py-2 text-foreground outline-none focus:border-primary transition placeholder:text-muted"
               placeholder={tr('Repeat new password', 'Yangi parolni qayta kiriting')}
               required
             />
           </div>
 
-          <button
-            type="submit"
-            disabled={submitting}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary-hover text-ink font-bold uppercase tracking-wider rounded-lg font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {submitting ? tr('Updating...', 'Yangilanmoqda...') : tr('Update password', 'Parolni yangilash')}
-          </button>
+          <ActionButtons
+            cancelLabel={tr('Cancel', 'Bekor qilish')}
+            confirmLabel={tr('Confirm', 'Tasdiqlash')}
+            busyLabel={tr('Updating...', 'Yangilanmoqda...')}
+            busy={submitting}
+            canConfirm={newPassword.length >= 6 && newPassword === confirmPassword}
+            onCancel={() => { setCurrentPassword(''); setNewPassword(''); setConfirmPassword(''); }}
+          />
         </form>
       </div>
       </SettingsSection>

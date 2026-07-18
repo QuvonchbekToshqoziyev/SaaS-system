@@ -10,6 +10,7 @@ const adminUserSelect = {
   id: true,
   email: true,
   role: true,
+  readOnlyAccess: true,
   firmRole: true,
   status: true,
   fullName: true,
@@ -54,6 +55,18 @@ async function serializeAdminUser(userId: string) {
     where: { id: userId },
     select: adminUserSelect,
   });
+}
+
+async function hasOtherWritableSuperadmin(userId: string) {
+  return (await prisma.user.count({
+    where: {
+      id: { not: userId },
+      role: Role.SUPERADMIN,
+      readOnlyAccess: false,
+      status: { not: 'DELETED' },
+      deletedAt: null,
+    },
+  })) > 0;
 }
 
 async function replaceAdminFirmAccess(userId: string, firmIds: string[]) {
@@ -115,11 +128,11 @@ export const login = async (req: Request, res: Response) => {
   if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
   const token = jwt.sign(
-    { userId: user.id, role: user.role, firmRole: user.firmRole, firmId: user.firmId, firmKind: user.firm?.kind || null },
+    { userId: user.id, role: user.role, readOnlyAccess: user.readOnlyAccess, firmRole: user.firmRole, firmId: user.firmId, firmKind: user.firm?.kind || null },
     jwtSecret,
     { expiresIn: '1d' },
   );
-  res.json({ token, user: { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, role: user.role, firmRole: user.firmRole, firmId: user.firmId, firmKind: user.firm?.kind || null, subscriptionEndsAt: user.firm?.subscriptionEndsAt || null } });
+  res.json({ token, user: { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, role: user.role, readOnlyAccess: user.readOnlyAccess, firmRole: user.firmRole, firmId: user.firmId, firmKind: user.firm?.kind || null, subscriptionEndsAt: user.firm?.subscriptionEndsAt || null } });
 };
 
 export const changePassword = async (req: Request, res: Response) => {
@@ -171,6 +184,7 @@ export const listUsers = async (req: Request, res: Response) => {
       id: true,
       email: true,
       role: true,
+      readOnlyAccess: true,
       firmRole: true,
       status: true,
       fullName: true,
@@ -214,6 +228,7 @@ export const createAdmin = async (req: Request, res: Response) => {
   const fullName = typeof req.body?.fullName === 'string' ? req.body.fullName.trim() : '';
   const phone = typeof req.body?.phone === 'string' ? req.body.phone.trim() : '';
   const role = normalizeAdminRole(req.body?.role);
+  const readOnlyAccess = role === Role.SUPERADMIN && req.body?.readOnlyAccess === true;
   const firmIds: string[] = Array.isArray(req.body?.firmIds) ? req.body.firmIds : [];
 
   if (!email) return res.status(400).json({ error: 'Email is required' });
@@ -232,6 +247,7 @@ export const createAdmin = async (req: Request, res: Response) => {
           fullName: fullName || undefined,
           phone: phone || undefined,
           role,
+          readOnlyAccess,
         },
         select: { id: true },
       });
@@ -276,12 +292,19 @@ export const updateAdmin = async (req: Request, res: Response) => {
   if (existing.role === Role.FIRM) return res.status(400).json({ error: 'Only admin accounts can be edited here' });
 
   const nextRole = req.body?.role === undefined ? existing.role : normalizeAdminRole(req.body.role);
+  const nextReadOnlyAccess = nextRole === Role.SUPERADMIN
+    && (req.body?.readOnlyAccess === undefined ? existing.readOnlyAccess : req.body.readOnlyAccess === true);
   if (authUser.userId === userId && nextRole !== Role.SUPERADMIN) {
     return res.status(400).json({ error: 'You cannot remove your own superadmin role' });
   }
+  if (existing.role === Role.SUPERADMIN && !existing.readOnlyAccess
+    && (nextRole !== Role.SUPERADMIN || nextReadOnlyAccess)
+    && !(await hasOtherWritableSuperadmin(userId))) {
+    return res.status(400).json({ error: 'At least one writable superadmin is required' });
+  }
 
   try {
-    const data: Prisma.UserUpdateInput = { role: nextRole };
+    const data: Prisma.UserUpdateInput = { role: nextRole, readOnlyAccess: nextReadOnlyAccess };
     if (typeof req.body?.email === 'string' && req.body.email.trim()) data.email = req.body.email.trim().toLowerCase();
     if (typeof req.body?.fullName === 'string') data.fullName = req.body.fullName.trim() || null;
     if (typeof req.body?.phone === 'string') data.phone = req.body.phone.trim() || null;
@@ -340,9 +363,8 @@ export const deleteAdmin = async (req: Request, res: Response) => {
     if (!existing || existing.status === 'DELETED' || existing.deletedAt) return res.status(404).json({ error: 'Admin not found' });
     if (existing.role === Role.FIRM) return res.status(400).json({ error: 'Only admin accounts can be deleted here' });
 
-    if (existing.role === Role.SUPERADMIN) {
-      const superadminCount = await prisma.user.count({ where: { role: Role.SUPERADMIN, status: { not: 'DELETED' }, deletedAt: null } });
-      if (superadminCount <= 1) return res.status(400).json({ error: 'At least one superadmin is required' });
+    if (existing.role === Role.SUPERADMIN && !existing.readOnlyAccess && !(await hasOtherWritableSuperadmin(userId))) {
+      return res.status(400).json({ error: 'At least one writable superadmin is required' });
     }
 
     const deleted = await prisma.$transaction(async (tx) => {
@@ -383,17 +405,20 @@ export const updateUser = async (req: Request, res: Response) => {
   if (!existing) return res.status(404).json({ error: 'User not found' });
 
   const nextRole = req.body?.role === undefined ? existing.role : normalizeUserRole(req.body.role, existing.role);
+  const nextReadOnlyAccess = nextRole === Role.SUPERADMIN
+    && (req.body?.readOnlyAccess === undefined ? existing.readOnlyAccess : req.body.readOnlyAccess === true);
   if (authUser.userId === userId && nextRole !== Role.SUPERADMIN) {
     return res.status(400).json({ error: 'You cannot remove your own superadmin role' });
   }
 
-  if (existing.role === Role.SUPERADMIN && nextRole !== Role.SUPERADMIN) {
-    const superadminCount = await prisma.user.count({ where: { role: Role.SUPERADMIN, status: { not: 'DELETED' }, deletedAt: null } });
-    if (superadminCount <= 1) return res.status(400).json({ error: 'At least one superadmin is required' });
+  if (existing.role === Role.SUPERADMIN && !existing.readOnlyAccess
+    && (nextRole !== Role.SUPERADMIN || nextReadOnlyAccess)
+    && !(await hasOtherWritableSuperadmin(userId))) {
+    return res.status(400).json({ error: 'At least one writable superadmin is required' });
   }
 
   try {
-    const data: Prisma.UserUpdateInput = { role: nextRole };
+    const data: Prisma.UserUpdateInput = { role: nextRole, readOnlyAccess: nextReadOnlyAccess };
     if (typeof req.body?.email === 'string' && req.body.email.trim()) data.email = req.body.email.trim().toLowerCase();
     if (typeof req.body?.fullName === 'string') data.fullName = req.body.fullName.trim() || null;
     if (typeof req.body?.phone === 'string') data.phone = req.body.phone.trim() || null;
@@ -486,11 +511,8 @@ export const deleteUser = async (req: Request, res: Response) => {
   const existing = await prisma.user.findUnique({ where: { id: userId }, select: adminUserSelect });
   if (!existing) return res.status(404).json({ error: 'User not found' });
 
-  if (existing.role === Role.SUPERADMIN) {
-    const superadminCount = await prisma.user.count({
-      where: { role: Role.SUPERADMIN, status: { not: 'DELETED' }, deletedAt: null },
-    });
-    if (superadminCount <= 1) return res.status(400).json({ error: 'At least one superadmin is required' });
+  if (existing.role === Role.SUPERADMIN && !existing.readOnlyAccess && !(await hasOtherWritableSuperadmin(userId))) {
+    return res.status(400).json({ error: 'At least one writable superadmin is required' });
   }
 
   try {
@@ -560,6 +582,7 @@ export const setUserFirmAccess = async (req: Request, res: Response) => {
       id: true,
       email: true,
       role: true,
+      readOnlyAccess: true,
       firmRole: true,
       status: true,
       fullName: true,

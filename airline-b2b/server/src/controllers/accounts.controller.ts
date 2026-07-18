@@ -4,6 +4,7 @@ import { prisma } from '../db';
 import { canAccessFirm, getAccessibleFirmIds, normalizeRole } from '../utils/access';
 import { writeAuditLog } from '../utils/audit';
 import { ensureFinancialAccount } from '../utils/financial-accounts';
+import { visibleTransactionWhere } from '../utils/transaction-visibility';
 
 const auth = (req: Request) => ((req as any).user || {}) as { userId?: string; role?: string; firmRole?: string; firmId?: string };
 
@@ -43,7 +44,7 @@ export async function listAccounts(req: Request, res: Response) {
   });
   const ids = accounts.map((account) => account.id);
   const transactions = ids.length ? await prisma.transaction.findMany({
-    where: { OR: [{ sourceAccountId: { in: ids } }, { destinationAccountId: { in: ids } }] },
+    where: visibleTransactionWhere({ OR: [{ sourceAccountId: { in: ids } }, { destinationAccountId: { in: ids } }] }),
     select: { sourceAccountId: true, destinationAccountId: true, originalAmount: true, currency: true, kassaDeskId: true, paymentCardId: true, type: true, direction: true },
   }) : [];
   return res.json(accounts.map((account) => ({ ...account, openingBalance: String(account.openingBalance), balance: calculateAccountBalance(account, transactions) })));

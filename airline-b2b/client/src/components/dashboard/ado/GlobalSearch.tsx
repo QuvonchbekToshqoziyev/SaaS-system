@@ -88,13 +88,13 @@ export default function GlobalSearch({ tr }: Props) {
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onFocus={() => query.length >= 2 && setOpen(true)}
-        placeholder={tr('Search... (Ctrl + /)', 'Qidiruv... (Ctrl + /)')}
+        placeholder={tr('Search… (Ctrl + /)', 'Qidiruv… (Ctrl + /)')}
         className="w-full rounded-xl border border-border bg-surface-2 py-2.5 pl-10 pr-4 text-sm text-foreground placeholder:text-muted focus:border-[#C9A84C]/50 focus:outline-none focus:ring-1 focus:ring-[#C9A84C]/30"
       />
       {open && query.length >= 2 && (
         <div className="absolute left-0 right-0 top-full z-50 mt-2 max-h-[360px] overflow-y-auto rounded-xl border border-border bg-surface shadow-2xl">
           {loading && (
-            <p className="px-4 py-3 text-xs text-muted">{tr('Searching...', 'Qidirilmoqda...')}</p>
+            <p className="px-4 py-3 text-xs text-muted">{tr('Searching…', 'Qidirilmoqda…')}</p>
           )}
           {!loading && !hasResults && (
             <p className="px-4 py-3 text-xs text-muted">{tr('No results', 'Natija topilmadi')}</p>

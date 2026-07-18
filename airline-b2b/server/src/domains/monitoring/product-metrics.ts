@@ -1,4 +1,5 @@
 import { prisma } from '../../db';
+import { visibleTransactionWhere } from '../../utils/transaction-visibility';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -43,10 +44,10 @@ export async function buildProductMetrics(now = new Date()) {
       select: { id: true, name: true, createdAt: true, subscriptionEndsAt: true },
     }),
     prisma.transaction.findMany({
-      where: { createdAt: { gte: historyStart, lte: now } },
+      where: visibleTransactionWhere({ createdAt: { gte: historyStart, lte: now } }),
       select: { firmId: true, createdAt: true },
     }),
-    prisma.transaction.groupBy({ by: ['firmId'], _min: { createdAt: true }, _count: { _all: true } }),
+    prisma.transaction.groupBy({ by: ['firmId'], where: visibleTransactionWhere(), _min: { createdAt: true }, _count: { _all: true } }),
     prisma.kassaDay.findMany({
       where: { businessDate: { gte: weekStart, lte: today }, status: 'CLOSED' },
       select: { firmId: true, businessDate: true, cashDeskId: true },

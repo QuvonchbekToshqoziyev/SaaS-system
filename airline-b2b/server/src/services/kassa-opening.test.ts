@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { describe, expect, it } from 'vitest';
-import { calculateExpectedCashByCurrency, resolveCarryForwardBalance, resolveOpeningBalance } from './kassa.service';
+import { calculateExpectedCashByCurrency, previousKassaRemainderQuery, resolveCarryForwardBalance, resolveKassaTransactionFlow, resolveOpeningBalance } from './kassa.service';
 import { kassaSessionWhere } from '../utils/kassa';
 
 describe('kassa opening balance carry-forward', () => {
@@ -16,6 +16,15 @@ describe('kassa opening balance carry-forward', () => {
     )).toEqual({ UZS: 125_000, USD: 40 });
   });
 
+  it('treats a payment from the kassa firm to an airline as cash out', () => {
+    expect(resolveKassaTransactionFlow({
+      type: 'PAYMENT', firmId: 'agency', payerFirmId: 'agency', receiverFirmId: 'airline', metadata: { cashFlow: 'OUT' },
+    })).toBe('OUT');
+    expect(resolveKassaTransactionFlow({
+      type: 'PAYMENT', firmId: 'agency', payerFirmId: 'customer', receiverFirmId: 'agency',
+    })).toBe('IN');
+  });
+
   it('checks the selected desk session instead of the legacy global day', () => {
     expect(kassaSessionWhere(new Date('2026-07-13T12:00:00Z'), 'desk-1')).toEqual({
       businessDate: new Date('2026-07-13T00:00:00Z'),
@@ -27,6 +36,17 @@ describe('kassa opening balance carry-forward', () => {
     const result = resolveOpeningBalance({ previousClosingBalance: new Prisma.Decimal(5_000_000), canAdjust: false });
     expect(result.openingBalance.toNumber()).toBe(5_000_000);
     expect(result.adjusted).toBe(false);
+  });
+
+  it('orders carry-forward by business date and skips closed rows without a remainder', () => {
+    const day = new Date('2026-07-17T00:00:00.000Z');
+    expect(previousKassaRemainderQuery('firm-1', 'desk-1', day, 'UZS')).toEqual({
+      where: {
+        firmId: 'firm-1', cashDeskId: 'desk-1', currency: 'UZS', status: 'CLOSED', businessDate: { lt: day },
+        OR: [{ actualClosingBalance: { not: null } }, { closingBalance: { not: null } }, { expectedCash: { not: null } }],
+      },
+      orderBy: [{ businessDate: 'desc' }, { closedAt: 'desc' }],
+    });
   });
 
   it('defaults the first session to zero and permits an authorized initial balance', () => {

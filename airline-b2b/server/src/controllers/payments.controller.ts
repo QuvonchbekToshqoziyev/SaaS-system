@@ -2,11 +2,11 @@ import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { FinancialAccountType, Prisma, Role } from '@prisma/client';
 import { assertKassaOpenForDate, startOfDayUtc } from '../utils/kassa';
-import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
+import { canAccessFirm, canViewRelatedFirm, getAccessibleFirmIds } from '../utils/access';
 import { assertActiveKassaDesk, assertKassaDeskForFirmSelection } from '../utils/kassa-desk-policy';
 import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
 import { canOperateKassa } from '../utils/kassa-permissions';
-import { assertKassirDeskAccess } from '../utils/kassa-desk-access';
+import { assertKassirDeskAccess, KassaDeskAccessError } from '../utils/kassa-desk-access';
 import { ensureFinancialAccount } from '../utils/financial-accounts';
 
 type AuthUser = {
@@ -61,7 +61,7 @@ async function resolveKassaDesk(authUser: AuthUser, rawKassaDeskId: unknown) {
 
   const accessibleFirmIds = await getAccessibleFirmIds(authUser);
   if (accessibleFirmIds && !accessibleFirmIds.includes(desk.firmId)) {
-    throw new Error('Forbidden');
+    throw new KassaDeskAccessError('Forbidden');
   }
 
   return desk;
@@ -82,6 +82,8 @@ export const processPayment = async (req: Request, res: Response) => {
   const actorUserId = authUser.userId ? String(authUser.userId) : undefined;
 
   const rawFirmId = (req.body as any)?.firmId;
+  const rawPayerFirmId = (req.body as any)?.payerFirmId ?? (req.body as any)?.counterpartyFirmId;
+  const rawReceiverFirmId = (req.body as any)?.receiverFirmId;
   const rawFlightId = (req.body as any)?.flightId;
   const rawAllocationId = (req.body as any)?.allocationId;
   const rawAmount = (req.body as any)?.amount;
@@ -120,6 +122,20 @@ export const processPayment = async (req: Request, res: Response) => {
   if (!firmId || !amount || !currency || !method) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
+  const payerFirmId = typeof rawPayerFirmId === 'string' && rawPayerFirmId.trim() ? rawPayerFirmId.trim() : firmId;
+  const requestedReceiverFirmId = typeof rawReceiverFirmId === 'string' ? rawReceiverFirmId.trim() : '';
+  if (payerFirmId !== firmId && !(await canViewRelatedFirm(authUser, payerFirmId))) {
+    return res.status(403).json({ error: 'To‘lovchi firma ko‘rish doirasida emas' });
+  }
+  if (requestedReceiverFirmId && requestedReceiverFirmId !== firmId && !(await canViewRelatedFirm(authUser, requestedReceiverFirmId))) {
+    return res.status(403).json({ error: 'To‘lov oluvchi firma ko‘rish doirasida emas' });
+  }
+  if (requestedReceiverFirmId && payerFirmId === requestedReceiverFirmId) {
+    return res.status(400).json({ error: 'To‘lovchi va oluvchi firma bir xil bo‘lmasligi kerak' });
+  }
+  if (payerFirmId !== firmId && requestedReceiverFirmId && requestedReceiverFirmId !== firmId) {
+    return res.status(400).json({ error: 'Kassa firmasi to‘lovchi yoki oluvchi bo‘lishi kerak' });
+  }
   if (!PAYMENT_METHODS.has(method)) {
     return res.status(400).json({ error: 'Unsupported payment method' });
   }
@@ -139,7 +155,7 @@ export const processPayment = async (req: Request, res: Response) => {
       await assertKassaDeskForFirm(kassaDesk, deskFirmId);
     }
   } catch (err: any) {
-    return res.status(400).json({ error: err.message || 'Invalid kassa desk' });
+      return res.status(err?.statusCode || 400).json({ error: err.message || 'Invalid kassa desk' });
   }
 
   if (!isPlainObject(rawMetadata)) {
@@ -174,7 +190,7 @@ export const processPayment = async (req: Request, res: Response) => {
     }
   }
 
-  const destinationAccount = await ensureFinancialAccount({
+  const operationalAccount = await ensureFinancialAccount({
     firmId, currency,
     type: method === 'card' ? FinancialAccountType.CARD : method === 'bank' ? FinancialAccountType.BANK : FinancialAccountType.CASH,
     kassaDeskId: method === 'cash' ? kassaDesk?.id : undefined,
@@ -184,8 +200,12 @@ export const processPayment = async (req: Request, res: Response) => {
 
   try {
     await prisma.$transaction(async (tx) => {
-      const [firm, flight, allocation, paymentCard] = await Promise.all([
+      const [firm, payerFirm, requestedReceiverFirm, flight, allocation, paymentCard] = await Promise.all([
         tx.firm.findUnique({ where: { id: firmId }, select: { id: true, name: true } }),
+        tx.firm.findUnique({ where: { id: payerFirmId }, select: { id: true, name: true } }),
+        requestedReceiverFirmId
+          ? tx.firm.findUnique({ where: { id: requestedReceiverFirmId }, select: { id: true, name: true } })
+          : Promise.resolve(null),
         flightId ? tx.flight.findUnique({ where: { id: flightId }, select: { id: true, ownerFirmId: true, airline: { select: { firmId: true } } } }) : Promise.resolve(null),
         allocationId ? tx.ticketAllocation.findUnique({ where: { id: allocationId }, select: { id: true, flightId: true, fromFirmId: true, toFirmId: true, status: true } }) : Promise.resolve(null),
         paymentCardId
@@ -194,8 +214,11 @@ export const processPayment = async (req: Request, res: Response) => {
       ]);
 
       if (!firm) throw new Error('Firm not found');
+      if (!payerFirm) throw new Error('Payer firm not found');
+      if (requestedReceiverFirmId && !requestedReceiverFirm) throw new Error('Receiver firm not found');
       if (flightId && !flight) throw new Error('Flight not found');
       if (allocationId && (!allocation || allocation.status !== 'ACCEPTED' || allocation.toFirmId !== firmId || (flightId && allocation.flightId !== flightId))) throw new Error('Accepted allocation not found for this paying firm');
+      if (allocationId && payerFirmId !== allocation?.toFirmId) throw new Error('To‘lovchi firma ajratmani olgan firma bilan bir xil bo‘lishi kerak');
       if (method === 'card') {
         if (!paymentCard) throw new Error('Payment card not found');
         if (paymentCard.status !== 'ACTIVE') throw new Error('Payment card is not active');
@@ -222,19 +245,24 @@ export const processPayment = async (req: Request, res: Response) => {
         rateFirmId: firmId,
       });
       const baseAmount = amount.mul(exchangeRate).toDecimalPlaces(4);
+      const receiverFirmId = requestedReceiverFirmId
+        || (payerFirmId !== firmId ? firmId : allocation?.fromFirmId || flight?.ownerFirmId || flight?.airline?.firmId || undefined);
+      const cashFlow = payerFirmId === firmId && receiverFirmId !== firmId ? 'OUT' : 'IN';
+      const receiverLabel = requestedReceiverFirm?.name || (receiverFirmId === firmId ? firm.name : receiverFirmId || 'Admin / Airline');
 
       await tx.transaction.create({
         data: {
           firmId,
-          payerFirmId: firmId,
-          receiverFirmId: allocation?.fromFirmId || flight?.ownerFirmId || flight?.airline?.firmId || undefined,
-          direction: allocation || flight?.ownerFirmId || flight?.airline?.firmId ? 'FIRM_TO_FIRM' : 'FIRM_TO_PLATFORM',
+          payerFirmId,
+          receiverFirmId,
+          direction: receiverFirmId ? 'FIRM_TO_FIRM' : 'FIRM_TO_PLATFORM',
           subjectType: allocationId ? 'TICKET_ALLOCATION' : flightId ? 'FLIGHT' : 'DEPOSIT',
           subjectId: allocationId || flightId || firmId,
           flightId: allocation?.flightId || flightId || undefined,
           createdByUserId: actorUserId,
           kassaDeskId: kassaDesk?.id,
-          destinationAccountId: destinationAccount.id,
+          sourceAccountId: cashFlow === 'OUT' ? operationalAccount.id : undefined,
+          destinationAccountId: cashFlow === 'IN' ? operationalAccount.id : undefined,
           type: 'PAYMENT',
           sourceMode: method === 'cash' ? 'MANUAL_CASH' : method === 'card' ? 'MANUAL_CARD' : 'MANUAL_BANK',
           status: 'CONFIRMED',
@@ -251,11 +279,12 @@ export const processPayment = async (req: Request, res: Response) => {
             kassaDeskLabel: kassaDesk?.name,
             paymentCardOwner: paymentCard?.ownerName,
             paymentCardNumber: paymentCard?.cardNumber,
-            payerLabel: firm.name,
+            payerLabel: payerFirm.name,
             allocationId: allocation?.id,
-            receiverFirmId: allocation?.fromFirmId || flight?.ownerFirmId || flight?.airline?.firmId,
-            receiverLabel: allocation?.fromFirmId || flight?.ownerFirmId || flight?.airline?.firmId || 'Admin / Airline',
-            directionLabel: `${firm.name} -> ${allocation?.fromFirmId || flight?.ownerFirmId || flight?.airline?.firmId || 'Admin / Airline'}`,
+            receiverFirmId,
+            receiverLabel,
+            directionLabel: `${payerFirm.name} -> ${receiverLabel}`,
+            cashFlow,
           } as Prisma.InputJsonValue,
         }
       });

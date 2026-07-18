@@ -4,17 +4,19 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { format } from 'date-fns';
 import { useRouter } from 'next/navigation';
-import { Lock, Unlock, Wallet, CreditCard, AlertCircle, CheckCircle2, RefreshCw, X } from 'lucide-react';
+import { Lock, Unlock, Wallet, CreditCard, AlertCircle, RefreshCw, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import CollapsibleCard from '@/components/ui/CollapsibleCard';
+import ActionButtons from '@/components/ui/ActionButtons';
 import { api } from '@/lib/api';
 import { formatCardLabel, formatCurrencyMap, formatMoney, totalsByCurrency } from '@/features/kassa/format';
 import DailyReconciliationActions from '@/features/kassa/DailyReconciliationActions';
+import HistoricalKassaImport from '@/features/kassa/HistoricalKassaImport';
 
 type FirmOption = { id: string; name: string; currency?: string | null; kind?: string | null };
-type FlightOption = { id?: string; flight_id?: string; flightNumber?: string };
+type FlightOption = { id?: string; flight_id?: string; flightNumber?: string; route?: string };
 type PaymentCard = {
   id: string;
   ownerName: string;
@@ -28,6 +30,8 @@ type PaymentCard = {
   dailyOut?: number;
   dailyNet?: number;
   firmId?: string | null;
+  cashDeskId?: string | null;
+  createdByUserId?: string | null;
   firm?: { id: string; name: string | null } | null;
   status?: string;
 };
@@ -90,6 +94,7 @@ type KassaSummary = {
     previousSessionId: string | null;
     previousClosedAt: string | null;
     previousBusinessDate: string | null;
+    previousBusinessDates?: Record<'UZS' | 'USD', string | null>;
     openingBalance: string | null;
     openingBalances?: Record<'UZS' | 'USD', string>;
     currency: string;
@@ -133,8 +138,8 @@ export default function KassaPage() {
   const firmRole = String(user?.firmRole || '').toUpperCase();
   const canAdjustOpeningBalance = isAdmin || (isFirm && ['FIRM_ADMIN', 'MANAGER'].includes(firmRole));
   const canCreateDesk = isAdmin || (isFirm && firmRole === 'FIRM_ADMIN');
-  const canManageCards = isAdmin || (isFirm && user?.firmRole === 'FIRM_ADMIN');
-  const canDeleteOwnedRecords = isSuperAdmin || (isFirm && user?.firmRole === 'FIRM_ADMIN');
+  const canManageCards = isAdmin || (isFirm && firmRole === 'FIRM_ADMIN');
+  const canDeleteFirmRecords = isSuperAdmin || (isFirm && firmRole === 'FIRM_ADMIN');
   const canFilterFirm = isAdmin;
   const canChooseTransactionFirm = canFilterFirm;
   const canLoadTransactionFirms = canFilterFirm || canManageKassa;
@@ -159,6 +164,7 @@ export default function KassaPage() {
   const [paymentCards, setPaymentCards] = useState<PaymentCard[]>([]);
 
   const [payFirmId, setPayFirmId] = useState('');
+  const [payReceiverFirmId, setPayReceiverFirmId] = useState('');
   const [payFlightId, setPayFlightId] = useState('');
   const [payAmount, setPayAmount] = useState('');
   const [payCurrency, setPayCurrency] = useState<'USD' | 'UZS' | 'OTHER'>('UZS');
@@ -209,6 +215,10 @@ export default function KassaPage() {
   const isClosed = summary?.status === 'CLOSED';
   const isNotOpen = summary?.status === 'NOT_OPEN';
   const canRecordPayment = canManageKassa;
+  const actorUserId = String(user?.id || '');
+  const canDeleteCard = (card: PaymentCard) => isSuperAdmin
+    || String(card.createdByUserId || '') === actorUserId
+    || (isFirm && firmRole === 'FIRM_ADMIN' && String(card.firmId || '') === String(user?.firmId || ''));
   const dailyIncomeByCurrency = useMemo(() => totalsByCurrency(summary, 'dailyIncomeTotal'), [summary]);
   const dailyExpenseByCurrency = useMemo(() => totalsByCurrency(summary, 'dailyExpenseTotal'), [summary]);
   const cashInByCurrency = useMemo(() => totalsByCurrency(summary, 'cashInTotal'), [summary]);
@@ -225,7 +235,11 @@ export default function KassaPage() {
       const currency = String(tx.currency || 'UZS').toUpperCase();
       const amount = Number(tx.originalAmount || 0) || 0;
       if (!balances[currency]) balances[currency] = 0;
-      if (tx.direction === 'KASSA_OUT') balances[currency] -= amount;
+      const paymentIsOut = tx.type === 'PAYMENT' && (
+        String(tx.metadata?.cashFlow || '').toUpperCase() === 'OUT'
+        || (tx.payerFirmId === tx.firmId && tx.receiverFirmId !== tx.firmId)
+      );
+      if (tx.direction === 'KASSA_OUT' || paymentIsOut) balances[currency] -= amount;
       else if (tx.direction === 'KASSA_IN' || tx.type === 'PAYMENT' || tx.type === 'SALE') balances[currency] += amount;
     }
     return balances;
@@ -238,10 +252,12 @@ export default function KassaPage() {
   const selectedPayCard = useMemo(() => paymentCards.find((card) => card.id === payCardId), [paymentCards, payCardId]);
   const selectedCashCard = useMemo(() => paymentCards.find((card) => card.id === cashCardId), [paymentCards, cashCardId]);
   const selectedPayFirm = useMemo(() => firmOptions.find((firm) => firm.id === payFirmId), [firmOptions, payFirmId]);
+  const selectedPayReceiver = useMemo(() => firmOptions.find((firm) => firm.id === payReceiverFirmId), [firmOptions, payReceiverFirmId]);
   const selectedCashFirm = useMemo(() => firmOptions.find((firm) => firm.id === (canChooseTransactionFirm ? cashFirmId : user?.firmId)), [firmOptions, cashFirmId, canChooseTransactionFirm, user?.firmId]);
   const selectedPayFlight = useMemo(() => flightOptions.find((flight) => String(flight.id || flight.flight_id || '') === payFlightId), [flightOptions, payFlightId]);
   const selectedPayDesk = useMemo(() => deskOptions.find((desk) => desk.id === payKassaDeskId), [deskOptions, payKassaDeskId]);
   const selectedCashDesk = useMemo(() => deskOptions.find((desk) => desk.id === cashKassaDeskId), [deskOptions, cashKassaDeskId]);
+  const selectedSummaryDesk = useMemo(() => deskOptions.find((desk) => desk.id === summaryKassaDeskId), [deskOptions, summaryKassaDeskId]);
   const cashCounterpartyOptions = useMemo(
     () => firmOptions.filter((firm) => firm.id !== (canChooseTransactionFirm ? cashFirmId : user?.firmId)),
     [firmOptions, canChooseTransactionFirm, cashFirmId, user?.firmId],
@@ -286,6 +302,50 @@ export default function KassaPage() {
     }
   };
 
+  const resetOpeningDraft = () => {
+    setOpeningBalance(String(summary?.openingSuggestion?.openingBalance ?? '0'));
+    setOpeningBalanceUsd(String(summary?.openingSuggestion?.openingBalances?.USD ?? '0'));
+    setOpeningAdjustmentReason('');
+    setEditingOpeningBalance(false);
+  };
+
+  const resetPaymentDraft = () => {
+    setPayFirmId(isFirm ? String(user?.firmId || '') : '');
+    setPayReceiverFirmId('');
+    setPayFlightId('');
+    setPayAmount('');
+    setPayCurrency('UZS');
+    setPayOtherCurrency('');
+    setPayExchangeRate('');
+    setPayMethod('cash');
+    setPayCardId('');
+    setPayCardReference('');
+    setPayReference('');
+    setPayKassaDeskId('');
+  };
+
+  const resetCashDraft = () => {
+    setCashFlow('IN');
+    setCashMethod('cash');
+    setCashCardId('');
+    setCashFirmId(isFirm ? String(user?.firmId || '') : '');
+    setCashCounterpartyFirmId('');
+    setCashAmount('');
+    setCashCurrency('UZS');
+    setCashOtherCurrency('');
+    setCashExchangeRate('');
+    setCashNote('');
+    setCashFlightId('');
+    setCashKassaDeskId('');
+  };
+
+  const resetCardDraft = () => {
+    setCardOwnerName('');
+    setCardNumber('');
+    setCardCurrency('UZS');
+    setCardOpeningBalance('0');
+  };
+
   useEffect(() => {
     if (!user) {
       router.push('/login');
@@ -298,7 +358,7 @@ export default function KassaPage() {
       setLoading(true);
       const query = new URLSearchParams({ date: selectedDate });
       if (summaryKassaDeskId) query.set('kassaDeskId', summaryKassaDeskId);
-      if (isSuperAdmin && monitorFirmId) query.set('firmId', monitorFirmId);
+      if (canFilterFirm && monitorFirmId) query.set('firmId', monitorFirmId);
       const res = await api.get(`/kassa?${query.toString()}`);
       setSummary(res.data);
       setPaymentCards(Array.isArray(res.data?.paymentCards) ? res.data.paymentCards : []);
@@ -307,7 +367,7 @@ export default function KassaPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedDate, summaryKassaDeskId, isSuperAdmin, monitorFirmId, tr]);
+  }, [selectedDate, summaryKassaDeskId, canFilterFirm, monitorFirmId, tr]);
 
   useEffect(() => {
     if (!canAccess) return;
@@ -331,16 +391,14 @@ export default function KassaPage() {
     if (!canAccess) return;
     const loadOptions = async () => {
       try {
-        const [flightsRes, firmsRes, desksRes, cardsRes] = await Promise.all([
+        const [flightsRes, firmsRes, desksRes] = await Promise.all([
           api.get('/flights'),
           canLoadTransactionFirms ? api.get('/firms') : Promise.resolve({ data: [] }),
           api.get('/kassa/desks'),
-          api.get('/kassa/cards'),
         ]);
         setFlightOptions(Array.isArray(flightsRes.data) ? flightsRes.data : []);
         setFirmOptions(Array.isArray(firmsRes.data) ? firmsRes.data : []);
         setDeskOptions(Array.isArray(desksRes.data) ? desksRes.data : []);
-        setPaymentCards(Array.isArray(cardsRes.data) ? cardsRes.data : []);
       } catch {
         // non-fatal
       }
@@ -554,10 +612,14 @@ export default function KassaPage() {
   };
 
   const canChangeDailyCash = (tx: any) => {
-    const actorId = String((user as any)?.id || (user as any)?.userId || '');
     const txDate = String(tx.metadata?.date || tx.createdAt || '').slice(0, 10);
     return tx.type === 'ADJUSTMENT' && ['KASSA_IN', 'KASSA_OUT'].includes(String(tx.direction || ''))
-      && String(tx.createdByUserId || '') === actorId && txDate === format(new Date(), 'yyyy-MM-dd');
+      && isEditable
+      && Boolean(summaryKassaDeskId)
+      && String(tx.kassaDeskId || '') === summaryKassaDeskId
+      && txDate === selectedDate
+      && (String(tx.createdByUserId || '') === actorUserId
+        || (isFirm && firmRole === 'FIRM_ADMIN' && String(tx.firmId || '') === String(user?.firmId || '')));
   };
 
   const editDailyCash = async (tx: any) => {
@@ -645,7 +707,12 @@ export default function KassaPage() {
       if (payCardReference.trim()) metadata.transaction_reference = payCardReference.trim();
     }
 
-    const body: any = { amount, currency, method, metadata };
+    if (!payReceiverFirmId) {
+      toast.error(tr('Select the payment recipient', 'To‘lov oluvchi firmani tanlang'));
+      return;
+    }
+    const operatorFirmId = canChooseTransactionFirm ? payFirmId : String(user?.firmId || '');
+    const body: any = { amount, currency, method, metadata, payerFirmId: operatorFirmId, receiverFirmId: payReceiverFirmId };
     if (method === 'card') body.paymentCardId = payCardId;
     if (canChooseTransactionFirm) body.firmId = payFirmId;
     if (currency !== 'UZS') body.exchangeRate = payExchangeRate.trim();
@@ -686,11 +753,6 @@ export default function KassaPage() {
     return cashMovementConfirmed(action.body);
   };
 
-  const refreshCards = async () => {
-    const cardsRes = await api.get('/kassa/cards');
-    setPaymentCards(Array.isArray(cardsRes.data) ? cardsRes.data : []);
-  };
-
   const createCard = async (e: FormEvent) => {
     e.preventDefault();
     if (creatingCard) return;
@@ -714,7 +776,6 @@ export default function KassaPage() {
       setCardOpeningBalance('0');
       setCardCurrency('UZS');
       setReloadKey((k) => k + 1);
-      await refreshCards();
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to add card', 'Kartani qo\'shib bo\'lmadi'));
     } finally {
@@ -751,7 +812,6 @@ export default function KassaPage() {
       toast.success(tr('Card updated', 'Karta yangilandi'));
       setEditingCardId('');
       setReloadKey((k) => k + 1);
-      await refreshCards();
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to update card', 'Kartani yangilab bo\'lmadi'));
     } finally {
@@ -771,7 +831,6 @@ export default function KassaPage() {
       toast.success(tr('Card deleted', 'Karta o\'chirildi'));
       if (editingCardId === card.id) setEditingCardId('');
       setReloadKey((k) => k + 1);
-      await refreshCards();
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to delete card', 'Kartani o\'chirib bo\'lmadi'));
     } finally {
@@ -849,7 +908,7 @@ export default function KassaPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          {isSuperAdmin && (
+          {canFilterFirm && (
             <div className="flex items-center gap-2 rounded-lg border border-border bg-surface px-2">
               <select
                 value={monitorFirmId}
@@ -879,7 +938,7 @@ export default function KassaPage() {
             >
               <option value="">{tr('All kassas', 'Barcha kassalar')}</option>
               {visibleDeskOptions.map((desk) => (
-                <option key={desk.id} value={desk.id}>{desk.firm?.name && isSuperAdmin ? `${desk.firm.name} · ` : ''}{desk.displayName || desk.name}{desk.code ? ` (${desk.code})` : ''}</option>
+                <option key={desk.id} value={desk.id}>{desk.firm?.name && canFilterFirm ? `${desk.firm.name} · ` : ''}{desk.displayName || desk.name}{desk.code ? ` (${desk.code})` : ''}</option>
               ))}
             </select>
           )}
@@ -892,6 +951,7 @@ export default function KassaPage() {
 
       {canCreateDesk && (
         <CollapsibleCard
+          tone="success"
           title={tr('Kassa desks', 'Kassalar')}
           description={tr('Create a kassa without assigning a separate cashier. A firm admin can operate it directly.', 'Alohida kassir biriktirmasdan kassa yarating. Firma admini uni bevosita ishlata oladi.')}
           storageKey="kassa-desk-create-card"
@@ -914,9 +974,14 @@ export default function KassaPage() {
               <label className="compact-label">{tr('Code (optional)', 'Kod (ixtiyoriy)')}</label>
               <input value={deskCode} onChange={(e) => setDeskCode(e.target.value)} className="compact-control" placeholder="K-01" />
             </div>
-            <button type="submit" disabled={creatingDesk} className="self-end rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-ink disabled:opacity-50">
-              {creatingDesk ? tr('Creating…', 'Yaratilyapti…') : tr('Add kassa', 'Kassa qo‘shish')}
-            </button>
+            <ActionButtons
+              cancelLabel={tr('Cancel', 'Bekor qilish')}
+              confirmLabel={tr('Add kassa', 'Kassa qo‘shish')}
+              busyLabel={tr('Creating…', 'Yaratilyapti…')}
+              busy={creatingDesk}
+              canConfirm={Boolean(deskName.trim() && (!canFilterFirm || deskFirmId))}
+              onCancel={() => { setDeskFirmId(''); setDeskName(''); setDeskCode(''); }}
+            />
           </form>
         </CollapsibleCard>
       )}
@@ -938,6 +1003,22 @@ export default function KassaPage() {
         </div>
       )}
 
+      {canManageKassa && !user.readOnlyAccess && selectedSummaryDesk && (
+        <CollapsibleCard
+          tone="finance"
+          title={tr('Import historical Kassa data', 'Eski Kassa ma’lumotlarini yuklash')}
+          description={tr('Download the Excel template, fill historical cash income and expenses, validate it, then import without duplicates.', 'Excel shablonni yuklab oling, eski naqd kirim-chiqimlarni to‘ldiring, tekshiring va dublikatsiz yuklang.')}
+          storageKey="historical-kassa-import"
+        >
+          <HistoricalKassaImport
+            key={selectedSummaryDesk.id}
+            desk={selectedSummaryDesk}
+            tr={tr}
+            onImported={() => setReloadKey((key) => key + 1)}
+          />
+        </CollapsibleCard>
+      )}
+
       {isClosed && (
         <div className="flex items-start gap-3 p-4 rounded-xl bg-red-500/5 border border-red-500/20 text-sm text-red-700">
           <Lock size={18} className="shrink-0 mt-0.5" />
@@ -952,6 +1033,7 @@ export default function KassaPage() {
 
       {canManageKassa && isClosed && Boolean(summaryKassaDeskId) && (
         <CollapsibleCard
+          tone="danger"
           title={tr('Reopen kassa', 'Kassani qayta ochish')}
           description={tr('An authorized kassa user can reopen a closed day. This is audit logged.', 'Vakolatli kassa foydalanuvchisi yopilgan kunni qayta ochishi mumkin. Bu auditga yoziladi.')}
           storageKey="kassa-reopen-card"
@@ -964,38 +1046,30 @@ export default function KassaPage() {
                 onChange={(e) => setReopenNotes(e.target.value)}
                 className="compact-control"
                 placeholder={tr('Correction reason', 'Tuzatish sababi')}
+                required
               />
             </div>
-            <div className="flex items-end">
-              <button
-                type="submit"
-                disabled={reopeningKassa}
-                className="px-5 py-2.5 bg-amber-600 text-white rounded-lg font-semibold text-sm uppercase tracking-wide hover:bg-amber-700 disabled:opacity-50"
-              >
-                {reopeningKassa ? tr('Reopening...', 'Qayta ochilyapti...') : tr('Reopen kassa', 'Kassani qayta ochish')}
-              </button>
-            </div>
+            <ActionButtons
+              cancelLabel={tr('Cancel', 'Bekor qilish')}
+              confirmLabel={tr('Reopen kassa', 'Kassani qayta ochish')}
+              busyLabel={tr('Reopening...', 'Qayta ochilyapti...')}
+              busy={reopeningKassa}
+              danger
+              canConfirm={Boolean(canManageKassa && isClosed && hasValidSelectedDate && summaryKassaDeskId && reopenNotes.trim())}
+              onCancel={() => setReopenNotes('')}
+            />
           </form>
         </CollapsibleCard>
       )}
 
       {canManageKassa && isNotOpen && Boolean(summaryKassaDeskId) && (
         <CollapsibleCard
+          tone="success"
           title={tr('Open kassa', 'Kassani ochish')}
           description={tr('Start the cash register for this day before recording payments.', 'To\'lovlarni qayd etishdan oldin ushbu kun uchun kassani oching.')}
           storageKey="kassa-open-card"
         >
           <form onSubmit={handleOpenKassa} className="compact-toolbar max-w-2xl">
-            <div>
-              <label className="compact-label">{tr('Flight (optional)', 'Reys (ixtiyoriy)')}</label>
-              <select value={cashFlightId} onChange={(e) => setCashFlightId(e.target.value)} className="compact-control">
-                <option value="">{tr('No flight', 'Reyssiz')}</option>
-                {flightOptions.map((flight) => {
-                  const id = flight.id || flight.flight_id;
-                  return id ? <option key={id} value={id}>{flight.flightNumber || id}</option> : null;
-                })}
-              </select>
-            </div>
             <div>
               <label className="compact-label">
                 {tr('Opening cash balance (UZS)', 'Boshlang\'ich naqd balans (UZS)')}
@@ -1008,6 +1082,7 @@ export default function KassaPage() {
                 onChange={(e) => setOpeningBalance(e.target.value)}
                 className="compact-control"
                 readOnly={!editingOpeningBalance}
+                required
               />
               <label className="compact-label mt-3">
                 {tr('Opening cash balance (USD)', 'Boshlang\'ich naqd balans (USD)')}
@@ -1020,12 +1095,13 @@ export default function KassaPage() {
                 onChange={(e) => setOpeningBalanceUsd(e.target.value)}
                 className="compact-control"
                 readOnly={!editingOpeningBalance}
+                required
               />
               {summary?.openingSuggestion?.previousSessionId ? (
                 <div className="mt-2 space-y-1 text-xs text-muted">
                   <p>{tr('Calculated automatically from the last closed kassa balance.', 'Oxirgi yopilgan kassa qoldig‘i asosida avtomatik hisoblandi.')}</p>
                   <p>
-                    {tr('Previous closing', 'Oldingi yopilish')}: {summary.openingSuggestion.previousClosedAt ? new Date(summary.openingSuggestion.previousClosedAt).toLocaleString() : summary.openingSuggestion.previousBusinessDate}, {tr('closing balance', 'yakuniy qoldiq')}: {formatCurrencyMap({ UZS: Number(summary.openingSuggestion.openingBalances?.UZS || summary.openingSuggestion.openingBalance || 0), USD: Number(summary.openingSuggestion.openingBalances?.USD || 0) })}
+                    {tr('Previous business day', 'Oldingi ish kuni')}: {summary.openingSuggestion.previousBusinessDate}, {tr('closing balance', 'yakuniy qoldiq')}: {formatCurrencyMap({ UZS: Number(summary.openingSuggestion.openingBalances?.UZS || summary.openingSuggestion.openingBalance || 0), USD: Number(summary.openingSuggestion.openingBalances?.USD || 0) })}
                   </p>
                 </div>
               ) : (
@@ -1046,30 +1122,37 @@ export default function KassaPage() {
                 />
               )}
             </div>
-            <button
-              type="submit"
-              disabled={openingKassa || !summaryKassaDeskId}
-              className="px-5 py-2.5 bg-primary text-ink rounded-lg font-semibold text-sm uppercase tracking-wide hover:bg-primary/90 disabled:opacity-50"
-            >
-              {openingKassa ? tr('Opening…', 'Ochilyapti…') : tr('Open kassa', 'Kassani ochish')}
-            </button>
+            <ActionButtons
+              cancelLabel={tr('Cancel', 'Bekor qilish')}
+              confirmLabel={tr('Open kassa', 'Kassani ochish')}
+              busyLabel={tr('Opening…', 'Ochilyapti…')}
+              busy={openingKassa}
+              canConfirm={Boolean(
+                hasValidSelectedDate
+                && summaryKassaDeskId
+                && Number(openingBalance) >= 0
+                && Number(openingBalanceUsd) >= 0
+                && (!editingOpeningBalance || !summary?.openingSuggestion?.previousSessionId || openingAdjustmentReason.trim())
+              )}
+              onCancel={resetOpeningDraft}
+            />
           </form>
         </CollapsibleCard>
       )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: tr('Daily income', 'Kunlik jami kirim'), value: formatCurrencyMap(dailyIncomeByCurrency), icon: Unlock },
-          { label: tr('Daily expense', 'Kunlik jami chiqim'), value: formatCurrencyMap(dailyExpenseByCurrency), icon: Lock },
-          { label: tr('Cash balance', 'Kassa qoldig\'i'), value: formatCurrencyMap(cashBalanceByCurrency), icon: Wallet },
-          { label: tr('Card balance', 'Kartalarda qoldiq'), value: formatCurrencyMap(summary?.totals.cardBalanceByCurrency), icon: CreditCard },
-        ].map(({ label, value, icon: Icon }) => (
-          <div key={label} className="bg-surface border border-border rounded-xl p-4 shadow-sm">
+          { label: tr('Daily income', 'Kunlik jami kirim'), value: formatCurrencyMap(dailyIncomeByCurrency), icon: Unlock, tone: 'success' },
+          { label: tr('Daily expense', 'Kunlik jami chiqim'), value: formatCurrencyMap(dailyExpenseByCurrency), icon: Lock, tone: 'danger' },
+          { label: tr('Cash balance', 'Kassa qoldig\'i'), value: formatCurrencyMap(cashBalanceByCurrency), icon: Wallet, tone: 'finance' },
+          { label: tr('Card balance', 'Kartalarda qoldiq'), value: formatCurrencyMap(summary?.totals.cardBalanceByCurrency), icon: CreditCard, tone: 'finance' },
+        ].map(({ label, value, icon: Icon, tone }) => (
+          <div key={label} data-tone={tone} className="metric-card p-4">
             <div className="flex items-center gap-2 text-muted text-xs font-semibold uppercase tracking-wider mb-2">
               <Icon size={14} />
               {label}
             </div>
-            <div className="text-xl font-bold text-foreground leading-tight">
+            <div className="data-value text-xl font-semibold leading-tight text-foreground">
               {loading ? '—' : value}
             </div>
           </div>
@@ -1113,6 +1196,7 @@ export default function KassaPage() {
       </CollapsibleCard>
 
       <CollapsibleCard
+        tone="finance"
         title={tr('Daily kassa balance', 'Kunlik kassa qoldiq ma\'lumotlari')}
         description={tr('Daily total income, expense, cash balance and card balance.', 'Har kungi jami kirim, chiqim, kassa qoldig\'i va kartalardagi qoldiq.')}
         storageKey="kassa-daily-balance-card"
@@ -1121,7 +1205,7 @@ export default function KassaPage() {
           date={selectedDate}
           status={summary?.status || 'NOT_OPEN'}
           openingBalance={formatCurrencyMap({ UZS: Number(summary?.kassa?.openingBalance || 0), USD: Number(summary?.kassa?.openingBalanceUsd || 0) })}
-          closingBalance={summary?.kassa?.closingBalance != null ? formatCurrencyMap({ UZS: Number(summary.kassa.closingBalance), USD: Number(summary.kassa.closingBalanceUsd || 0) }) : '—'}
+          closingBalance={summary?.kassa?.closingBalance != null ? formatCurrencyMap({ UZS: Number(summary.kassa.actualClosingBalance ?? summary.kassa.closingBalance), USD: Number(summary.kassa.actualClosingBalanceUsd ?? summary.kassa.closingBalanceUsd ?? 0) }) : '—'}
           cashIn={formatCurrencyMap(cashInByCurrency)} cashOut={formatCurrencyMap(cashOutByCurrency)} cashBalance={formatCurrencyMap(cashBalanceByCurrency)}
           cardIn={formatCurrencyMap(cardInByCurrency)} cardOut={formatCurrencyMap(cardOutByCurrency)} cardBalance={formatCurrencyMap(summary?.totals.cardBalanceByCurrency)}
           openedBy={summary?.kassa?.openedBy?.email} closedBy={summary?.kassa?.closedBy?.email}
@@ -1156,6 +1240,7 @@ export default function KassaPage() {
       </CollapsibleCard>
 
       <CollapsibleCard
+        tone="finance"
         title={tr('Card information', 'Karta ma\'lumotlari')}
         description={tr('Track which card receives money, spends money, and how much remains.', 'Qaysi kartaga qancha tushyapdi, qancha ketyapdi va qancha qoldi — nazorat qiling.')}
         storageKey="kassa-card-info-card"
@@ -1165,25 +1250,28 @@ export default function KassaPage() {
           <form onSubmit={createCard} className="compact-toolbar mb-4">
             <div>
               <label className="compact-label">{tr('Card owner', 'Karta egasi')}</label>
-              <input value={cardOwnerName} onChange={(e) => setCardOwnerName(e.target.value)} className="compact-control" />
+              <input value={cardOwnerName} onChange={(e) => setCardOwnerName(e.target.value)} className="compact-control" required />
             </div>
             <div>
               <label className="compact-label">{tr('Card number', 'Karta raqami')}</label>
-              <input value={cardNumber} onChange={(e) => setCardNumber(e.target.value)} className="compact-control" />
+              <input value={cardNumber} onChange={(e) => setCardNumber(e.target.value)} className="compact-control" required />
             </div>
             <div>
               <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
-              <input value={cardCurrency} onChange={(e) => setCardCurrency(e.target.value.toUpperCase())} className="compact-control" placeholder="UZS" maxLength={3} />
+              <input value={cardCurrency} onChange={(e) => setCardCurrency(e.target.value.toUpperCase())} className="compact-control" placeholder="UZS" minLength={3} maxLength={3} pattern="[A-Za-z]{3}" required />
             </div>
             <div>
               <label className="compact-label">{tr('Opening balance', 'Boshlang\'ich qoldiq')}</label>
-              <input inputMode="decimal" value={cardOpeningBalance} onChange={(e) => setCardOpeningBalance(e.target.value)} className="compact-control" />
+              <input type="number" inputMode="decimal" min="0" step="0.01" value={cardOpeningBalance} onChange={(e) => setCardOpeningBalance(e.target.value)} className="compact-control" required />
             </div>
-            <div className="flex items-end">
-              <button type="submit" disabled={creatingCard} className="px-5 py-2.5 bg-primary text-ink rounded-lg font-semibold text-sm uppercase tracking-wide hover:bg-primary/90 disabled:opacity-50">
-                {creatingCard ? tr('Adding...', 'Qo\'shilmoqda...') : tr('Add card', 'Karta qo\'shish')}
-              </button>
-            </div>
+            <ActionButtons
+              cancelLabel={tr('Cancel', 'Bekor qilish')}
+              confirmLabel={tr('Add card', 'Karta qo\'shish')}
+              busyLabel={tr('Adding...', 'Qo\'shilmoqda...')}
+              busy={creatingCard}
+              canConfirm={Boolean(cardOwnerName.trim() && cardNumber.trim() && /^[A-Z]{3}$/.test(cardCurrency.trim().toUpperCase()) && Number(cardOpeningBalance) >= 0)}
+              onCancel={resetCardDraft}
+            />
           </form>
         )}
         <div className="overflow-x-auto scroller-minimal">
@@ -1247,8 +1335,13 @@ export default function KassaPage() {
                       <td className="text-right whitespace-nowrap">
                         {isEditing ? (
                           <div className="inline-flex items-center gap-2">
-                            <button type="button" onClick={() => saveCardEdit(card.id)} disabled={savingCard} className="px-3 py-2 bg-primary text-ink rounded-lg text-xs font-bold uppercase disabled:opacity-50">
-                              {tr('Save', 'Saqlash')}
+                            <button
+                              type="button"
+                              onClick={() => saveCardEdit(card.id)}
+                              disabled={savingCard || !cardEditDraft.ownerName.trim() || !cardEditDraft.cardNumber.trim() || !/^[A-Z]{3}$/.test(cardEditDraft.currency.trim().toUpperCase()) || !Number.isFinite(Number(cardEditDraft.openingBalance)) || Number(cardEditDraft.openingBalance) < 0}
+                              className="px-3 py-2 bg-primary text-ink rounded-lg text-xs font-bold uppercase disabled:opacity-50"
+                            >
+                              {savingCard ? tr('Saving...', 'Saqlanmoqda...') : tr('Confirm', 'Tasdiqlash')}
                             </button>
                             <button type="button" onClick={() => setEditingCardId('')} className="px-3 py-2 bg-surface-2 border border-border rounded-lg text-xs font-semibold uppercase">
                               {tr('Cancel', 'Bekor')}
@@ -1259,7 +1352,7 @@ export default function KassaPage() {
                             <button type="button" onClick={() => startEditCard(card)} className="px-3 py-2 bg-surface-2 border border-border rounded-lg text-xs font-semibold uppercase hover:bg-surface">
                               {tr('Edit', 'Tahrir')}
                             </button>
-                            {canDeleteOwnedRecords && <button type="button" onClick={() => deleteCard(card)} disabled={deletingCardId === card.id} className="px-3 py-2 bg-red-500/10 border border-red-500/30 text-red-600 rounded-lg text-xs font-semibold uppercase hover:bg-red-500/15 disabled:opacity-50">
+                            {canDeleteCard(card) && <button type="button" onClick={() => deleteCard(card)} disabled={deletingCardId === card.id} className="px-3 py-2 bg-red-500/10 border border-red-500/30 text-red-600 rounded-lg text-xs font-semibold uppercase hover:bg-red-500/15 disabled:opacity-50">
                               {deletingCardId === card.id ? tr('Deleting', 'O\'chirilmoqda') : tr('Delete', 'O\'chirish')}
                             </button>}
                           </div>
@@ -1276,21 +1369,22 @@ export default function KassaPage() {
 
       {canRecordPayment && (
         <CollapsibleCard
+          tone="finance"
           id="add-payment"
           title={tr('Add payment', 'To\'lov qo\'shish')}
           description={
             isEditable
-              ? tr('Record a firm deposit for this kassa day.', 'Ushbu kassa kuni uchun firma depozitini qayd eting.')
+              ? tr('Record a payment from this kassa to an airline or firm.', 'Ushbu kassadan airline yoki firmaga to‘lovni qayd eting.')
               : tr('Payments can only be recorded while kassa is open.', 'To\'lovlar faqat kassa ochiq bo\'lganda qayd etiladi.')
           }
           defaultOpen={true}
           storageKey="kassa-payment-card"
         >
-          <form onSubmit={submitPayment} className={`compact-toolbar ${!isEditable ? 'opacity-50 pointer-events-none' : ''}`}>
+          <form onSubmit={submitPayment} className={`compact-toolbar ${!isEditable ? 'opacity-50' : ''}`}>
           {canChooseTransactionFirm && (
             <div>
               <label className="compact-label">{tr('Firm', 'Firma')}</label>
-              <select value={payFirmId} onChange={(e) => setPayFirmId(e.target.value)} className="compact-control">
+              <select value={payFirmId} onChange={(e) => { setPayFirmId(e.target.value); setPayReceiverFirmId(''); }} className="compact-control" required>
                 <option value="">{tr('Select firm', 'Firmani tanlang')}</option>
                 {firmOptions.map((f) => (
                   <option key={f.id} value={f.id}>{f.name}{f.currency ? ` (${f.currency})` : ''}</option>
@@ -1299,9 +1393,16 @@ export default function KassaPage() {
             </div>
           )}
           <div>
+            <label className="compact-label">{tr('Payment recipient', 'Kimga (to‘lov oluvchi)')}</label>
+            <select value={payReceiverFirmId} onChange={(e) => setPayReceiverFirmId(e.target.value)} className="compact-control" required>
+              <option value="">{tr('Select recipient', 'To‘lov oluvchini tanlang')}</option>
+              {firmOptions.filter((firm) => firm.id !== (payFirmId || user?.firmId)).map((firm) => <option key={firm.id} value={firm.id}>{firm.name}</option>)}
+            </select>
+          </div>
+          <div>
             <label className="compact-label">{tr('Flight (optional)', 'Reys (ixtiyoriy)')}</label>
             <select value={payFlightId} onChange={(e) => setPayFlightId(e.target.value)} className="compact-control">
-              <option value="">{tr('Firm deposit', 'Firma depoziti')}</option>
+              <option value="">{tr('Payment without flight', 'Reyssiz to‘lov')}</option>
               {flightOptions.map((f) => {
                 const id = f.id || f.flight_id || '';
                 return <option key={id} value={id}>{f.flightNumber || id}</option>;
@@ -1310,7 +1411,7 @@ export default function KassaPage() {
           </div>
           <div>
             <label className="compact-label">{tr('Amount', 'Summa')}</label>
-            <input type="number" min="0" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className="compact-control" />
+            <input type="number" min="0.01" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className="compact-control" required />
           </div>
           <div>
             <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
@@ -1323,13 +1424,13 @@ export default function KassaPage() {
           {payCurrency === 'OTHER' && (
             <div>
               <label className="compact-label">{tr('Currency code', 'Valyuta kodi')}</label>
-              <input value={payOtherCurrency} onChange={(e) => setPayOtherCurrency(e.target.value.toUpperCase())} maxLength={3} className="compact-control uppercase" />
+              <input value={payOtherCurrency} onChange={(e) => setPayOtherCurrency(e.target.value.toUpperCase())} minLength={3} maxLength={3} pattern="[A-Za-z]{3}" className="compact-control uppercase" required />
             </div>
           )}
           {payCurrencyCode !== 'UZS' && (
             <div>
               <label className="compact-label">{tr('Rate to UZS', 'UZS kursi')}</label>
-              <input inputMode="decimal" value={payExchangeRate} onChange={(e) => setPayExchangeRate(e.target.value)} className="compact-control" placeholder="12600" />
+              <input type="number" inputMode="decimal" min="0.000001" step="any" value={payExchangeRate} onChange={(e) => setPayExchangeRate(e.target.value)} className="compact-control" placeholder="12600" required />
             </div>
           )}
           <div>
@@ -1341,7 +1442,7 @@ export default function KassaPage() {
           </div>
           <div>
             <label className="compact-label">{tr('Kassa desk', 'Kassa')}</label>
-            <select value={payKassaDeskId} onChange={(e) => setPayKassaDeskId(e.target.value)} className="compact-control">
+            <select value={payKassaDeskId} onChange={(e) => setPayKassaDeskId(e.target.value)} className="compact-control" required={payDeskOptions.length > 0}>
               <option value="">{tr('Select kassa', 'Kassani tanlang')}</option>
               {payDeskOptions.map((desk) => (
                 <option key={desk.id} value={desk.id}>{desk.firm?.name ? `${desk.firm.name} · ` : ''}{desk.name}{desk.code ? ` (${desk.code})` : ''}</option>
@@ -1375,17 +1476,32 @@ export default function KassaPage() {
               </div>
             </>
           )}
-          <div className="flex items-end">
-            <button type="submit" disabled={recordingPayment || !isEditable} className="px-5 py-2.5 bg-primary text-ink rounded-lg font-semibold text-sm uppercase tracking-wide hover:bg-primary/90 disabled:opacity-50">
-              {recordingPayment ? tr('Recording…', 'Qayd etilmoqda…') : tr('Record payment', 'To\'lov qayd etish')}
-            </button>
-          </div>
+          <ActionButtons
+            cancelLabel={tr('Cancel', 'Bekor qilish')}
+            confirmLabel={tr('Record payment', 'To\'lov qayd etish')}
+            busyLabel={tr('Recording…', 'Qayd etilmoqda…')}
+            busy={recordingPayment}
+            canConfirm={Boolean(
+              isEditable
+              && canRecordPayment
+              && hasValidSelectedDate
+              && (!canChooseTransactionFirm || payFirmId)
+              && payReceiverFirmId
+              && Number(payAmount) > 0
+              && /^[A-Z]{3}$/.test(payCurrencyCode)
+              && (payCurrencyCode === 'UZS' || Number(payExchangeRate) > 0)
+              && (payDeskOptions.length === 0 || payKassaDeskId)
+              && (payMethod !== 'card' || (payCardId && (!selectedPayCard?.currency || selectedPayCard.currency === payCurrencyCode)))
+            )}
+            onCancel={resetPaymentDraft}
+          />
           </form>
         </CollapsibleCard>
       )}
 
       {canRecordPayment && (
         <CollapsibleCard
+          tone="success"
           id="cash-movement"
           title={tr('Cash income / expense', 'Kassa kirim / chiqim')}
           description={
@@ -1396,7 +1512,7 @@ export default function KassaPage() {
           defaultOpen={true}
           storageKey="kassa-cash-movement-card"
         >
-          <form onSubmit={submitCashMovement} className={`compact-toolbar ${!isEditable ? 'opacity-50 pointer-events-none' : ''}`}>
+          <form onSubmit={submitCashMovement} className={`compact-toolbar ${!isEditable ? 'opacity-50' : ''}`}>
             <div>
               <label className="compact-label">{tr('Type', 'Turi')}</label>
               <select value={cashFlow} onChange={(e) => setCashFlow(e.target.value as 'IN' | 'OUT')} className="compact-control">
@@ -1413,7 +1529,7 @@ export default function KassaPage() {
             </div>
             <div>
               <label className="compact-label">{tr('Kassa desk', 'Kassa')}</label>
-            <select value={cashKassaDeskId} onChange={(e) => setCashKassaDeskId(e.target.value)} className="compact-control">
+            <select value={cashKassaDeskId} onChange={(e) => setCashKassaDeskId(e.target.value)} className="compact-control" required={cashDeskOptions.length > 0}>
                 <option value="">{tr('Select kassa', 'Kassani tanlang')}</option>
                 {cashDeskOptions.map((desk) => (
                   <option key={desk.id} value={desk.id}>{desk.firm?.name ? `${desk.firm.name} · ` : ''}{desk.name}{desk.code ? ` (${desk.code})` : ''}</option>
@@ -1444,7 +1560,7 @@ export default function KassaPage() {
             {canChooseTransactionFirm && (
               <div>
                 <label className="compact-label">{tr('Firm', 'Firma')}</label>
-                <select value={cashFirmId} onChange={(e) => setCashFirmId(e.target.value)} className="compact-control">
+                <select value={cashFirmId} onChange={(e) => setCashFirmId(e.target.value)} className="compact-control" required>
                   <option value="">{tr('Select firm', 'Firmani tanlang')}</option>
                   {firmOptions.map((f) => (
                     <option key={f.id} value={f.id}>{f.name}</option>
@@ -1466,10 +1582,20 @@ export default function KassaPage() {
               </select>
             </div>
             <div>
+              <label className="compact-label">{tr('Flight (optional)', 'Reys (ixtiyoriy)')}</label>
+              <select value={cashFlightId} onChange={(e) => setCashFlightId(e.target.value)} className="compact-control">
+                <option value="">{tr('Not linked to a flight', 'Reysga bog‘lanmagan')}</option>
+                {flightOptions.map((flight) => {
+                  const id = flight.id || flight.flight_id || '';
+                  return <option key={id} value={id}>{flight.flightNumber || id}{flight.route ? ` · ${flight.route}` : ''}</option>;
+                })}
+              </select>
+            </div>
+            <div>
               <label className="compact-label">
                 {tr('Amount', 'Summa')} ({cashCurrencyCode || 'UZS'})
               </label>
-              <input inputMode="decimal" value={cashAmount} onChange={(e) => setCashAmount(e.target.value)} className="compact-control" />
+              <input type="number" inputMode="decimal" min="0.01" step="0.01" value={cashAmount} onChange={(e) => setCashAmount(e.target.value)} className="compact-control" required />
             </div>
             <div>
               <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
@@ -1482,29 +1608,43 @@ export default function KassaPage() {
             {cashCurrency === 'OTHER' && (
               <div>
                 <label className="compact-label">{tr('Currency code', 'Valyuta kodi')}</label>
-                <input value={cashOtherCurrency} onChange={(e) => setCashOtherCurrency(e.target.value.toUpperCase())} maxLength={3} className="compact-control uppercase" />
+                <input value={cashOtherCurrency} onChange={(e) => setCashOtherCurrency(e.target.value.toUpperCase())} minLength={3} maxLength={3} pattern="[A-Za-z]{3}" className="compact-control uppercase" required />
               </div>
             )}
             {cashCurrencyCode !== 'UZS' && (
               <div>
                 <label className="compact-label">{tr('Rate to UZS', 'UZS kursi')}</label>
-                <input inputMode="decimal" value={cashExchangeRate} onChange={(e) => setCashExchangeRate(e.target.value)} className="compact-control" placeholder="12600" />
+                <input type="number" inputMode="decimal" min="0.000001" step="any" value={cashExchangeRate} onChange={(e) => setCashExchangeRate(e.target.value)} className="compact-control" placeholder="12600" required />
               </div>
             )}
             <div>
               <label className="compact-label">{tr('Note', 'Izoh')}</label>
               <input value={cashNote} onChange={(e) => setCashNote(e.target.value)} className="compact-control" />
             </div>
-            <div className="flex items-end">
-              <button type="submit" disabled={recordingCash || !isEditable} className="px-5 py-2.5 bg-primary text-ink rounded-lg font-semibold text-sm uppercase tracking-wide hover:bg-primary/90 disabled:opacity-50">
-                {recordingCash ? tr('Recording...', 'Qayd etilmoqda...') : tr('Record', 'Qayd etish')}
-              </button>
-            </div>
+            <ActionButtons
+              cancelLabel={tr('Cancel', 'Bekor qilish')}
+              confirmLabel={tr('Record', 'Qayd etish')}
+              busyLabel={tr('Recording...', 'Qayd etilmoqda...')}
+              busy={recordingCash}
+              canConfirm={Boolean(
+                isEditable
+                && canRecordPayment
+                && hasValidSelectedDate
+                && (!canChooseTransactionFirm || cashFirmId)
+                && Number(cashAmount) > 0
+                && /^[A-Z]{3}$/.test(cashCurrencyCode)
+                && (cashCurrencyCode === 'UZS' || Number(cashExchangeRate) > 0)
+                && (cashDeskOptions.length === 0 || cashKassaDeskId)
+                && (cashMethod !== 'card' || (cashCardId && (!selectedCashCard?.currency || selectedCashCard.currency === cashCurrencyCode)))
+              )}
+              onCancel={resetCashDraft}
+            />
           </form>
         </CollapsibleCard>
       )}
 
       <CollapsibleCard
+        tone="finance"
         title={tr('Day transactions', 'Kun tranzaksiyalari')}
         description={tr('All transactions recorded for this kassa day.', 'Ushbu kassa kuni uchun qayd etilgan barcha tranzaksiyalar.')}
         storageKey="kassa-tx-card"
@@ -1530,7 +1670,9 @@ export default function KassaPage() {
                 </tr>
               </thead>
               <tbody>
-                {summary.transactions.map((tx) => (
+                {summary.transactions.map((tx) => {
+                  const canChangeDaily = canChangeDailyCash(tx);
+                  return (
                   <tr key={tx.id} className="border-b border-border/50">
                     <td className="font-medium">
                       {tx.direction === 'KASSA_IN' ? tr('Income', 'Kirim') : tx.direction === 'KASSA_OUT' ? tr('Expense', 'Chiqim') : tx.type}
@@ -1542,12 +1684,15 @@ export default function KassaPage() {
                     <td>{tx.createdBy?.fullName || tx.createdBy?.email || '—'}</td>
                     <td className="text-right font-mono">{tx.originalAmount} {tx.currency}</td>
                     <td><div className="flex gap-1">
-                      {canChangeDailyCash(tx) && <button type="button" onClick={() => editDailyCash(tx)} className="border border-border px-2 py-1 text-xs">{tr('Edit', 'Tahrir')}</button>}
-                      {canDeleteOwnedRecords && <button type="button" onClick={() => deleteTransaction(tx)} className="border border-red-500/30 px-2 py-1 text-xs text-red-600">{tr('Delete', "O'chirish")}</button>}
-                      {!canChangeDailyCash(tx) && !canDeleteOwnedRecords && '—'}
+                      {canChangeDaily && <button type="button" onClick={() => editDailyCash(tx)} className="border border-border px-2 py-1 text-xs">{tr('Edit', 'Tahrir')}</button>}
+                      {canChangeDaily && <button type="button" onClick={() => deleteDailyCash(tx)} className="border border-red-500/30 px-2 py-1 text-xs text-red-600">{tr('Delete', "O'chirish")}</button>}
+                      {!canChangeDaily && canDeleteFirmRecords && isEditable && <button type="button" onClick={() => deleteTransaction(tx)} className="border border-red-500/30 px-2 py-1 text-xs text-red-600">{tr('Delete', "O'chirish")}</button>}
+                      {!isEditable && canDeleteFirmRecords && <span className="text-xs text-muted">{tr('Reopen the kassa day to delete', 'O‘chirish uchun kassa kunini qayta oching')}</span>}
+                      {!canChangeDaily && !canDeleteFirmRecords && '—'}
                     </div></td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1556,6 +1701,7 @@ export default function KassaPage() {
 
       {canManageKassa && isEditable && Boolean(summaryKassaDeskId) && (
         <CollapsibleCard
+          tone="danger"
           id="close-kassa"
           title={tr('Close kassa', 'Kassani yopish')}
           description={tr('Final step for the day: count physical cash and close only when all payments are recorded.', 'Kun yakunidagi oxirgi qadam: barcha to\'lovlar kiritilgach, naqd pulni sanab kassani yoping.')}
@@ -1574,6 +1720,7 @@ export default function KassaPage() {
                 onChange={(e) => setClosingBalance(e.target.value)}
                 placeholder={summary?.totals.expectedCash != null ? String(Math.round(summary.totals.expectedCash)) : ''}
                 className="compact-control"
+                required
               />
               {summary?.totals.expectedCash != null && (
                 <p className="mt-1 text-xs text-muted">
@@ -1593,6 +1740,7 @@ export default function KassaPage() {
                 onChange={(e) => setClosingBalanceUsd(e.target.value)}
                 placeholder={summary?.totals.expectedCashByCurrency?.USD != null ? String(summary.totals.expectedCashByCurrency.USD) : ''}
                 className="compact-control"
+                required
               />
               {summary?.totals.expectedCashByCurrency?.USD != null && (
                 <p className="mt-1 text-xs text-muted">
@@ -1611,15 +1759,15 @@ export default function KassaPage() {
                 className="compact-control"
               />
             </div>
-            <div className="flex items-end">
-              <button
-                type="submit"
-                disabled={closingKassa}
-                className="px-5 py-2.5 bg-red-600 text-white rounded-lg font-semibold text-sm uppercase tracking-wide hover:bg-red-700 disabled:opacity-50"
-              >
-                {closingKassa ? tr('Closing…', 'Yopilyapti…') : tr('Close kassa', 'Kassani yopish')}
-              </button>
-            </div>
+            <ActionButtons
+              cancelLabel={tr('Cancel', 'Bekor qilish')}
+              confirmLabel={tr('Close kassa', 'Kassani yopish')}
+              busyLabel={tr('Closing…', 'Yopilyapti…')}
+              busy={closingKassa}
+              danger
+              canConfirm={Boolean(isEditable && hasValidSelectedDate && summaryKassaDeskId && Number(closingBalance) >= 0 && Number(closingBalanceUsd) >= 0)}
+              onCancel={() => { setClosingBalance(''); setClosingBalanceUsd(''); setCloseNotes(''); }}
+            />
           </form>
         </CollapsibleCard>
       )}
@@ -1716,7 +1864,8 @@ export default function KassaPage() {
                   <div className="space-y-1">
                     <p><b>{confirmAction.label}</b></p>
                     <p>{tr('Firm', 'Firma')}: {selectedPayFirm?.name || user?.email}</p>
-                    <p>{tr('Flight', 'Reys')}: {selectedPayFlight?.flightNumber || tr('Firm deposit', 'Firma depoziti')}</p>
+                    <p>{tr('Recipient', 'Kimga (to‘lov oluvchi)')}: {selectedPayReceiver?.name || '-'}</p>
+                    <p>{tr('Flight', 'Reys')}: {selectedPayFlight?.flightNumber || tr('Without flight', 'Reyssiz')}</p>
                     <p>{tr('Kassa', 'Kassa')}: {selectedPayDesk?.name || '-'}</p>
                   </div>
                 )}

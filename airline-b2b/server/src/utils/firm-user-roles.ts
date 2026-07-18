@@ -32,8 +32,8 @@ export function canManageFirmWork(authUser: FirmRoleAuthUser): boolean {
 
 export function canOperateFirmKassa(authUser: FirmRoleAuthUser): boolean {
   const platformRole = String(authUser.role || '').toUpperCase();
-  if (platformRole === 'SUPERADMIN') return true;
+  if (platformRole === 'SUPERADMIN' || platformRole === 'ADMIN') return true;
   if (platformRole !== 'FIRM') return false;
   const firmRole = normalizeFirmUserRole(authUser.firmRole);
-  return firmRole === FirmUserRole.FIRM_ADMIN || firmRole === FirmUserRole.KASSIR;
+  return firmRole === FirmUserRole.FIRM_ADMIN || firmRole === FirmUserRole.MANAGER || firmRole === FirmUserRole.KASSIR;
 }

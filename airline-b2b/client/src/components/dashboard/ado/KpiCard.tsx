@@ -14,27 +14,21 @@ type Props = {
   href?: string;
 };
 
-const accentMap = {
-  gold: 'from-[#C9A84C]/20 to-transparent border-[#C9A84C]/30',
-  green: 'from-emerald-500/15 to-transparent border-emerald-500/25',
-  red: 'from-red-500/15 to-transparent border-red-500/25',
-  blue: 'from-sky-500/15 to-transparent border-sky-500/25',
-};
-
 export default function KpiCard({ title, value, subtitle, trend, icon, accent = 'gold', href }: Props) {
   const trendUp = trend != null && trend >= 0;
   const inner = (
     <div
-      className={`relative overflow-hidden rounded-2xl border bg-gradient-to-br ${accentMap[accent]} bg-surface p-5 shadow-[0_4px_24px_rgba(0,0,0,0.25)] ${href ? 'transition hover:border-[#C9A84C]/50 hover:shadow-[0_8px_32px_rgba(201,168,76,0.12)]' : ''}`}
+      data-accent={accent}
+      className={`kpi-card ${href ? 'transition' : ''}`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted">{title}</p>
-          <p className="mt-2 font-serif text-2xl font-bold tracking-tight text-foreground md:text-[1.65rem]">{value}</p>
+          <p className="text-xs font-bold uppercase tracking-[0.08em] text-muted">{title}</p>
+          <p className="data-value mt-3 text-2xl font-semibold tracking-tight text-foreground md:text-[1.7rem]">{value}</p>
           {subtitle && <p className="mt-1.5 text-xs text-muted">{subtitle}</p>}
         </div>
         {icon && (
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-[#C9A84C]/25 bg-[#C9A84C]/10 text-[#D4AF37]">
+          <div className="kpi-card__icon flex h-11 w-11 shrink-0 items-center justify-center rounded-lg">
             {icon}
           </div>
         )}

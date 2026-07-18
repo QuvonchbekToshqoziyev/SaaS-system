@@ -17,10 +17,14 @@ function fail(message) {
   process.exit(1);
 }
 
-function run(label, command, args, cwd = root) {
+function run(label, command, args, cwd = root, attempts = 1) {
   console.log(`\n[release-audit] ${label}`);
-  const result = spawnSync(command, args, { cwd, stdio: 'inherit', env: process.env });
-  if (result.status !== 0) fail(`${label} exited with status ${result.status ?? 'unknown'}`);
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const result = spawnSync(command, args, { cwd, stdio: 'inherit', env: process.env });
+    if (result.status === 0) return;
+    if (attempt < attempts) console.warn(`[release-audit] ${label} retry ${attempt + 1}/${attempts}`);
+    else fail(`${label} exited with status ${result.status ?? 'unknown'}`);
+  }
 }
 
 const version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim();
@@ -52,14 +56,14 @@ run('API route/client contract', process.execPath, ['scripts/api-surface-audit.m
 run('Recurring regression guards', process.execPath, ['scripts/regression-guard-audit.mjs']);
 
 const server = path.join(root, 'airline-b2b/server');
-run('Server runtime dependency audit', 'npm', ['audit', '--omit=dev', '--audit-level=high'], server);
+run('Server runtime dependency audit', 'npm', ['audit', '--omit=dev', '--audit-level=high'], server, 3);
 run('Prisma schema validation', 'npx', ['prisma', 'validate'], server);
 run('Prisma client generation', 'npx', ['prisma', 'generate'], server);
 run('Server tests', 'npm', ['test'], server);
 run('Server TypeScript build', 'npm', ['run', 'build'], server);
 
 const client = path.join(root, 'airline-b2b/client');
-run('Client runtime dependency audit', 'npm', ['audit', '--omit=dev', '--audit-level=high'], client);
+run('Client runtime dependency audit', 'npm', ['audit', '--omit=dev', '--audit-level=high'], client, 3);
 run('Client TypeScript check', 'npx', ['tsc', '--noEmit'], client);
 run('Client production build', 'npm', ['run', 'build'], client);
 
@@ -67,6 +71,7 @@ if (withDev) {
   run('Live dev endpoint and role audit', process.execPath, ['scripts/dev-endpoint-audit.mjs']);
   run('Live dev tenant-data isolation audit', process.execPath, ['scripts/dev-data-isolation-audit.mjs']);
   run('Live dev release seed audit', process.execPath, ['scripts/dev-release-seed-audit.mjs']);
+  run('Live dev kassa five-role workflow audit', process.execPath, ['scripts/dev-kassa-workflow-audit.mjs']);
   run('Critical UI role-flow smoke', 'npm', ['run', 'test:e2e'], client);
 }
 

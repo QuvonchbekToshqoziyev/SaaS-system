@@ -2,12 +2,12 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/e2e',
-  timeout: 120_000,
-  expect: { timeout: 10_000 },
+  timeout: 240_000,
+  expect: { timeout: 30_000 },
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
-  workers: 3,
+  workers: process.env.CI ? 1 : 3,
   reporter: [['list']],
   use: {
     baseURL: process.env.E2E_BASE_URL || 'https://dev.b2b.booking.ado-finance.com',

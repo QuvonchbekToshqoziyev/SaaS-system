@@ -9,6 +9,10 @@ export function isSubscriptionExpired(end: Date | null, now = new Date()) {
   return end !== null && end <= now;
 }
 
+export function isReadOnlyHttpMethod(method: unknown) {
+  return ['GET', 'HEAD', 'OPTIONS'].includes(String(method || '').toUpperCase());
+}
+
 export const authMiddleware = async (req: Request, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) return sendApiError(res, new AppError(ERROR_CODES.AUTH_TOKEN_MISSING));
@@ -20,7 +24,7 @@ export const authMiddleware = async (req: Request, res: Response, next: NextFunc
     return sendApiError(res, new AppError(ERROR_CODES.CONFIG_MISSING, 'JWT_SECRET is missing'));
   }
   try {
-    const decoded = jwt.verify(token, jwtSecret) as { role?: unknown; firmId?: unknown };
+    const decoded = jwt.verify(token, jwtSecret) as { userId?: unknown; role?: unknown; firmId?: unknown; readOnlyAccess?: boolean };
     if (String(decoded.role || '').toUpperCase() === 'FIRM' && decoded.firmId) {
       const firm = await prisma.firm.findUnique({
         where: { id: String(decoded.firmId) },
@@ -30,6 +34,18 @@ export const authMiddleware = async (req: Request, res: Response, next: NextFunc
         return res.status(401).json({
           code: 'SUBSCRIPTION_EXPIRED',
           error: 'Obuna muddati tugagan. Obunani uzaytirish uchun biz bilan bog\'laning.',
+        });
+      }
+    }
+    if (!isReadOnlyHttpMethod(req.method) && decoded.userId) {
+      const actor = await prisma.user.findUnique({
+        where: { id: String(decoded.userId) },
+        select: { readOnlyAccess: true },
+      });
+      if (actor?.readOnlyAccess) {
+        return res.status(403).json({
+          code: 'READ_ONLY_ACCOUNT',
+          error: 'Bu akkaunt faqat ma’lumotlarni ko‘rish uchun. O‘zgartirish amallari taqiqlangan.',
         });
       }
     }

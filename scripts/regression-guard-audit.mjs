@@ -22,6 +22,18 @@ const duplicateFlightPredicates = walk(sourceRoot)
   .map((file) => path.relative(root, file));
 if (duplicateFlightPredicates.length) failures.push(`active flight predicate duplicated in ${duplicateFlightPredicates.join(', ')}`);
 
+const hardTransactionDeletes = walk(sourceRoot)
+  .filter((file) => file.endsWith('.ts') && !file.endsWith('.test.ts'))
+  .filter((file) => /transaction\.delete(?:Many)?\s*\(/.test(fs.readFileSync(file, 'utf8')))
+  .map((file) => path.relative(root, file));
+if (hardTransactionDeletes.length) failures.push(`financial transaction hard-delete found in ${hardTransactionDeletes.join(', ')}`);
+
+const reservedReturningAliases = walk(sourceRoot)
+  .filter((file) => file.endsWith('.ts'))
+  .filter((file) => /JOIN\s+"TicketLeg"\s+returning\b/i.test(fs.readFileSync(file, 'utf8')))
+  .map((file) => path.relative(root, file));
+if (reservedReturningAliases.length) failures.push(`reserved SQL alias returning found in ${reservedReturningAliases.join(', ')}`);
+
 for (const file of [
   'airline-b2b/server/src/controllers/flights.controller.ts',
   'airline-b2b/server/src/controllers/reports.controller.ts',
@@ -39,11 +51,36 @@ const activeDeskGuard = kassaService.slice(kassaService.indexOf('export function
 if (/subscriptionEndsAt|users\s*:/.test(activeDeskGuard)) failures.push('kassa desk visibility depends on login or subscription eligibility');
 
 requireText('airline-b2b/server/src/controllers/services.controller.test.ts', "toEqual({ ownerFirmId: 'firm-1' })", 'service owner isolation test missing');
-requireText('airline-b2b/server/src/controllers/ticket-legs.controller.test.ts', 'toHaveBeenCalledTimes(1)', 'allocation transaction cardinality test missing');
+requireText('airline-b2b/server/src/controllers/services.controller.test.ts', "ownerFirmId: { in: ['firm-1', 'firm-2'] }", 'assigned admin service isolation test missing');
+requireText('airline-b2b/server/src/controllers/ticket-legs.controller.ts', 'requiresAirlineConnectionForAllocation(source.isAirlineOwner)', 'allocation connection policy is not scoped to airline-owned inventory');
+requireText('airline-b2b/server/src/utils/transaction-visibility.ts', "status: { not: 'DELETED' }", 'deleted transaction status visibility guard missing');
+requireText('airline-b2b/server/src/utils/transaction-visibility.test.ts', 'TICKET_ALLOCATION_ADJUSTMENT', 'inventory transaction visibility test missing');
+requireText('airline-b2b/server/src/utils/transaction-visibility.test.ts', 'soft-deletes a transaction without removing its row', 'transaction soft-delete test missing');
 requireText('scripts/dev-data-isolation-audit.mjs', "check(actor, 'services'", 'live service isolation check missing');
+requireText('scripts/dev-data-isolation-audit.mjs', "check(actor, 'kassa-history'", 'live kassa history isolation check missing');
+requireText('airline-b2b/server/src/services/kassa.service.ts', "orderBy: [{ businessDate: 'desc' }, { closedAt: 'desc' }]", 'kassa carry-forward business-date ordering missing');
+requireText('airline-b2b/server/src/services/kassa.service.ts', 'actualClosingBalance: { not: null }', 'kassa carry-forward usable remainder guard missing');
+requireText('airline-b2b/server/src/services/kassa.service.ts', "if (kassaDeskId === '__unassigned_kassir__') return [];", 'unassigned kassir card isolation missing');
+requireText('airline-b2b/server/src/controllers/kassa.controller.ts', 'getKassaHistoryService(getAuthUser(req)', 'kassa history auth scope missing');
+requireText('scripts/release-audit.mjs', "['scripts/dev-kassa-workflow-audit.mjs']", 'five-role kassa workflow audit missing from release gate');
 
-const migration = 'prisma/migrations/20260715_unique_allocation_payable/migration.sql';
-requireText(`airline-b2b/server/${migration}`, 'CREATE UNIQUE INDEX IF NOT EXISTS', 'allocation DB unique guard missing');
+for (const file of [
+  'airline-b2b/server/src/controllers/tickets.controller.ts',
+  'airline-b2b/server/src/controllers/ticket-legs.controller.ts',
+  'airline-b2b/server/src/domains/tickets/ticket-leg-inventory.ts',
+]) {
+  const source = read(file);
+  if (/type:\s*'PAYABLE'[\s\S]{0,900}subjectType:\s*'TICKET_ALLOCATION/.test(source)
+    || /subjectType:\s*'TICKET_ALLOCATION[\s\S]{0,900}type:\s*'PAYABLE'/.test(source)) {
+    failures.push(`ticket allocation writes a financial transaction: ${file}`);
+  }
+}
+if (/transaction\.create/.test(read('airline-b2b/server/src/controllers/services.controller.ts'))) {
+  failures.push('service inventory creation writes a financial transaction');
+}
+
+const migration = 'prisma/migrations/20260717_remove_inventory_transactions/migration.sql';
+requireText(`airline-b2b/server/${migration}`, 'UPDATE "Transaction"', 'inventory transaction cleanup migration missing');
 for (const deploy of ['deploy-dev.sh', 'deploy.sh']) {
   requireText(deploy, migration, 'allocation migration missing from deploy');
   requireText(deploy, 'npm run audit:business-invariants', 'business invariant audit missing from deploy');
@@ -58,6 +95,53 @@ requireText('airline-b2b/server/prisma/seed-dev-qa.ts', "databaseUrl.includes('a
 requireText('deploy-dev.sh', 'ALLOW_DEV_QA_SEED=1 npm run seed:dev-qa', 'release seed missing from dev deploy');
 if (/ALLOW_DEV_QA_SEED|npm run seed:dev-qa/.test(read('deploy.sh'))) failures.push('production deploy directly runs dev QA seed');
 requireText('scripts/release-audit.mjs', "['scripts/dev-release-seed-audit.mjs']", 'live release seed audit missing from release gate');
+requireText('airline-b2b/server/prisma/schema.prisma', 'readOnlyAccess                  Boolean                   @default(false)', 'read-only account schema flag missing');
+requireText('airline-b2b/server/src/middleware/auth.ts', "code: 'READ_ONLY_ACCOUNT'", 'read-only mutation guard missing');
+requireText('airline-b2b/server/src/middleware/auth.test.ts', "['POST', 'PATCH', 'PUT', 'DELETE'].some(isReadOnlyHttpMethod)", 'read-only method regression test missing');
+requireText('scripts/dev-release-seed-audit.mjs', "login('qa.readonly-superadmin@ado.test')", 'live read-only superadmin audit missing');
+requireText('airline-b2b/server/prisma/migrations/20260717_add_read_only_superadmin/migration.sql', 'ADD COLUMN IF NOT EXISTS "readOnlyAccess"', 'read-only account migration missing');
+requireText('scripts/dev-kassa-workflow-audit.mjs', 'deleted cash row is still visible in kassa', 'live kassa transaction delete audit missing');
 
-console.log(JSON.stringify({ ok: failures.length === 0, checks: 22, failures }, null, 2));
+for (const file of [
+  'airline-b2b/client/src/app/invite/page.tsx',
+  'airline-b2b/client/src/app/(dashboard)/admins/page.tsx',
+  'airline-b2b/client/src/app/(dashboard)/airlines/page.tsx',
+  'airline-b2b/client/src/app/(dashboard)/chat/page.tsx',
+  'airline-b2b/client/src/app/(dashboard)/employees/page.tsx',
+  'airline-b2b/client/src/app/(dashboard)/firms/page.tsx',
+  'airline-b2b/client/src/app/(dashboard)/flights/page.tsx',
+  'airline-b2b/client/src/app/(dashboard)/kassa/page.tsx',
+  'airline-b2b/client/src/app/(dashboard)/services/page.tsx',
+  'airline-b2b/client/src/app/(dashboard)/settings/page.tsx',
+  'airline-b2b/client/src/app/(dashboard)/tours/page.tsx',
+  'airline-b2b/client/src/app/(dashboard)/transactions/page.tsx',
+  'airline-b2b/client/src/features/kassa/HistoricalKassaImport.tsx',
+]) requireText(file, 'ActionButtons', 'cancel-confirm action controls missing');
+requireText('airline-b2b/client/src/components/ui/ActionButtons.tsx', 'form?.checkValidity()', 'native form validity is not enforced before confirmation');
+requireText('airline-b2b/client/src/app/globals.css', '--control-height: 2.75rem', 'shared desktop control height token missing');
+requireText('airline-b2b/client/src/app/globals.css', 'minmax(min(100%, 220px), 1fr)', 'responsive form field sizing guard missing');
+requireText('airline-b2b/client/src/app/globals.css', '.operation-form {', 'operation form surface missing');
+requireText('airline-b2b/client/src/app/globals.css', '.form-grid.form-grid > :where(label, .form-field, .form-field--compact', 'mobile form fields can collapse into narrow grid cells');
+for (const file of [
+  'airline-b2b/client/src/app/(dashboard)/services/page.tsx',
+  'airline-b2b/client/src/app/(dashboard)/tours/page.tsx',
+  'airline-b2b/client/src/app/(dashboard)/transactions/page.tsx',
+]) requireText(file, 'operation-form', 'responsive operation form layout missing');
+requireText('airline-b2b/client/src/app/(dashboard)/services/page.tsx', 'Notes and service details', 'service long-text field missing');
+requireText('airline-b2b/client/src/app/(dashboard)/tours/page.tsx', 'Notes and tour details', 'tour long-text field missing');
+requireText('airline-b2b/client/src/app/(dashboard)/transactions/page.tsx', 'Reference and payment note', 'transaction long-text field missing');
+const toursPage = read('airline-b2b/client/src/app/(dashboard)/tours/page.tsx');
+if (toursPage.includes('form-grid form-subsection min-w-[38rem]')) failures.push('tour sale form is still embedded inside a narrow table cell');
+requireText('airline-b2b/client/src/app/(dashboard)/tours/page.tsx', 'aria-modal="true"', 'tour sale dialog missing');
+requireText('airline-b2b/client/src/app/(dashboard)/tours/page.tsx', 'setSellingId(null)', 'tour sale cancel/close state reset missing');
+requireText('airline-b2b/server/src/controllers/transactions.controller.ts', 'canViewRelatedFirm(authUser, counterpartyFirmId)', 'kassa cash movement rejects firms shown in its counterparty selector');
+requireText('airline-b2b/client/src/app/globals.css', '@media (prefers-reduced-motion: reduce)', 'reduced-motion UI guard missing');
+requireText('airline-b2b/client/src/components/layout/DashboardLayout.tsx', 'className="app-shell', 'semantic dashboard shell missing');
+requireText('airline-b2b/client/src/components/layout/DashboardLayout.tsx', 'id="main-content"', 'keyboard skip target missing');
+requireText('airline-b2b/client/src/components/ui/CollapsibleCard.tsx', 'className={`section-card', 'semantic section card primitive missing');
+requireText('airline-b2b/client/src/app/(dashboard)/flights/detail/page.tsx', 'disabled={allocateBusy || !allocationDraftValid}', 'ticket allocation confirmation validity guard missing');
+requireText('airline-b2b/client/src/app/(dashboard)/flights/detail/page.tsx', 'disabled={sellBusy || !singleSaleDraftValid}', 'single-ticket sale confirmation validity guard missing');
+requireText('airline-b2b/client/src/app/(dashboard)/flights/detail/page.tsx', 'disabled={sellBatchBusy || !batchSaleDraftValid}', 'batch ticket sale confirmation validity guard missing');
+
+console.log(JSON.stringify({ ok: failures.length === 0, checks: 73, failures }, null, 2));
 if (failures.length) process.exitCode = 1;

@@ -13,13 +13,14 @@ type FlightOption = { id: string; flightNumber: string };
 type FirmOption = { id: string; name: string };
 type BranchOption = { id: string; name: string; code?: string | null; firmId?: string | null; firm?: { name?: string | null } | null };
 
-type TabKey = 'health' | 'profitability' | 'cash-flow' | 'debt' | 'flight-profitability';
+type TabKey = 'health' | 'profitability' | 'cash-flow' | 'debt' | 'agents' | 'flight-profitability';
 
 const tabs: Array<{ key: TabKey; icon: any; labelEn: string; labelUz: string }> = [
   { key: 'health', icon: Activity, labelEn: 'Financial health', labelUz: 'Moliyaviy holat' },
   { key: 'profitability', icon: BarChart3, labelEn: 'Profitability', labelUz: 'Foyda va rentabellik' },
   { key: 'cash-flow', icon: Wallet, labelEn: 'Cash flow', labelUz: 'Pul oqimi' },
   { key: 'debt', icon: ArrowRightLeft, labelEn: 'Receivables / Payables', labelUz: 'Debitor / Kreditor' },
+  { key: 'agents', icon: Building2, labelEn: 'Agent ledger', labelUz: 'Agentlar hisoboti' },
   { key: 'flight-profitability', icon: PlaneTakeoff, labelEn: 'Flight profitability', labelUz: 'Reys rentabelligi' },
 ];
 
@@ -33,6 +34,11 @@ function normalizeDateParam(value: string): string {
 function fmt(value: unknown, suffix = ' UZS') {
   const num = Number(value || 0);
   return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Number.isFinite(num) ? num : 0)}${suffix}`;
+}
+
+function fmtAmounts(values: any[] | undefined) {
+  if (!Array.isArray(values) || values.length === 0) return '0';
+  return values.map((row) => `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(Number(row.total || 0))} ${row.currency || 'UZS'}`).join(' · ');
 }
 
 function pct(value: unknown) {
@@ -185,6 +191,8 @@ export default function ReportsPage() {
   const [dateTo, setDateTo] = useState(normalizeDateParam(searchParams.get('dateTo') || ''));
   const [currency, setCurrency] = useState(searchParams.get('currency') || '');
   const [report, setReport] = useState<any>(null);
+  const [agentLedger, setAgentLedger] = useState<any>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState('');
   const [flightInventory, setFlightInventory] = useState<any>(null);
   const [flightReport, setFlightReport] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -233,11 +241,13 @@ export default function ReportsPage() {
       const flightParams = new URLSearchParams();
       if (flightId) flightParams.set('flight_id', flightId);
       if (isAdmin && companyId) flightParams.set('firm_id', companyId);
-      const [res, flightRes] = await Promise.all([
+      const [res, flightRes, agentRes] = await Promise.all([
         api.get(`/reports/analytics?${queryString}`),
         flightId ? api.get(`/reports/flight?${flightParams.toString()}`) : Promise.resolve({ data: null }),
+        (!isAdmin || companyId) ? api.get('/reports/agents', { params: companyId ? { companyId } : undefined }) : Promise.resolve({ data: null }),
       ]);
       setReport(res.data);
+      setAgentLedger(agentRes.data || null);
       setFlightReport(flightRes.data || null);
       setFlightInventory(flightRes.data?.inventorySummary || null);
     } catch (error: any) {
@@ -279,6 +289,8 @@ export default function ReportsPage() {
   const eff = report?.efficiency || {};
   const monthly = report?.monthly || [];
   const flightsRows = report?.flightProfitability || [];
+  const agents = agentLedger?.agents || [];
+  const selectedAgent = agents.find((agent: any) => agent.id === selectedAgentId) || null;
 
   if (!canAccess) {
     return (
@@ -359,19 +371,46 @@ export default function ReportsPage() {
   const renderDebt = () => (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <KpiCard label="Jami olinadigan qarz" value={fmt(rcv.total)} />
+        <KpiCard label="Jami olinadigan qarz" value={agentLedger ? fmtAmounts(agentLedger.receivableTotals) : fmt(rcv.total)} />
         <KpiCard label="Muddati o‘tgan olinadigan qarz" value={fmt(rcv.overdue)} />
         <KpiCard label="Yaqinda olinadi" value={fmt(rcv.dueSoon)} />
         <KpiCard label="Undirish darajasi" value={pct(rcv.collectionRate)} />
-        <KpiCard label="Jami to‘lanadigan qarz" value={fmt(pay.total)} />
+        <KpiCard label="Jami to‘lanadigan qarz" value={agentLedger ? fmtAmounts(agentLedger.payableTotals) : fmt(pay.total)} />
         <KpiCard label="Muddati o‘tgan to‘lanadigan qarz" value={fmt(pay.overdue)} />
         <KpiCard label="Shu hafta to‘lanadi" value={fmt(pay.dueSoon)} />
-        <KpiCard label="Asosiy ta’minotchi" value={pay.rows?.[0]?.supplier ? pay.rows[0].supplier : 'Ma’lumot yo‘q'} />
+        <KpiCard label="Asosiy ta’minotchi" value={agentLedger?.payables?.[0]?.firmName || (pay.rows?.[0]?.supplier ? pay.rows[0].supplier : 'Ma’lumot yo‘q')} />
       </div>
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <DebtTable title="Olinadigan qarzlar muddati" rows={rcv.rows || []} kind="receivable" />
-        <DebtTable title="To‘lanadigan qarzlar muddati" rows={pay.rows || []} kind="payable" />
-      </div>
+      {isAdmin && !companyId ? <div className="rounded-lg border border-border bg-surface p-8 text-center text-muted">Qarzdor firmalarni ko‘rish uchun kompaniyani tanlang.</div> : <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <CurrentDebtTable title="Olinadigan qarz — bizdan qarzi bor firmalar" rows={agentLedger?.receivables || []} kind="receivable" />
+        <CurrentDebtTable title="To‘lanadigan qarz — biz qarz bo‘lgan firmalar" rows={agentLedger?.payables || []} kind="payable" />
+      </div>}
+    </div>
+  );
+
+  const renderAgents = () => (
+    <div className="space-y-6">
+      {isAdmin && !companyId ? <div className="rounded-lg border border-border bg-surface p-8 text-center text-muted">Agentlar hisoboti uchun kompaniyani tanlang.</div> : <>
+        <div className="overflow-x-auto rounded-lg border border-border bg-surface">
+          <table className="excel-table">
+            <thead><tr><th>Agent / firma</th><th>Eski qoldiq</th><th className="text-right">Sotilgan bilet</th><th className="text-right">Olgan biletimiz</th><th className="text-right">Jami tur</th><th>Jami sotuv</th><th>Jami xarid</th><th>Bizga to‘lagan</th><th>Biz to‘lagan</th><th>Real qoldiq</th></tr></thead>
+            <tbody>{agents.length ? agents.map((agent: any) => <tr key={agent.id} onClick={() => setSelectedAgentId(agent.id)} className={`cursor-pointer ${selectedAgentId === agent.id ? 'bg-primary/10' : ''}`}>
+              <td className="font-semibold">{agent.name}</td><td className="font-mono">{fmtAmounts(agent.oldBalance)}</td><td className="text-right font-mono">{agent.ticketCount}</td><td className="text-right font-mono">{agent.purchasedTicketCount || 0}</td><td className="text-right font-mono">{agent.tourCount}</td><td className="font-mono">{fmtAmounts(agent.totalSales)}</td><td className="font-mono">{fmtAmounts(agent.totalPurchases)}</td><td className="font-mono">{fmtAmounts(agent.totalPaid)}</td><td className="font-mono">{fmtAmounts(agent.totalPaidByUs)}</td><td className="font-mono font-bold">{fmtAmounts(agent.currentBalance)}</td>
+            </tr>) : <tr><td colSpan={10} className="text-center text-muted">Hozircha agent hisob-kitobi mavjud emas</td></tr>}</tbody>
+          </table>
+        </div>
+        {selectedAgent && <div className="space-y-4 rounded-lg border border-border bg-surface p-4">
+          <div><h3 className="text-xl font-bold">{selectedAgent.name}</h3><p className="text-sm text-muted">{agentLedger?.ownerFirm?.name} bilan joriy hisob: {fmtAmounts(selectedAgent.currentBalance)}</p></div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-lg border border-border bg-surface-2 p-4"><div className="text-xs uppercase text-muted">Bizdan qarzi</div><div className="mt-1 text-lg font-bold text-red-500">{fmtAmounts(selectedAgent.receivable)}</div></div>
+            <div className="rounded-lg border border-border bg-surface-2 p-4"><div className="text-xs uppercase text-muted">Bizning undan qarzimiz</div><div className="mt-1 text-lg font-bold text-amber-500">{fmtAmounts(selectedAgent.payable)}</div></div>
+          </div>
+          <div className="overflow-x-auto"><h4 className="mb-2 font-bold">Olgan reys va biletlar</h4><table className="excel-table"><thead><tr><th>Reys</th><th>Yo‘nalish</th><th className="text-right">Bilet soni</th><th>Qanchadan olgan</th><th>Jami qancha</th></tr></thead><tbody>{selectedAgent.ticketPurchases?.length ? selectedAgent.ticketPurchases.map((row: any) => <tr key={row.id}><td>{row.flightNumber}</td><td>{row.route}</td><td className="text-right">{row.quantity}</td><td>{row.priceRows?.map((price: any) => `${price.quantity} × ${Number(price.unitPrice).toLocaleString()} ${row.currency}`).join(' · ')}</td><td className="font-mono">{Number(row.totalAmount).toLocaleString()} {row.currency}</td></tr>) : <tr><td colSpan={5} className="text-center text-muted">Bilet olmagan</td></tr>}</tbody></table></div>
+          <div className="overflow-x-auto"><h4 className="mb-2 font-bold">Olgan turlari</h4><table className="excel-table"><thead><tr><th>Tur</th><th>Qaysi reys turi</th><th className="text-right">Nechta</th><th>Qanchadan olgan</th><th>Jami qancha</th></tr></thead><tbody>{selectedAgent.tourPurchases?.length ? selectedAgent.tourPurchases.map((row: any) => <tr key={row.id}><td>{row.packageName}</td><td>{row.flightNumber || '-'} · {row.route || '-'}</td><td className="text-right">{row.quantity}</td><td className="font-mono">{Number(row.unitPrice).toLocaleString()} {row.currency}</td><td className="font-mono">{Number(row.totalAmount).toLocaleString()} {row.currency}</td></tr>) : <tr><td colSpan={5} className="text-center text-muted">Tur olmagan</td></tr>}</tbody></table></div>
+          <AgentFlightPurchases rows={selectedAgent.flightPurchases || []} />
+          <AgentServices purchases={selectedAgent.servicePurchases || []} sales={selectedAgent.serviceSales || []} />
+          <AgentPayments received={selectedAgent.paymentsReceived || []} made={selectedAgent.paymentsMade || []} />
+        </div>}
+      </>}
     </div>
   );
 
@@ -536,6 +575,7 @@ export default function ReportsPage() {
           {activeTab === 'profitability' && renderProfitability()}
           {activeTab === 'cash-flow' && renderCashFlow()}
           {activeTab === 'debt' && renderDebt()}
+          {activeTab === 'agents' && renderAgents()}
           {activeTab === 'flight-profitability' && renderFlightProfitability()}
         </>
       )}
@@ -552,52 +592,85 @@ export default function ReportsPage() {
   );
 }
 
-function DebtTable({ title, rows, kind }: { title: string; rows: any[]; kind: 'receivable' | 'payable' }) {
+function CurrentDebtTable({ title, rows, kind }: { title: string; rows: any[]; kind: 'receivable' | 'payable' }) {
   return (
     <div className="overflow-x-auto rounded-lg border border-border bg-surface p-4">
       <h3 className="mb-3 text-sm font-bold text-foreground">{title}</h3>
       <table className="excel-table">
         <thead>
           <tr>
-            {(kind === 'receivable'
-              ? ['Mijoz', 'Sotuv / hisob-faktura', 'Reys', 'Sotuv mas’uli', 'Hujjat sanasi', 'To‘lov muddati', 'Boshlang‘ich summa', 'To‘langan', 'Qoldiq', 'Kechikkan kun', 'Muddat guruhi', 'Holati']
-              : ['Ta’minotchi', 'Ta’minotchi turi', 'Reys', 'Hujjat sanasi', 'To‘lov muddati', 'Hisob-faktura summasi', 'To‘langan', 'Qoldiq', 'Kechikkan kun', 'Holati']
-            ).map((h) => <th key={h}>{h}</th>)}
+            <th>Firma</th>
+            <th>{kind === 'receivable' ? 'Jami sotuv / eski qoldiq' : 'Jami olingan / eski qoldiq'}</th>
+            <th>To‘langan</th>
+            <th>Valyuta</th>
+            <th>{kind === 'receivable' ? 'Hozirgi qarzi' : 'Hozirgi qarzimiz'}</th>
           </tr>
         </thead>
         <tbody>
           {rows.length === 0 ? (
-            <tr><td colSpan={kind === 'receivable' ? 12 : 10} className="text-center text-muted">Tanlangan davr uchun ma’lumot mavjud emas</td></tr>
-          ) : rows.map((row, index) => kind === 'receivable' ? (
-            <tr key={`${row.saleOrInvoice}-${index}`}>
-              <td>{row.customer || '-'}</td>
-              <td>{row.saleOrInvoice || '-'}</td>
-              <td>{row.flightNumber || '-'}</td>
-              <td>{row.saleManager || '-'}</td>
-              <td>{row.documentDate ? new Date(row.documentDate).toLocaleDateString() : '-'}</td>
-              <td>{row.dueDate ? new Date(row.dueDate).toLocaleDateString() : '-'}</td>
-              <td>{fmt(row.originalAmount)}</td>
-              <td>{fmt(row.paidAmount)}</td>
-              <td>{fmt(row.outstandingAmount)}</td>
-              <td>{row.daysOverdue ?? '-'}</td>
-              <td>{row.agingBucket}</td>
-              <td>{row.status}</td>
-            </tr>
-          ) : (
-            <tr key={`${row.saleOrInvoice}-${index}`}>
-              <td>{row.supplier || '-'}</td>
-              <td>{row.supplierType || '-'}</td>
-              <td>{row.flightNumber || '-'}</td>
-              <td>{row.documentDate ? new Date(row.documentDate).toLocaleDateString() : '-'}</td>
-              <td>{row.dueDate ? new Date(row.dueDate).toLocaleDateString() : '-'}</td>
-              <td>{fmt(row.invoiceAmount)}</td>
-              <td>{fmt(row.paidAmount)}</td>
-              <td>{fmt(row.outstandingAmount)}</td>
-              <td>{row.daysOverdue ?? '-'}</td>
-              <td>{row.status}</td>
-            </tr>
-          ))}
+            <tr><td colSpan={5} className="text-center text-muted">Qarzdor firma yo‘q</td></tr>
+          ) : rows.map((row) => <tr key={`${row.firmId}-${row.currency}`}>
+            <td className="font-semibold">{row.firmName}</td>
+            <td className="font-mono">{Number(row.charged || 0).toLocaleString()}</td>
+            <td className="font-mono">{Number(row.paid || 0).toLocaleString()}</td>
+            <td>{row.currency}</td>
+            <td className="font-mono font-bold text-red-500">{Number(row.currentDebt || 0).toLocaleString()} {row.currency}</td>
+          </tr>)}
         </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AgentFlightPurchases({ rows }: { rows: any[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <h4 className="mb-2 font-bold">Biz olgan reys va biletlar</h4>
+      <table className="excel-table">
+        <thead><tr><th>Reys</th><th>Yo‘nalish</th><th className="text-right">Bilet soni</th><th>Qanchadan</th><th>Jami</th></tr></thead>
+        <tbody>{rows.length ? rows.map((row) => <tr key={`${row.sourceType}-${row.id}`}>
+          <td>{row.flightNumber || '-'}</td><td>{row.route || '-'}</td><td className="text-right">{row.quantity}</td>
+          <td>{row.priceRows?.map((price: any) => `${price.quantity} × ${Number(price.unitPrice).toLocaleString()} ${row.currency}`).join(' · ') || '-'}</td>
+          <td className="font-mono">{Number(row.totalAmount || 0).toLocaleString()} {row.currency}</td>
+        </tr>) : <tr><td colSpan={5} className="text-center text-muted">Bu firmadan reys yoki bilet olinmagan</td></tr>}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function AgentServices({ purchases, sales }: { purchases: any[]; sales: any[] }) {
+  const rows = [
+    ...purchases.map((row) => ({ ...row, flowLabel: 'Biz olganmiz' })),
+    ...sales.map((row) => ({ ...row, flowLabel: 'Biz sotganmiz' })),
+  ];
+  return (
+    <div className="overflow-x-auto">
+      <h4 className="mb-2 font-bold">Xizmatlar</h4>
+      <table className="excel-table">
+        <thead><tr><th>Yo‘nalish</th><th>Xizmat</th><th>Reys</th><th className="text-right">Soni</th><th>Narxi</th><th>Jami</th></tr></thead>
+        <tbody>{rows.length ? rows.map((row) => <tr key={`${row.flowLabel}-${row.sourceType}-${row.id}`}>
+          <td>{row.flowLabel}</td><td>{row.serviceName}</td><td>{row.flightNumber || '-'}</td><td className="text-right">{row.quantity}</td>
+          <td className="font-mono">{Number(row.unitPrice || 0).toLocaleString()} {row.currency}</td><td className="font-mono">{Number(row.totalAmount || 0).toLocaleString()} {row.currency}</td>
+        </tr>) : <tr><td colSpan={6} className="text-center text-muted">Xizmat xaridi yoki sotuvi yo‘q</td></tr>}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function AgentPayments({ received, made }: { received: any[]; made: any[] }) {
+  const rows = [
+    ...received.map((row) => ({ ...row, flowLabel: 'Bizga to‘lagan' })),
+    ...made.map((row) => ({ ...row, flowLabel: 'Biz to‘lagan' })),
+  ].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  return (
+    <div className="overflow-x-auto">
+      <h4 className="mb-2 font-bold">Kassa va tranzaksiya to‘lovlari</h4>
+      <table className="excel-table">
+        <thead><tr><th>Yo‘nalish</th><th>Sana</th><th>Reys</th><th>Usul</th><th>Summa</th></tr></thead>
+        <tbody>{rows.length ? rows.map((row) => <tr key={`${row.flowLabel}-${row.id}`}>
+          <td>{row.flowLabel}</td><td>{row.createdAt ? new Date(row.createdAt).toLocaleDateString() : '-'}</td><td>{row.flightNumber || '-'}</td>
+          <td>{row.paymentMethod || String(row.sourceMode || '').replace('MANUAL_', '') || '-'}</td><td className="font-mono font-semibold">{Number(row.amount || 0).toLocaleString()} {row.currency}</td>
+        </tr>) : <tr><td colSpan={5} className="text-center text-muted">Nomlangan to‘lov yo‘q</td></tr>}</tbody>
       </table>
     </div>
   );

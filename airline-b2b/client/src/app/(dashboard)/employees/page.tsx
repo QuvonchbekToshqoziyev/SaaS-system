@@ -3,12 +3,13 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import { Plus, Save, Trash2 } from 'lucide-react';
+import { Save, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import type { AxiosError } from 'axios';
 import ExportActions from '@/components/ui/ExportActions';
+import ActionButtons from '@/components/ui/ActionButtons';
 
 type FirmOption = { id: string; name: string };
 type Employee = {
@@ -45,6 +46,8 @@ type EmployeeDraft = {
 
 type ApiErrorResponse = { error?: string };
 
+const emptyEmployeeDraft = { name: '', role: 'MANAGER', customRole: '', salary: '', currency: 'UZS', firmId: '', email: '', password: '' };
+
 function apiErrorMessage(err: unknown): string | undefined {
   return (err as AxiosError<ApiErrorResponse>)?.response?.data?.error;
 }
@@ -69,13 +72,14 @@ export default function EmployeesPage() {
     { value: 'OTHER', label: tr('Other', 'Boshqa') },
   ];
 
-  const [draft, setDraft] = useState({ name: '', role: 'MANAGER', customRole: '', salary: '', currency: 'UZS', firmId: '', email: '', password: '' });
+  const [draft, setDraft] = useState(emptyEmployeeDraft);
   const [saving, setSaving] = useState(false);
   const [savingEmployeeId, setSavingEmployeeId] = useState<string | null>(null);
   const [employeeDrafts, setEmployeeDrafts] = useState<Record<string, EmployeeDraft>>({});
   const [accessDrafts, setAccessDrafts] = useState<Record<string, string[]>>({});
   const [resetDrafts, setResetDrafts] = useState<Record<string, string>>({});
   const [resettingUserId, setResettingUserId] = useState<string | null>(null);
+  const [savingAccessId, setSavingAccessId] = useState<string | null>(null);
 
   const { data: firms = [] } = useQuery<FirmOption[]>({
     queryKey: ['firms', user?.id || user?.email || role],
@@ -145,7 +149,7 @@ export default function EmployeesPage() {
         password: wantsLogin ? draft.password : undefined,
       });
       toast.success(wantsLogin ? tr('Employee and login created', 'Hodim va login yaratildi') : tr('Employee saved', 'Hodim saqlandi'));
-      setDraft({ name: '', role: 'MANAGER', customRole: '', salary: '', currency: 'UZS', firmId: '', email: '', password: '' });
+      setDraft(emptyEmployeeDraft);
       queryClient.invalidateQueries({ queryKey: ['employees'] });
     } catch (err: unknown) {
       toast.error(apiErrorMessage(err) || tr('Failed to save employee', 'Hodimni saqlab bo\'lmadi'));
@@ -155,6 +159,7 @@ export default function EmployeesPage() {
   };
 
   const deleteEmployee = async (id: string) => {
+    if (!window.confirm(tr('Delete this employee?', 'Ushbu hodim o‘chirilsinmi?'))) return;
     try {
       await api.delete(`/employees/${id}`);
       toast.success(tr('Employee deleted', 'Hodim o\'chirildi'));
@@ -225,6 +230,7 @@ export default function EmployeesPage() {
 
   const saveAccess = async (admin: UserRow) => {
     try {
+      setSavingAccessId(admin.id);
       await api.patch(`/auth/users/${admin.id}/firm-access`, { firmIds: currentAccess(admin) });
       toast.success(tr('Access saved', 'Access saqlandi'));
       setAccessDrafts((drafts) => {
@@ -235,6 +241,8 @@ export default function EmployeesPage() {
       queryClient.invalidateQueries({ queryKey: ['auth-users'] });
     } catch (err: unknown) {
       toast.error(apiErrorMessage(err) || tr('Failed to save access', 'Access saqlanmadi'));
+    } finally {
+      setSavingAccessId(null);
     }
   };
 
@@ -263,6 +271,17 @@ export default function EmployeesPage() {
 
   const money = (value: unknown) => new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Number(value || 0));
   const roleLabel = (value: string) => employeeRoleOptions.find((option) => option.value === value)?.label || value;
+  const newEmployeeRole = draft.role === 'OTHER' ? draft.customRole.trim() : draft.role.trim();
+  const newEmployeeWantsLogin = canCreateEmployeeLogin && Boolean(draft.email.trim() || draft.password || draft.role === 'KASSIR');
+  const newEmployeeDraftValid = Boolean(
+    draft.name.trim()
+    && newEmployeeRole
+    && Number.isFinite(Number(draft.salary))
+    && Number(draft.salary) >= 0
+    && /^[A-Z]{3}$/.test(draft.currency.trim().toUpperCase())
+    && (isFirmUser || isSuperAdmin || draft.firmId)
+    && (!newEmployeeWantsLogin || (draft.email.trim() && draft.password.length >= 6))
+  );
 
   return (
     <div className="space-y-6">
@@ -284,7 +303,7 @@ export default function EmployeesPage() {
       <form onSubmit={createEmployee} className="glass-panel compact-toolbar p-4">
         <div>
           <label className="compact-label">{tr('Name', 'Ism')}</label>
-          <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} className="compact-control" />
+          <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} className="compact-control" required />
         </div>
         {canCreateEmployeeLogin && (
           <>
@@ -311,16 +330,17 @@ export default function EmployeesPage() {
               onChange={(e) => setDraft({ ...draft, customRole: e.target.value })}
               className="compact-control mt-2"
               placeholder={tr('Role name', 'Rol nomi')}
+              required
             />
           )}
         </div>
         <div>
           <label className="compact-label">{tr('Salary', 'Maosh')}</label>
-          <input inputMode="decimal" value={draft.salary} onChange={(e) => setDraft({ ...draft, salary: e.target.value })} className="compact-control" />
+          <input type="number" min="0" step="0.01" value={draft.salary} onChange={(e) => setDraft({ ...draft, salary: e.target.value })} className="compact-control" required />
         </div>
         <div>
           <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
-          <input maxLength={3} value={draft.currency} onChange={(e) => setDraft({ ...draft, currency: e.target.value.toUpperCase() })} className="compact-control uppercase" />
+          <input minLength={3} maxLength={3} value={draft.currency} onChange={(e) => setDraft({ ...draft, currency: e.target.value.toUpperCase() })} className="compact-control uppercase" required />
         </div>
         {isFirmUser ? (
           <div>
@@ -332,7 +352,7 @@ export default function EmployeesPage() {
         ) : (
           <div>
             <label className="compact-label">{tr('Firm', 'Firma')}</label>
-            <select value={draft.firmId} onChange={(e) => setDraft({ ...draft, firmId: e.target.value })} className="compact-control">
+            <select value={draft.firmId} onChange={(e) => setDraft({ ...draft, firmId: e.target.value })} className="compact-control" required={!isSuperAdmin}>
               <option value="">{isSuperAdmin ? tr('System-wide', 'Butun system') : tr('Select firm', 'Firmani tanlang')}</option>
               {firms.map((firm) => (
                 <option key={firm.id} value={firm.id}>{firm.name}</option>
@@ -340,12 +360,15 @@ export default function EmployeesPage() {
             </select>
           </div>
         )}
-        <div className="flex items-end">
-          <button type="submit" disabled={saving} className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold uppercase tracking-wide text-ink hover:bg-primary/90 disabled:opacity-50">
-            <Plus size={16} />
-            {saving ? tr('Saving...', 'Saqlanmoqda...') : tr('Add', 'Qo\'shish')}
-          </button>
-        </div>
+        <ActionButtons
+          className="col-span-full"
+          cancelLabel={tr('Cancel', 'Bekor qilish')}
+          confirmLabel={tr('Confirm', 'Tasdiqlash')}
+          busyLabel={tr('Saving...', 'Saqlanmoqda...')}
+          busy={saving}
+          canConfirm={newEmployeeDraftValid}
+          onCancel={() => setDraft(emptyEmployeeDraft)}
+        />
       </form>
       )}
 
@@ -416,9 +439,12 @@ export default function EmployeesPage() {
                   <td>
                     {canManageEmployees ? (
                       <div className="flex gap-2">
-                        <button type="button" onClick={() => updateEmployee(employee)} disabled={savingEmployeeId === employee.id} className="inline-flex items-center gap-1 border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50">
+                        <button type="button" onClick={() => updateEmployee(employee)} disabled={savingEmployeeId === employee.id || !row.name.trim() || !row.role.trim() || !Number.isFinite(Number(row.salary)) || Number(row.salary) < 0 || !/^[A-Z]{3}$/.test(row.currency.trim().toUpperCase())} className="inline-flex items-center gap-1 border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50">
                           <Save size={14} />
-                          {savingEmployeeId === employee.id ? tr('Saving', 'Saqlanmoqda') : tr('Update', 'Yangilash')}
+                          {savingEmployeeId === employee.id ? tr('Saving', 'Saqlanmoqda') : tr('Confirm', 'Tasdiqlash')}
+                        </button>
+                        <button type="button" onClick={() => setEmployeeDrafts((drafts) => { const next = { ...drafts }; delete next[employee.id]; return next; })} className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface">
+                          {tr('Cancel', 'Bekor qilish')}
                         </button>
                         <button type="button" onClick={() => deleteEmployee(employee.id)} className="inline-flex items-center gap-1 border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-500/20">
                           <Trash2 size={14} />
@@ -474,7 +500,8 @@ export default function EmployeesPage() {
                     <td>
                       <div className="flex min-w-[260px] items-center gap-2">
                         <input
-                          type="text"
+                          type="password"
+                          minLength={6}
                           value={resetDrafts[account.id] || ''}
                           onChange={(e) => setResetDrafts((drafts) => ({ ...drafts, [account.id]: e.target.value }))}
                           className="compact-control min-w-[160px]"
@@ -483,11 +510,14 @@ export default function EmployeesPage() {
                         <button
                           type="button"
                           onClick={() => resetUserPassword(account)}
-                          disabled={resettingUserId === account.id}
+                          disabled={resettingUserId === account.id || (resetDrafts[account.id] || '').trim().length < 6}
                           className="inline-flex items-center gap-1 border border-border bg-surface-2 px-3 py-2 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50"
                         >
                           <Save size={14} />
-                          {resettingUserId === account.id ? tr('Saving', 'Saqlanmoqda') : tr('Reset', 'Tiklash')}
+                          {resettingUserId === account.id ? tr('Saving', 'Saqlanmoqda') : tr('Confirm reset', 'Tiklashni tasdiqlash')}
+                        </button>
+                        <button type="button" onClick={() => setResetDrafts((drafts) => { const next = { ...drafts }; delete next[account.id]; return next; })} className="border border-border bg-surface-2 px-3 py-2 text-xs font-semibold text-foreground hover:bg-surface">
+                          {tr('Cancel', 'Bekor qilish')}
                         </button>
                       </div>
                     </td>
@@ -514,10 +544,15 @@ export default function EmployeesPage() {
                       <div className="font-semibold text-foreground">{admin.email}</div>
                       <div className="text-xs text-muted">{selected.length} {tr('firms selected', 'firma tanlangan')}</div>
                     </div>
-                    <button type="button" onClick={() => saveAccess(admin)} className="inline-flex items-center justify-center gap-2 border border-border bg-surface px-3 py-2 text-sm font-semibold text-foreground hover:bg-background">
-                      <Save size={16} />
-                      {tr('Save access', 'Access saqlash')}
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" onClick={() => setAccessDrafts((drafts) => { const next = { ...drafts }; delete next[admin.id]; return next; })} className="border border-border bg-surface px-3 py-2 text-sm font-semibold text-foreground hover:bg-background">
+                        {tr('Cancel', 'Bekor qilish')}
+                      </button>
+                      <button type="button" onClick={() => saveAccess(admin)} disabled={savingAccessId === admin.id} className="inline-flex items-center justify-center gap-2 border border-border bg-surface px-3 py-2 text-sm font-semibold text-foreground hover:bg-background disabled:opacity-50">
+                        <Save size={16} />
+                        {savingAccessId === admin.id ? tr('Saving...', 'Saqlanmoqda...') : tr('Confirm access', 'Accessni tasdiqlash')}
+                      </button>
+                    </div>
                   </div>
                   <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
                     {firms.map((firm) => (

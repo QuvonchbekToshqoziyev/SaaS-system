@@ -12,6 +12,7 @@ export interface User {
   fullName?: string | null;
   phone?: string | null;
   role: NormalizedRole;
+  readOnlyAccess: boolean;
   firmRole: 'FIRM_ADMIN' | 'MANAGER' | 'KASSIR';
   firmKind?: 'AGENCY' | 'AIRLINE' | 'CONTRACTOR' | null;
   firmId: string | null;
@@ -67,6 +68,7 @@ function normalizeUser(raw: unknown): User | null {
     fullName: typeof obj.fullName === 'string' ? obj.fullName : null,
     phone: typeof obj.phone === 'string' ? obj.phone : null,
     role: normalizeRole(obj.role),
+    readOnlyAccess: obj.readOnlyAccess === true,
     firmRole: normalizeFirmRole(obj.firmRole ?? obj.firm_role),
     firmKind: typeof (obj.firmKind ?? obj.firm_kind) === 'string'
       ? String(obj.firmKind ?? obj.firm_kind).toUpperCase() as User['firmKind']

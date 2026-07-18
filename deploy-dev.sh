@@ -165,6 +165,7 @@ REMOTE_ENV
     remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260715_ticket_allocation_changes/migration.sql --schema prisma/schema.prisma"
     remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260715_rt_ow_ticket_legs/migration.sql --schema prisma/schema.prisma"
     remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260715_unique_allocation_payable/migration.sql --schema prisma/schema.prisma"
+    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260717_remove_inventory_transactions/migration.sql --schema prisma/schema.prisma"
     success "Dev schema pushed"
   fi
 

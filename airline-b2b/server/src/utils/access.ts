@@ -1,4 +1,5 @@
 import { prisma } from '../db';
+import { visibleTransactionWhere } from './transaction-visibility';
 
 export type ScopedAuthUser = {
   userId?: string;
@@ -96,7 +97,7 @@ export async function getRelatedFirmIds(authUser: ScopedAuthUser): Promise<strin
         select: { fromFirmId: true, toFirmId: true },
       }),
       prisma.tourPackageSale.findMany({
-        where: { OR: [{ sellerFirmId: firmId }, { buyerFirmId: firmId }] },
+        where: { status: 'CONFIRMED', deletedAt: null, OR: [{ sellerFirmId: firmId }, { buyerFirmId: firmId }] },
         select: { sellerFirmId: true, buyerFirmId: true },
       }),
       prisma.serviceAssignment.findMany({
@@ -104,11 +105,10 @@ export async function getRelatedFirmIds(authUser: ScopedAuthUser): Promise<strin
         select: { providerFirmId: true, recipientFirmId: true },
       }),
       prisma.transaction.findMany({
-        where: {
-          deletedAt: null,
+        where: visibleTransactionWhere({
           status: 'CONFIRMED',
           OR: [{ firmId }, { payerFirmId: firmId }, { receiverFirmId: firmId }],
-        },
+        }),
         select: { firmId: true, payerFirmId: true, receiverFirmId: true },
       }),
       prisma.firm.findMany({
