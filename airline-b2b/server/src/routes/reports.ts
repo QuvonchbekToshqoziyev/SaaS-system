@@ -21,6 +21,7 @@ import {
 import { authMiddleware } from '../middleware/auth';
 import { roleMiddleware } from '../middleware/role';
 import { getProductMetrics, recordDataTransfer } from '../controllers/product-metrics.controller';
+import { getExpenseCategoryDetail, getExpenseEstimateReport } from '../controllers/expense-reports.controller';
 
 const router = Router();
 router.use(authMiddleware);
@@ -41,6 +42,8 @@ router.get('/cash-flow', getCashFlowAnalyticsReport);
 router.get('/receivables', getReceivablesAnalyticsReport);
 router.get('/payables', getPayablesAnalyticsReport);
 router.get('/flight-profitability', getFlightProfitabilityReport);
+router.get('/expense-estimate', getExpenseEstimateReport);
+router.get('/expense-estimate/categories/:categoryId/details', getExpenseCategoryDetail);
 router.get('/product-metrics', roleMiddleware(['SUPERADMIN']), getProductMetrics);
 router.post('/data-transfer-event', recordDataTransfer);
 export default router;

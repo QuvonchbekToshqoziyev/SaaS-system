@@ -21,13 +21,15 @@ This is the release gate for `SaaS-system/airline-b2b`. Do not deploy until ever
 
 Run from repo root unless a command says otherwise.
 
-Every release and bug fix must first have:
+Every release must first have:
 
 - a SemVer value in `VERSION` matching both client/server package files and lockfiles;
 - a matching entry in `CHANGELOG.md`;
-- an idempotent release-specific fixture in `prisma/seed-dev-qa.ts` whose version matches `VERSION`;
+- an idempotent release-specific fixture in `prisma/seed-dev-qa.ts` when the release changes financial, inventory, RBAC, or tenant-isolation behavior;
 - an endpoint contract for every mounted server route;
 - no unmatched static frontend API call.
+
+Do not run this gate during the edit loop. Use targeted tests or `node scripts/quick-check.mjs <changed files>`, freeze the source, then run the gate once.
 
 Run the consolidated gate:
 
@@ -38,8 +40,10 @@ node scripts/release-audit.mjs
 After deploying the same source to dev, run the five-actor live gate:
 
 ```bash
-node scripts/release-audit.mjs --dev
+node scripts/release-audit.mjs --live-only
 ```
+
+`--live-only` requires a successful local audit for the exact current backend and frontend source. `--dev` remains available for CI or a one-command full local-plus-live audit.
 
 The live audits must report zero failures. They check every endpoint for authentication, route RBAC, safe controller behavior, read-path runtime/schema failures, firm/admin tenant-data isolation across transactions, accounts, employees, notifications, kassa desks, and payment cards, the current release's seeded regression scenarios, plus five-role browser login/navigation/page-load smoke. Destructive allowed-role mutations remain manual workflow checks.
 
@@ -122,16 +126,16 @@ Expected for the login page editor feature:
 
 Use the root deploy script only after gates 1-4 pass.
 
-Production deploys must never put prod ahead of dev. `./deploy.sh` automatically runs the matching `./deploy-dev.sh` step first, from the same source tree. Dev may be ahead of prod, but prod should not move unless dev has already accepted that code. Use `--skip-dev-sync` only for a true emergency and note it in the release summary.
+Production deploys must never put prod ahead of dev. After the exact source passes the local and live dev audits, use `--dev-verified`; production verifies both audit attestations and the remote dev source fingerprints, then reuses that deployment instead of rebuilding dev. `./deploy.sh` never auto-deploys or syncs dev; without a valid exact-source verification it stops. Use `--skip-dev-sync` only for a true emergency and note it in the release summary.
 
 ```bash
-./deploy.sh --schema
+./deploy.sh --schema --dev-verified
 ```
 
 If only code changed and schema is already applied:
 
 ```bash
-./deploy.sh
+./deploy.sh --dev-verified
 ```
 
 After deploy:
@@ -191,4 +195,4 @@ Release is done only when:
 - Kassa and financial pages open without console/API errors.
 - `VERSION`, package versions, and `CHANGELOG.md` name the same release.
 - `node scripts/api-surface-audit.mjs` reports complete endpoint contracts and no unmatched frontend calls.
-- `node scripts/release-audit.mjs --dev` passes before production deployment.
+- `node scripts/release-audit.mjs --live-only` passes after the exact source is deployed to dev and before production deployment.

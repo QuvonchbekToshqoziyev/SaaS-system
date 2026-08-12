@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Bell, MessageCircle, Headphones } from 'lucide-react';
+import { formatNumber } from '@/lib/format';
 type Todo = { key: string; label: string; count: number; amount?: number; href?: string };
 type Notification = { id: string; title: string; message?: string; time: string; urgent?: boolean; href?: string };
 type DueItem = { id: string; title: string; detail?: string; amount?: number; href?: string };
@@ -75,7 +76,7 @@ export default function DashboardRightPanel({ tr, todos, notifications, dueItems
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-medium text-foreground">{t.label}</p>
                     <p className="text-[10px] text-muted">
-                      {typeof t.amount === 'number' ? `${t.amount.toFixed(0)} UZS` : `${t.count} ${tr('items', 'ta')}`}
+                      {typeof t.amount === 'number' ? `${formatNumber(t.amount)} UZS` : `${formatNumber(t.count)} ${tr('items', 'ta')}`}
                     </p>
                   </div>
                 </button>
@@ -85,7 +86,7 @@ export default function DashboardRightPanel({ tr, todos, notifications, dueItems
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-medium text-foreground">{t.label}</p>
                     <p className="text-[10px] text-muted">
-                      {typeof t.amount === 'number' ? `${t.amount.toFixed(0)} UZS` : `${t.count} ${tr('items', 'ta')}`}
+                      {typeof t.amount === 'number' ? `${formatNumber(t.amount)} UZS` : `${formatNumber(t.count)} ${tr('items', 'ta')}`}
                     </p>
                   </div>
                 </div>
@@ -109,13 +110,13 @@ export default function DashboardRightPanel({ tr, todos, notifications, dueItems
                   >
                     <p className="font-medium text-foreground">{d.title}</p>
                     {d.detail && <p className="text-muted">{d.detail}</p>}
-                    {d.amount != null && <p className="font-semibold text-red-400">{d.amount.toFixed(0)} UZS</p>}
+                    {d.amount != null && <p className="font-semibold text-red-400">{formatNumber(d.amount)} UZS</p>}
                   </button>
                 ) : (
                   <div className="text-xs">
                     <p className="font-medium text-foreground">{d.title}</p>
                     {d.detail && <p className="text-muted">{d.detail}</p>}
-                    {d.amount != null && <p className="font-semibold text-red-400">{d.amount.toFixed(0)} UZS</p>}
+                    {d.amount != null && <p className="font-semibold text-red-400">{formatNumber(d.amount)} UZS</p>}
                   </div>
                 )}
               </li>

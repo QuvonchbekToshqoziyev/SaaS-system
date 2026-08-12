@@ -32,7 +32,7 @@ export async function listServices(req: Request, res: Response) {
   const where: Prisma.ServiceOfferingWhereInput = { deletedAt: null, status: { not: 'DELETED' } };
   if (role(req) === 'FIRM') {
     if (!user.firmId) return res.status(400).json({ error: 'Firm account is missing firmId' });
-    where.AND = [firmServiceVisibilityWhere(user.firmId)];
+    where.AND = [{ OR: [firmServiceVisibilityWhere(user.firmId), { assignments: { some: { recipientFirmId: user.firmId, status: { not: 'CANCELLED' } } } }] }];
   } else if (role(req) === 'ADMIN') {
     const firmIds = await getAccessibleFirmIds(user);
     where.AND = [adminServiceVisibilityWhere(firmIds || [])];

@@ -1,4 +1,5 @@
-import { KassaStatus, Prisma, Role } from '@prisma/client';
+import { FinancialAccountType, KassaStatus, Prisma, Role } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import { prisma } from '../db';
 import {
   findKassaForDate,
@@ -16,6 +17,9 @@ import { assertCanOperateKassa, canOperateKassa } from '../utils/kassa-permissio
 import { normalizeFirmUserRole } from '../utils/firm-user-roles';
 import { getBoundKassaDeskId, isKassirUser } from '../utils/kassa-desk-access';
 import { visibleTransactionWhere } from '../utils/transaction-visibility';
+import { flightDisplayName } from '../domains/flights/flight-display';
+import { kassaTransactionDisplay } from '../domains/transactions/transaction-display';
+import { ensureFinancialAccount } from '../utils/financial-accounts';
 
 export type AuthUser = {
   userId?: string;
@@ -183,7 +187,11 @@ async function loadDayTransactions(businessDate: Date, firmScopeIds?: string[], 
   };
   const rows = await prisma.transaction.findMany({
     where: visibleTransactionWhere(where),
-    include: { firm: true, flight: true, paymentCard: true, createdBy: { select: { id: true, email: true, fullName: true } }, kassaDesk: { include: { firm: { select: { id: true, name: true } } } } },
+    include: {
+      firm: true, flight: true, paymentCard: true, payerFirm: { select: { id: true, name: true } }, receiverFirm: { select: { id: true, name: true } },
+      sourceAccount: { select: { id: true, name: true, type: true, currency: true } }, destinationAccount: { select: { id: true, name: true, type: true, currency: true } },
+      createdBy: { select: { id: true, email: true, fullName: true } }, kassaDesk: { include: { firm: { select: { id: true, name: true } } } },
+    },
     orderBy: { createdAt: 'desc' },
   });
 
@@ -354,6 +362,42 @@ function isPlatformAdmin(authUser: AuthUser) {
 
 function isFirmAdmin(authUser: AuthUser) {
   return normalizeRole(authUser.role) === 'FIRM' && normalizeFirmUserRole(authUser.firmRole) === 'FIRM_ADMIN';
+}
+
+function decimal(value: unknown, field: string) {
+  try {
+    const parsed = new Prisma.Decimal(String(value ?? ''));
+    if (parsed.isFinite() && parsed.gt(0)) return parsed;
+  } catch {}
+  throw new ServiceError(`${field} musbat summa bo‘lishi kerak`);
+}
+
+export function calculateTransferBalance(account: { id: string; currency: string; openingBalance: unknown }, transactions: Array<{ sourceAccountId: string | null; destinationAccountId: string | null; originalAmount: unknown; destinationAmount?: unknown; currency: string; destinationCurrency?: string | null }>) {
+  let balance = new Prisma.Decimal(String(account.openingBalance || '0'));
+  for (const tx of transactions) {
+    if (tx.sourceAccountId === account.id && tx.currency === account.currency) balance = balance.sub(String(tx.originalAmount || '0'));
+    if (tx.destinationAccountId === account.id && (tx.destinationCurrency || tx.currency) === account.currency) balance = balance.add(String(tx.destinationAmount ?? tx.originalAmount ?? '0'));
+  }
+  return balance;
+}
+
+type TransferOperation = 'CASH_TO_CARD' | 'CARD_TO_CASH' | 'CASH_DESK_TO_CASH_DESK' | 'CURRENCY_EXCHANGE';
+
+export function assertTransferCurrencyPair(operationType: TransferOperation, currency: string, destinationCurrency: string) {
+  if (operationType === 'CURRENCY_EXCHANGE') {
+    if (!((currency === 'USD' && destinationCurrency === 'UZS') || (currency === 'UZS' && destinationCurrency === 'USD'))) {
+      throw new ServiceError('VASH faqat USD ↔ UZS ayirboshlash uchun');
+    }
+    return;
+  }
+  if (destinationCurrency !== currency) throw new ServiceError('Turli valyuta uchun VASH tanlang');
+}
+
+function transferAuditAction(operationType: TransferOperation) {
+  if (operationType === 'CASH_TO_CARD') return 'CASH_TO_CARD_TRANSFER';
+  if (operationType === 'CARD_TO_CASH') return 'CARD_TO_CASH_TRANSFER';
+  if (operationType === 'CASH_DESK_TO_CASH_DESK') return 'CASH_DESK_TRANSFER';
+  return 'CURRENCY_EXCHANGE';
 }
 
 function serializePaymentCard(card: any) {
@@ -714,27 +758,31 @@ export async function getKassaDayService(authUser: AuthUser, rawDate: unknown, i
     permissions: {
       canOperateKassa: await canOperateKassa(authUser),
     },
-    transactions: transactions.map((tx) => ({
-      id: tx.id,
-      type: tx.type,
-      firmId: tx.firmId,
-      kassaDeskId: tx.kassaDeskId,
-      flightId: tx.flightId,
-      firm: tx.firm,
-      flight: tx.flight,
-      kassaDesk: tx.kassaDesk,
-      originalAmount: String(tx.originalAmount),
-      currency: tx.currency,
-      baseAmount: String(tx.baseAmount),
-      paymentMethod: tx.paymentMethod,
-      paymentCardId: tx.paymentCardId,
-      paymentCard: tx.paymentCard,
-      direction: tx.direction,
-      createdByUserId: tx.createdByUserId,
-      createdBy: tx.createdBy,
-      metadata: tx.metadata,
-      createdAt: tx.createdAt.toISOString(),
-    })),
+    transactions: transactions.map((tx) => {
+      const flow = resolveKassaTransactionFlow(tx);
+      const display = kassaTransactionDisplay(tx, flow);
+      const bankAccount = tx.paymentMethod === 'bank' ? (flow === 'OUT' ? tx.sourceAccount : tx.destinationAccount) : null;
+      return {
+        id: tx.id, type: tx.type, transactionType: flow === 'IN' ? 'INCOME' : flow === 'OUT' ? 'EXPENSE' : 'INTERNAL_TRANSFER',
+        firmId: tx.firmId, firm: tx.firm, payerFirmId: tx.payerFirmId, receiverFirmId: tx.receiverFirmId,
+        counterpartyType: display.counterpartyType, counterpartyId: display.counterpartyId, counterpartyName: display.counterpartyName, directionLabel: display.directionLabel,
+        kassaDeskId: tx.kassaDeskId, cashDeskId: tx.kassaDeskId, cashDeskName: tx.kassaDesk?.name || null, kassaDesk: tx.kassaDesk,
+        flightId: tx.flightId, flight: tx.flight, flightDisplayName: tx.flight ? flightDisplayName(tx.flight) : null,
+        originalAmount: String(tx.originalAmount), currency: tx.currency, exchangeRate: String(tx.exchangeRate), baseAmount: String(tx.baseAmount),
+        destinationAmount: tx.destinationAmount ? String(tx.destinationAmount) : null, destinationCurrency: tx.destinationCurrency || null,
+        paymentMethod: tx.paymentMethod, paymentCardId: tx.paymentCardId, cardId: tx.paymentCardId,
+        cardDisplayName: display.cardDisplayName, cardMaskedNumber: display.cardMaskedNumber,
+        paymentCard: tx.paymentCardId ? { id: tx.paymentCardId, displayName: display.cardDisplayName, maskedNumber: display.cardMaskedNumber, currency: tx.paymentCard?.currency, status: tx.paymentCard?.status } : null,
+        bankAccountId: bankAccount?.id || null, bankAccountDisplayName: bankAccount ? `${bankAccount.name} — Bank` : null,
+        direction: tx.direction, sourceMode: tx.sourceMode, operationType: tx.operationType, sourceAccountName: tx.sourceAccount?.name || null, destinationAccountName: tx.destinationAccount?.name || null, subjectType: tx.subjectType, subjectId: tx.subjectId,
+        allocationId: tx.subjectType === 'TICKET_ALLOCATION' ? tx.subjectId : null,
+        operationPurpose: tx.subjectType === 'TICKET_ALLOCATION' ? 'TICKET_ALLOCATION' : tx.subjectType === 'TOUR_PACKAGE' ? 'TOUR_PACKAGE' : tx.flightId ? 'FLIGHT' : 'GENERAL',
+        tourPackageId: tx.subjectType === 'TOUR_PACKAGE' ? tx.subjectId : null,
+        tourPackageDisplayName: tx.metadata && typeof tx.metadata === 'object' && !Array.isArray(tx.metadata) ? String((tx.metadata as Record<string, unknown>).tourPackageName || '') || null : null,
+        note: display.note, createdByUserId: tx.createdByUserId, createdByDisplayName: tx.createdBy?.fullName || tx.createdBy?.email || null,
+        createdBy: tx.createdBy, metadata: tx.metadata, createdAt: tx.createdAt.toISOString(), updatedAt: tx.updatedAt.toISOString(),
+      };
+    }),
     duePayments: [],
   };
 }
@@ -898,6 +946,109 @@ export async function deletePaymentCardService(authUser: AuthUser, id: string, i
   });
 
   return serializePaymentCard(updated);
+}
+
+export async function createKassaTransferService(authUser: AuthUser, input: {
+  operationType?: unknown;
+  sourceCashDeskId?: unknown;
+  destinationCashDeskId?: unknown;
+  sourceCardId?: unknown;
+  destinationCardId?: unknown;
+  sourceAccountId?: unknown;
+  destinationAccountId?: unknown;
+  amount?: unknown;
+  currency?: unknown;
+  destinationAmount?: unknown;
+  destinationCurrency?: unknown;
+  feeAmount?: unknown;
+  exchangeRate?: unknown;
+  operationDate?: unknown;
+  note?: unknown;
+  reason?: unknown;
+}) {
+  await assertCanOperateKassa(authUser);
+  const firmScopeIds = await kassaFirmScope(authUser);
+  const operationType = String(input.operationType || '').trim().toUpperCase() as TransferOperation;
+  if (!['CASH_TO_CARD', 'CARD_TO_CASH', 'CASH_DESK_TO_CASH_DESK', 'CURRENCY_EXCHANGE'].includes(operationType)) throw new ServiceError('Transfer turi noto‘g‘ri');
+  const amount = decimal(input.amount, 'Summa').toDecimalPlaces(4);
+  const currency = normalizeCurrency(input.currency) || 'UZS';
+  if (!['UZS', 'USD'].includes(currency)) throw new ServiceError('Valyuta UZS yoki USD bo‘lishi kerak');
+  const destinationAmount = input.destinationAmount != null && String(input.destinationAmount).trim() !== '' ? decimal(input.destinationAmount, 'Qabul summa').toDecimalPlaces(4) : amount;
+  const destinationCurrency = normalizeCurrency(input.destinationCurrency) || currency;
+  if (!['UZS', 'USD'].includes(destinationCurrency)) throw new ServiceError('Qabul valyutasi UZS yoki USD bo‘lishi kerak');
+  assertTransferCurrencyPair(operationType, currency, destinationCurrency);
+  const feeAmount = input.feeAmount != null && String(input.feeAmount).trim() !== '' ? decimal(input.feeAmount, 'Komissiya').toDecimalPlaces(4) : new Prisma.Decimal(0);
+  const operationDate = input.operationDate ? new Date(String(input.operationDate)) : new Date();
+  if (Number.isNaN(operationDate.getTime())) throw new ServiceError('Sana noto‘g‘ri');
+
+  const sourceDesk = input.sourceCashDeskId ? await resolveKassaDeskFilter(input.sourceCashDeskId, firmScopeIds) : null;
+  const destinationDesk = input.destinationCashDeskId ? await resolveKassaDeskFilter(input.destinationCashDeskId, firmScopeIds) : null;
+  const sourceCard = input.sourceCardId ? await prisma.paymentCard.findFirst({ where: { id: String(input.sourceCardId), status: 'ACTIVE', deletedAt: null, ...(firmScopeIds ? { firmId: { in: firmScopeIds } } : {}) } }) : null;
+  const destinationCard = input.destinationCardId ? await prisma.paymentCard.findFirst({ where: { id: String(input.destinationCardId), status: 'ACTIVE', deletedAt: null, ...(firmScopeIds ? { firmId: { in: firmScopeIds } } : {}) } }) : null;
+  if (input.sourceCardId && !sourceCard) throw new ServiceError('Manba karta topilmadi', 404);
+  if (input.destinationCardId && !destinationCard) throw new ServiceError('Qabul qiluvchi karta topilmadi', 404);
+
+  const sourceAccount = sourceDesk
+    ? await ensureFinancialAccount({ firmId: sourceDesk.firmId, currency, type: FinancialAccountType.CASH, kassaDeskId: sourceDesk.id, createdByUserId: authUser.userId })
+    : sourceCard
+      ? await ensureFinancialAccount({ firmId: sourceCard.firmId!, currency, type: FinancialAccountType.CARD, paymentCardId: sourceCard.id, createdByUserId: authUser.userId })
+      : input.sourceAccountId ? await prisma.financialAccount.findFirst({ where: { id: String(input.sourceAccountId), currency, status: 'ACTIVE', deletedAt: null, ...(firmScopeIds ? { firmId: { in: firmScopeIds } } : {}) } }) : null;
+  const destinationAccount = destinationDesk
+    ? await ensureFinancialAccount({ firmId: destinationDesk.firmId, currency: destinationCurrency, type: FinancialAccountType.CASH, kassaDeskId: destinationDesk.id, createdByUserId: authUser.userId })
+    : destinationCard
+      ? await ensureFinancialAccount({ firmId: destinationCard.firmId!, currency: destinationCurrency, type: FinancialAccountType.CARD, paymentCardId: destinationCard.id, createdByUserId: authUser.userId })
+      : input.destinationAccountId ? await prisma.financialAccount.findFirst({ where: { id: String(input.destinationAccountId), currency: destinationCurrency, status: 'ACTIVE', deletedAt: null, ...(firmScopeIds ? { firmId: { in: firmScopeIds } } : {}) } }) : null;
+  if (!sourceAccount || !destinationAccount) throw new ServiceError('Manba va qabul qiluvchi hisob tanlanishi kerak');
+  if (sourceAccount.id === destinationAccount.id) throw new ServiceError('Manba va qabul qiluvchi bir xil bo‘lmasligi kerak');
+  if (operationType === 'CASH_TO_CARD' && (!sourceDesk || !destinationCard)) throw new ServiceError('CASH_TO_CARD uchun manba kassa va qabul karta tanlanadi');
+  if (operationType === 'CARD_TO_CASH' && (!sourceCard || !destinationDesk)) throw new ServiceError('CARD_TO_CASH uchun manba karta va qabul kassa tanlanadi');
+  if (operationType === 'CASH_DESK_TO_CASH_DESK' && (!sourceDesk || !destinationDesk)) throw new ServiceError('K2K uchun ikkita kassa tanlanadi');
+
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "FinancialAccount" WHERE id IN (${Prisma.join([sourceAccount.id, destinationAccount.id])}) FOR UPDATE`;
+    const relatedTransactions = await tx.transaction.findMany({
+      where: { deletedAt: null, status: { notIn: ['CANCELLED', 'REVERSED', 'DELETED'] }, OR: [{ sourceAccountId: sourceAccount.id }, { destinationAccountId: sourceAccount.id }] },
+      select: { sourceAccountId: true, destinationAccountId: true, originalAmount: true, destinationAmount: true, currency: true, destinationCurrency: true },
+    });
+    const balance = calculateTransferBalance(sourceAccount, relatedTransactions);
+    if (balance.lt(amount)) throw new ServiceError(`Manba hisobda mablag‘ yetarli emas. Qoldiq: ${balance.toFixed(4)} ${currency}`, 409);
+    const exchangeRate = input.exchangeRate != null && String(input.exchangeRate).trim() !== '' ? new Prisma.Decimal(String(input.exchangeRate)) : destinationCurrency !== currency ? destinationAmount.div(amount) : new Prisma.Decimal(1);
+    if (!exchangeRate.isFinite() || exchangeRate.lte(0)) throw new ServiceError('Ayirboshlash kursi noto‘g‘ri');
+    const linkedTransferId = randomUUID();
+    const transaction = await tx.transaction.create({ data: {
+      firmId: sourceAccount.firmId,
+      createdByUserId: authUser.userId,
+      type: 'ADJUSTMENT',
+      operationType,
+      direction: operationType === 'CASH_DESK_TO_CASH_DESK' ? 'K2K_TRANSFER' : operationType === 'CURRENCY_EXCHANGE' ? 'CURRENCY_EXCHANGE' : 'TRANSFER',
+      sourceMode: 'KASSA_TRANSFER',
+      status: 'APPLIED',
+      approvalStatus: 'APPROVED',
+      sourceAccountId: sourceAccount.id,
+      destinationAccountId: destinationAccount.id,
+      kassaDeskId: sourceDesk?.id || destinationDesk?.id || null,
+      paymentCardId: sourceCard?.id || destinationCard?.id || null,
+      originalAmount: amount,
+      currency,
+      destinationAmount: feeAmount.gt(0) && operationType !== 'CURRENCY_EXCHANGE' ? destinationAmount.sub(feeAmount) : destinationAmount,
+      destinationCurrency,
+      exchangeRate,
+      baseAmount: currency === 'UZS' ? amount : amount.mul(exchangeRate).toDecimalPlaces(4),
+      accountingTreatment: feeAmount.gt(0) ? 'MIXED_TRANSFER_FEE' : 'BALANCE_SHEET',
+      paymentDate: operationDate,
+      postingDate: operationDate,
+      reportingPeriod: operationDate.toISOString().slice(0, 7),
+      metadata: { linkedTransferId, feeAmount: feeAmount.toString(), note: String(input.note || '').trim() || null, reason: String(input.reason || '').trim() || null, source: sourceAccount.name, destination: destinationAccount.name } as Prisma.InputJsonValue,
+    } });
+    const journal = await tx.journalEntry.create({ data: { firmId: sourceAccount.firmId, transactionId: transaction.id, status: 'POSTED', postingDate: operationDate, description: String(input.note || operationType), postedByUserId: authUser.userId } });
+    const ledgerRows = [
+      { transactionId: transaction.id, journalEntryId: journal.id, debitAccount: `${destinationAccount.type}:${destinationAccount.id}`, creditAccount: `${sourceAccount.type}:${sourceAccount.id}`, amount: transaction.baseAmount, currency: 'UZS', exchangeRateSnapshot: exchangeRate },
+    ];
+    if (feeAmount.gt(0)) ledgerRows.push({ transactionId: transaction.id, journalEntryId: journal.id, debitAccount: 'BANK_CARD_COMMISSION_EXPENSE', creditAccount: `${sourceAccount.type}:${sourceAccount.id}`, amount: feeAmount, currency, exchangeRateSnapshot: exchangeRate });
+    await tx.ledgerEntry.createMany({ data: ledgerRows });
+    await tx.auditLog.create({ data: { actorUserId: authUser.userId, actorRole: normalizeRole(authUser.role), action: transferAuditAction(operationType), entityType: 'transaction', entityId: transaction.id, entityLabel: `${operationType} ${amount} ${currency}`, summary: `${operationType} transfer yaratildi`, metadata: { actorFirmId: authUser.firmId || null, linkedTransferId, sourceAccountId: sourceAccount.id, destinationAccountId: destinationAccount.id, amount: amount.toString(), currency, destinationAmount: destinationAmount.toString(), destinationCurrency, feeAmount: feeAmount.toString() } } });
+    return tx.transaction.findUnique({ where: { id: transaction.id }, include: { sourceAccount: true, destinationAccount: true, ledgerEntries: true, journalEntry: true } });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 
 export async function openKassaService(authUser: AuthUser, input: { businessDate?: unknown; kassaDeskId?: unknown; openingBalance?: unknown; openingBalanceUsd?: unknown; openingAdjustmentReason?: unknown }) {

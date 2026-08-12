@@ -27,10 +27,10 @@ export default function LoginPage() {
   const { login, savedAccounts, switchAccount, forgetAccount } = useAuth();
   const { tr, language } = useLanguage();
 
-  const goToUserHome = (nextUser: { role?: unknown; firmKind?: unknown }) => {
+  const goToUserHome = (nextUser: { role?: unknown; firmRole?: unknown }) => {
     const role = String(nextUser?.role || '').toLowerCase();
     if (role === 'firm') {
-      router.push('/firm');
+      router.push(String(nextUser?.firmRole || '').toUpperCase() === 'KASSIR' ? '/kassa' : '/firm');
     } else {
       router.push('/admin');
     }
@@ -85,7 +85,15 @@ export default function LoginPage() {
                 <div className="text-3xl font-black tracking-normal text-white sm:text-[2.8rem] lg:text-[3.2rem]">ADO</div>
                 <div className="mt-1 text-2xl font-medium tracking-normal text-white sm:text-[2.35rem] lg:text-[2.7rem]">Systems</div>
                 <div className="mt-2 text-xs font-medium text-white sm:mt-3 sm:text-lg">
-                  powered by <span className="font-extrabold text-[#ff2337]">ADO-FINANCE</span>
+                  powered by{' '}
+                  <a
+                    href={content.websiteUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-extrabold text-[#ff2337] underline decoration-[#ff2337]/50 underline-offset-4 transition hover:text-[#ff5969]"
+                  >
+                    {resolveLocalizedText(content.websiteLabel, language)}
+                  </a>
                 </div>
               </div>
             </div>
@@ -250,7 +258,7 @@ export default function LoginPage() {
               </div>
 
               <a
-                href="https://t.me/ADO_support"
+                href="https://t.me/ADO_FINANCE"
                 target="_blank"
                 rel="noreferrer"
                 className="mb-4 flex min-h-12 items-center justify-center rounded-lg border border-[#273142] bg-[#111622]/72 px-4 text-sm font-bold text-white transition hover:border-[#ff2337]"

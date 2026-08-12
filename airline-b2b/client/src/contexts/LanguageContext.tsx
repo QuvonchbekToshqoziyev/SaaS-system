@@ -17,6 +17,7 @@ type TranslationKey =
   | 'navServices'
   | 'navTransactions'
   | 'navKassa'
+  | 'navInventory'
   | 'navEmployees'
   | 'navChat'
   | 'navReports'
@@ -45,6 +46,7 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     navServices: 'Services',
     navTransactions: 'Transactions',
     navKassa: 'Kassa',
+    navInventory: 'Warehouse',
     navEmployees: 'Employees',
     navChat: 'Chat',
     navReports: 'Reports',
@@ -72,6 +74,7 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     navServices: 'Xizmatlar',
     navTransactions: 'Tranzaksiyalar',
     navKassa: 'Kassa',
+    navInventory: 'Ombor',
     navEmployees: 'Xodimlar',
     navChat: 'Chat',
     navReports: 'Hisobotlar',

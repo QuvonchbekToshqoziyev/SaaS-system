@@ -63,6 +63,14 @@ requireText('airline-b2b/server/src/services/kassa.service.ts', 'actualClosingBa
 requireText('airline-b2b/server/src/services/kassa.service.ts', "if (kassaDeskId === '__unassigned_kassir__') return [];", 'unassigned kassir card isolation missing');
 requireText('airline-b2b/server/src/controllers/kassa.controller.ts', 'getKassaHistoryService(getAuthUser(req)', 'kassa history auth scope missing');
 requireText('scripts/release-audit.mjs', "['scripts/dev-kassa-workflow-audit.mjs']", 'five-role kassa workflow audit missing from release gate');
+requireText('scripts/release-audit.mjs', "process.argv.includes('--live-only')", 'live-only release audit fast path missing');
+requireText('scripts/release-audit.mjs', 'requireLocalVerification()', 'live-only audit is not bound to the locally audited source');
+requireText('deploy.sh', 'verified_dev_matches_source', 'production cannot reuse an exact audited dev deployment');
+requireText('deploy.sh', 'verify-dev', 'production dev verification attestation missing');
+for (const deploy of ['deploy-dev.sh', 'deploy.sh']) {
+  requireText(deploy, 'Dependencies unchanged - npm ci skipped', 'dependency install cache missing');
+  requireText(deploy, 'timeout 180s npm ci', 'remote dependency install timeout missing');
+}
 
 for (const file of [
   'airline-b2b/server/src/controllers/tickets.controller.ts',
@@ -84,7 +92,11 @@ requireText(`airline-b2b/server/${migration}`, 'UPDATE "Transaction"', 'inventor
 for (const deploy of ['deploy-dev.sh', 'deploy.sh']) {
   requireText(deploy, migration, 'allocation migration missing from deploy');
   requireText(deploy, 'npm run audit:business-invariants', 'business invariant audit missing from deploy');
+  requireText(deploy, 'npm run backfill:expense-categories', 'expense category backfill missing from deploy');
 }
+requireText('airline-b2b/server/package.json', '"backfill:expense-categories": "npx ts-node prisma/backfill-expense-categories.ts"', 'expense category backfill command missing');
+requireText('airline-b2b/client/src/app/(dashboard)/kassa/page.tsx', '&& Boolean(cashTransactionFirmId)', 'kassa category selector can mix categories from multiple firms');
+requireText('airline-b2b/client/src/app/(dashboard)/settings/page.tsx', "'Hozirgi xarajat turlari'", 'settings current expense category list missing');
 
 const version = read('VERSION').trim();
 const devSeed = read('airline-b2b/server/prisma/seed-dev-qa.ts');
@@ -143,5 +155,5 @@ requireText('airline-b2b/client/src/app/(dashboard)/flights/detail/page.tsx', 'd
 requireText('airline-b2b/client/src/app/(dashboard)/flights/detail/page.tsx', 'disabled={sellBusy || !singleSaleDraftValid}', 'single-ticket sale confirmation validity guard missing');
 requireText('airline-b2b/client/src/app/(dashboard)/flights/detail/page.tsx', 'disabled={sellBatchBusy || !batchSaleDraftValid}', 'batch ticket sale confirmation validity guard missing');
 
-console.log(JSON.stringify({ ok: failures.length === 0, checks: 73, failures }, null, 2));
+console.log(JSON.stringify({ ok: failures.length === 0, checks: 86, failures }, null, 2));
 if (failures.length) process.exitCode = 1;

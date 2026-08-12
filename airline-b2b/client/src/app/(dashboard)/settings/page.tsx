@@ -23,7 +23,8 @@ type LocalizedFieldKey =
   | 'passwordLabel'
   | 'submitLabel'
   | 'submittingLabel'
-  | 'footerNote';
+  | 'footerNote'
+  | 'websiteLabel';
 
 type TelegramStatus = {
   configured: boolean;
@@ -60,6 +61,13 @@ function SettingsSection({ title, description, icon: Icon, open, onToggle, child
 export default function SettingsPage() {
   const { user } = useAuth();
   const { tr, language } = useLanguage();
+  const financeValueLabel = (value: string) => ({
+    MANAGEMENT_ONLY: tr('Management accounting only', 'Faqat boshqaruv hisobi'),
+    OPERATING_EXPENSE: tr('Operating expense', 'Operatsion xarajat'), EMPLOYEE_EXPENSE: tr('Employee expense', 'Xodim xarajati'), TAX_PAYMENT: tr('Tax payment', 'Soliq to‘lovi'), FINANCE_COST: tr('Finance cost', 'Moliyaviy xarajat'), ASSET_ACQUISITION: tr('Asset purchase', 'Aktiv xaridi'), LIABILITY_SETTLEMENT: tr('Liability settlement', 'Majburiyatni yopish'), PREPAYMENT: tr('Advance payment', 'Oldindan to‘lov'), OTHER_EXPENSE: tr('Other expense', 'Boshqa xarajat'),
+    EXPENSE: tr('Recognize as expense', 'Xarajat sifatida hisoblash'), ASSET: tr('Recognize as asset', 'Aktiv sifatida hisoblash'), EQUITY: tr('Equity movement', 'Kapital harakati'),
+    OPERATING: tr('Operating cash flow', 'Asosiy faoliyat pul oqimi'), INVESTING: tr('Investing cash flow', 'Investitsion pul oqimi'), FINANCING: tr('Financing cash flow', 'Moliyalashtirish pul oqimi'), NON_CASH: tr('No cash movement', 'Pul harakatisiz'),
+    WARNING: tr('Warn, but allow', 'Ogohlantirish, lekin ruxsat berish'), REQUIRE_APPROVAL: tr('Require approval', 'Tasdiq talab qilish'), BLOCK: tr('Block the expense', 'Xarajatni bloklash'),
+  } as Record<string, string>)[value] || value;
 
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     if (typeof window === 'undefined') return 'dark';
@@ -71,7 +79,7 @@ export default function SettingsPage() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [firms, setFirms] = useState<Array<{ id: string; name: string; currency?: string; subscriptionEndsAt?: string | null }>>([]);
+  const [firms, setFirms] = useState<Array<{ id: string; name: string; currency?: string; subscriptionEndsAt?: string | null; accountingFramework?: string; accountingPolicyVersion?: string; chartOfAccountsVersion?: string; reportingStartDate?: string | null; fiscalYearStart?: number; timezone?: string }>>([]);
   const [selectedFirmId, setSelectedFirmId] = useState('');
   const [firmCurrency, setFirmCurrency] = useState('UZS');
   const [savingCurrency, setSavingCurrency] = useState(false);
@@ -86,12 +94,20 @@ export default function SettingsPage() {
   const [telegram, setTelegram] = useState<TelegramStatus | null>(null);
   const [telegramBusy, setTelegramBusy] = useState(false);
   const [activeSection, setActiveSection] = useState<string | null>(null);
+  const [expenseCategories, setExpenseCategories] = useState<any[]>([]);
+  const [loadingExpenseCategories, setLoadingExpenseCategories] = useState(false);
+  const [categoryDraft, setCategoryDraft] = useState({ code: '', name: '', parentId: '', categoryType: 'OPERATING_EXPENSE', accountingTreatment: 'EXPENSE', financialStatementGroup: 'OPERATING_EXPENSES', cashFlowGroup: 'OPERATING' });
+  const [savingCategory, setSavingCategory] = useState(false);
+  const [expenseBudgets, setExpenseBudgets] = useState<any[]>([]);
+  const [budgetDraft, setBudgetDraft] = useState({ expenseCategoryId: '', month: new Date().toISOString().slice(0, 7), amount: '', limitAction: 'WARNING' });
+  const [policyDraft, setPolicyDraft] = useState({ accountingFramework: 'MANAGEMENT_ONLY', accountingPolicyVersion: '1', chartOfAccountsVersion: '1', reportingStartDate: '', fiscalYearStart: 1, timezone: 'Asia/Tashkent' });
   const toggleSection = (section: string) => setActiveSection((current) => current === section ? null : section);
 
   const role = String(user?.role || '').toUpperCase();
   const canEditAnyFirm = role === 'SUPERADMIN';
   const canEditOwnFirm = role === 'FIRM' && Boolean(user?.firmId);
   const canEditLoginContent = role === 'SUPERADMIN';
+  const canManageFinancialSettings = role === 'SUPERADMIN' || (role === 'FIRM' && String(user?.firmRole || '').toUpperCase() === 'FIRM_ADMIN');
   const selectedFirm = useMemo(() => firms.find((firm) => firm.id === selectedFirmId), [firms, selectedFirmId]);
   const editorFieldClassName = 'mt-1 w-full bg-surface border border-border rounded-lg px-3 py-2 text-foreground placeholder:text-muted outline-none focus:border-primary transition disabled:opacity-60';
   const loginContentComplete = Object.values(loginContent).every((value) => (
@@ -135,8 +151,27 @@ export default function SettingsPage() {
   }, [role, user]);
 
   useEffect(() => {
-    if (selectedFirm) setFirmCurrency(String(selectedFirm.currency || 'UZS'));
+    if (selectedFirm) {
+      setFirmCurrency(String(selectedFirm.currency || 'UZS'));
+      setPolicyDraft({ accountingFramework: selectedFirm.accountingFramework || 'MANAGEMENT_ONLY', accountingPolicyVersion: selectedFirm.accountingPolicyVersion || '1', chartOfAccountsVersion: selectedFirm.chartOfAccountsVersion || '1', reportingStartDate: String(selectedFirm.reportingStartDate || '').slice(0, 10), fiscalYearStart: Number(selectedFirm.fiscalYearStart || 1), timezone: selectedFirm.timezone || 'Asia/Tashkent' });
+    }
   }, [selectedFirm]);
+
+  useEffect(() => {
+    if (!selectedFirmId || !canManageFinancialSettings) {
+      setExpenseCategories([]);
+      setLoadingExpenseCategories(false);
+      return;
+    }
+    setLoadingExpenseCategories(true);
+    Promise.all([
+      api.get('/expense-categories', { params: { firmId: selectedFirmId, includeInactive: true } }),
+      api.get('/expense-budgets', { params: { firmId: selectedFirmId } }),
+    ]).then(([categoryResponse, budgetResponse]) => {
+      setExpenseCategories(Array.isArray(categoryResponse.data) ? categoryResponse.data : []);
+      setExpenseBudgets(Array.isArray(budgetResponse.data) ? budgetResponse.data : []);
+    }).catch(() => { setExpenseCategories([]); setExpenseBudgets([]); }).finally(() => setLoadingExpenseCategories(false));
+  }, [selectedFirmId, canManageFinancialSettings]);
 
   useEffect(() => {
     if (!user) return;
@@ -265,7 +300,7 @@ export default function SettingsPage() {
     }));
   };
 
-  const updatePlainField = (field: 'emailPlaceholder' | 'passwordPlaceholder', value: string) => {
+  const updatePlainField = (field: 'emailPlaceholder' | 'passwordPlaceholder' | 'websiteUrl', value: string) => {
     setLoginContent((current) => ({
       ...current,
       [field]: value,
@@ -366,6 +401,75 @@ export default function SettingsPage() {
     }
   };
 
+  const reloadExpenseCategories = async () => {
+    if (!selectedFirmId) return;
+    const response = await api.get('/expense-categories', { params: { firmId: selectedFirmId, includeInactive: true } });
+    setExpenseCategories(Array.isArray(response.data) ? response.data : []);
+  };
+
+  const createExpenseCategory = async () => {
+    if (!selectedFirmId || !categoryDraft.code.trim() || !categoryDraft.name.trim()) return;
+    try {
+      setSavingCategory(true);
+      await api.post('/expense-categories', { ...categoryDraft, firmId: selectedFirmId, parentId: categoryDraft.parentId || undefined });
+      await reloadExpenseCategories();
+      setCategoryDraft({ code: '', name: '', parentId: '', categoryType: 'OPERATING_EXPENSE', accountingTreatment: 'EXPENSE', financialStatementGroup: 'OPERATING_EXPENSES', cashFlowGroup: 'OPERATING' });
+      toast.success(tr('Expense category created', 'Xarajat kategoriyasi yaratildi'));
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Failed to create category', 'Kategoriyani yaratib bo‘lmadi'));
+    } finally { setSavingCategory(false); }
+  };
+
+  const updateExpenseCategory = async (category: any, data: Record<string, unknown>) => {
+    try {
+      await api.patch(`/expense-categories/${category.id}`, data);
+      await reloadExpenseCategories();
+      toast.success(tr('Category updated', 'Kategoriya yangilandi'));
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Failed to update category', 'Kategoriyani yangilab bo‘lmadi'));
+    }
+  };
+
+  const deactivateExpenseCategory = async (category: any) => {
+    if (!window.confirm(tr('Deactivate this category?', 'Ushbu kategoriya nofaol qilinsinmi?'))) return;
+    try {
+      const response = await api.delete(`/expense-categories/${category.id}`);
+      await reloadExpenseCategories();
+      toast.success(response.data?.message || tr('Category deactivated', 'Kategoriya nofaol qilindi'));
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Failed to deactivate category', 'Kategoriyani nofaol qilib bo‘lmadi'));
+    }
+  };
+
+  const createExpenseBudget = async () => {
+    const [year, month] = budgetDraft.month.split('-').map(Number);
+    if (!selectedFirmId || !year || !month || Number(budgetDraft.amount) <= 0) return;
+    try {
+      setSavingCategory(true);
+      const periodStart = new Date(Date.UTC(year, month - 1, 1)).toISOString();
+      const periodEnd = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999)).toISOString();
+      await api.post('/expense-budgets', { firmId: selectedFirmId, expenseCategoryId: budgetDraft.expenseCategoryId || undefined, periodType: 'MONTHLY', periodStart, periodEnd, amount: Number(budgetDraft.amount), currency: firmCurrency, limitAction: budgetDraft.limitAction });
+      const response = await api.get('/expense-budgets', { params: { firmId: selectedFirmId } });
+      setExpenseBudgets(Array.isArray(response.data) ? response.data : []);
+      setBudgetDraft((draft) => ({ ...draft, amount: '' }));
+      toast.success(tr('Budget saved', 'Budjet saqlandi'));
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Failed to save budget', 'Budjetni saqlab bo‘lmadi'));
+    } finally { setSavingCategory(false); }
+  };
+
+  const saveAccountingPolicy = async () => {
+    if (!selectedFirmId) return;
+    try {
+      setSavingCategory(true);
+      const response = await api.patch(`/firms/${selectedFirmId}`, policyDraft);
+      setFirms((rows) => rows.map((firm) => firm.id === selectedFirmId ? { ...firm, ...response.data } : firm));
+      toast.success(tr('Accounting policy saved', 'Hisob siyosati saqlandi'));
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Failed to save accounting policy', 'Hisob siyosatini saqlab bo‘lmadi'));
+    } finally { setSavingCategory(false); }
+  };
+
   return (
     <div className="space-y-6 max-w-6xl">
       <div>
@@ -374,6 +478,78 @@ export default function SettingsPage() {
           {tr('Manage your account.', 'Hisobingizni boshqaring.')}
         </p>
       </div>
+
+      {canManageFinancialSettings && <SettingsSection title={tr('Financial settings', 'Moliyaviy sozlamalar')} description={tr('Expense categories, budgets, and reporting rules.', 'Xarajat kategoriyalari, budjetlar va hisobot qoidalari.')} icon={WalletCards} open={activeSection === 'financial'} onToggle={() => toggleSection('financial')}>
+        <div className="space-y-5">
+          <div className="border-l-4 border-primary pl-4">
+            <div className="text-xs font-bold uppercase tracking-[0.16em] text-primary">{tr('Expense register', 'Xarajatlar registri')}</div>
+            <h3 className="mt-1 text-xl font-bold text-foreground">{tr('Expense categories', 'Xarajat kategoriyalari')}</h3>
+            <p className="mt-1 text-sm text-muted">{tr('Names may change; stable system codes preserve historical reports.', 'Nomlar o‘zgarishi mumkin, barqaror tizim kodlari tarixiy hisobotlarni saqlaydi.')}</p>
+          </div>
+          {role === 'SUPERADMIN' && <label className="block max-w-md"><span className="compact-label">{tr('Firm', 'Firma')}</span><select className="compact-control mt-1" value={selectedFirmId} onChange={(event) => setSelectedFirmId(event.target.value)}>{firms.map((firm) => <option key={firm.id} value={firm.id}>{firm.name}</option>)}</select></label>}
+          <div className="rounded-lg border border-border bg-surface">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+              <div><h4 className="font-bold text-foreground">{tr('Current expense types', 'Hozirgi xarajat turlari')}</h4><p className="text-xs text-muted">{tr('The complete list for the selected firm.', 'Tanlangan firma uchun to‘liq ro‘yxat.')}</p></div>
+              <span className="rounded-full bg-primary/15 px-3 py-1 text-sm font-bold text-primary">{loadingExpenseCategories ? '…' : `${expenseCategories.length} ta`}</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="excel-table min-w-[920px]"><thead><tr><th>{tr('Order', 'Tartib')}</th><th>{tr('Code', 'Kod')}</th><th>{tr('Name', 'Nomi')}</th><th>{tr('Type', 'Turi')}</th><th>{tr('Accounting', 'Hisobda')}</th><th>{tr('Cash flow', 'Pul oqimi')}</th><th>{tr('Status', 'Holat')}</th><th>{tr('Actions', 'Amallar')}</th></tr></thead><tbody>
+                {expenseCategories.map((category) => <tr key={category.id} className={!category.isActive ? 'opacity-50' : ''}>
+                  <td><input type="number" className="compact-control w-20" value={category.sortOrder} onChange={(event) => setExpenseCategories((rows) => rows.map((row) => row.id === category.id ? { ...row, sortOrder: Number(event.target.value) } : row))} onBlur={() => updateExpenseCategory(category, { sortOrder: category.sortOrder })} /></td>
+                  <td className="font-mono text-xs font-bold">{category.code}{category.isSystemDefault ? <span className="ml-2 text-primary">{tr('SYSTEM', 'TIZIM')}</span> : null}</td>
+                  <td><input className="compact-control min-w-48" value={category.name} onChange={(event) => setExpenseCategories((rows) => rows.map((row) => row.id === category.id ? { ...row, name: event.target.value } : row))} onBlur={() => updateExpenseCategory(category, { name: category.name })} /></td>
+                  <td className="text-xs">{financeValueLabel(category.categoryType)}</td><td className="text-xs">{financeValueLabel(category.accountingTreatment)}</td><td className="text-xs">{financeValueLabel(category.cashFlowGroup)}</td>
+                  <td><button type="button" onClick={() => updateExpenseCategory(category, { isActive: !category.isActive })} className={`rounded-full px-3 py-1 text-xs font-bold ${category.isActive ? 'bg-emerald-500/15 text-emerald-600' : 'bg-surface-2 text-muted'}`}>{category.isActive ? tr('Active', 'Faol') : tr('Inactive', 'Nofaol')}</button></td>
+                  <td><button type="button" onClick={() => deactivateExpenseCategory(category)} disabled={!category.isActive} className="text-xs font-semibold text-red-600 disabled:opacity-30">{tr('Deactivate', 'Nofaol qilish')}</button></td>
+                </tr>)}
+                {!loadingExpenseCategories && !expenseCategories.length && <tr><td colSpan={8} className="py-8 text-center text-muted">{tr('No categories found for this firm.', 'Bu firma uchun xarajat turlari topilmadi.')}</td></tr>}
+              </tbody></table>
+            </div>
+          </div>
+          <div className="rounded-lg border border-primary/25 bg-primary/5 px-4 py-3 text-sm text-muted">
+            <span className="font-bold text-foreground">{tr('How it works:', 'Qanday ishlaydi:')}</span> {tr('Choose the reporting standard once. Add everyday categories below; advanced accounting fields already have safe defaults.', 'Hisobot standartini bir marta tanlang. Kundalik kategoriyalarni pastda qo‘shing; murakkab hisob maydonlari xavfsiz standart qiymatlar bilan to‘ldirilgan.')}
+          </div>
+          <div className="grid gap-3 rounded-lg border border-border bg-surface p-4 sm:grid-cols-2 xl:grid-cols-6">
+            <label><span className="compact-label">{tr('Framework', 'Hisobot standarti')}</span><select className="compact-control mt-1" value={policyDraft.accountingFramework} onChange={(event) => setPolicyDraft({ ...policyDraft, accountingFramework: event.target.value })}><option value="IFRS">IFRS / MXXS</option><option value="BHMS">BHMS</option><option value="MANAGEMENT_ONLY">{financeValueLabel('MANAGEMENT_ONLY')}</option></select></label>
+            <label><span className="compact-label">{tr('Policy version', 'Siyosat versiyasi')}</span><input className="compact-control mt-1" value={policyDraft.accountingPolicyVersion} onChange={(event) => setPolicyDraft({ ...policyDraft, accountingPolicyVersion: event.target.value })} /></label>
+            <label><span className="compact-label">{tr('Accounts version', 'Schyotlar versiyasi')}</span><input className="compact-control mt-1" value={policyDraft.chartOfAccountsVersion} onChange={(event) => setPolicyDraft({ ...policyDraft, chartOfAccountsVersion: event.target.value })} /></label>
+            <label><span className="compact-label">{tr('Reporting starts', 'Hisobot boshlanishi')}</span><input type="date" className="compact-control mt-1" value={policyDraft.reportingStartDate} onChange={(event) => setPolicyDraft({ ...policyDraft, reportingStartDate: event.target.value })} /></label>
+            <label><span className="compact-label">{tr('Fiscal year month', 'Moliyaviy yil oyi')}</span><input type="number" min="1" max="12" className="compact-control mt-1" value={policyDraft.fiscalYearStart} onChange={(event) => setPolicyDraft({ ...policyDraft, fiscalYearStart: Number(event.target.value) })} /></label>
+            <div className="flex items-end"><button type="button" onClick={saveAccountingPolicy} disabled={savingCategory} className="min-h-10 w-full rounded-md border border-primary/40 bg-primary/10 px-3 text-sm font-bold text-primary disabled:opacity-50">{tr('Save policy', 'Siyosatni saqlash')}</button></div>
+            <label className="sm:col-span-2"><span className="compact-label">{tr('Timezone', 'Vaqt zonasi')}</span><input className="compact-control mt-1" value={policyDraft.timezone} onChange={(event) => setPolicyDraft({ ...policyDraft, timezone: event.target.value })} /></label>
+          </div>
+          <div className="grid gap-3 rounded-lg border border-border bg-surface p-4 md:grid-cols-2 xl:grid-cols-4">
+            <h4 className="font-bold text-foreground md:col-span-2 xl:col-span-4">{tr('Add a new expense type', 'Yangi xarajat turi qo‘shish')}</h4>
+            <label><span className="compact-label">{tr('Report code', 'Hisobot kodi')}</span><input className="compact-control mt-1 uppercase" value={categoryDraft.code} onChange={(event) => setCategoryDraft({ ...categoryDraft, code: event.target.value.toUpperCase() })} placeholder="MASALAN_MARKETING" /><span className="mt-1 block text-xs text-muted">{tr('Latin letters and underscore; it does not appear in daily kassa.', 'Lotin harflari va pastki chiziq; kundalik kassada ko‘rinmaydi.')}</span></label>
+            <label><span className="compact-label">{tr('Name', 'Nomi')}</span><input className="compact-control mt-1" value={categoryDraft.name} onChange={(event) => setCategoryDraft({ ...categoryDraft, name: event.target.value })} /></label>
+            <label><span className="compact-label">{tr('Parent category', 'Asosiy kategoriya')}</span><select className="compact-control mt-1" value={categoryDraft.parentId} onChange={(event) => setCategoryDraft({ ...categoryDraft, parentId: event.target.value })}><option value="">—</option>{expenseCategories.filter((category) => !category.parentId && category.isActive).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
+            <label><span className="compact-label">{tr('Category type', 'Kategoriya turi')}</span><select className="compact-control mt-1" value={categoryDraft.categoryType} onChange={(event) => setCategoryDraft({ ...categoryDraft, categoryType: event.target.value })}>{['OPERATING_EXPENSE', 'EMPLOYEE_EXPENSE', 'TAX_PAYMENT', 'FINANCE_COST', 'ASSET_ACQUISITION', 'LIABILITY_SETTLEMENT', 'PREPAYMENT', 'OTHER_EXPENSE'].map((value) => <option key={value} value={value}>{financeValueLabel(value)}</option>)}</select></label>
+            <details className="rounded-lg border border-border bg-surface-2/50 p-3 md:col-span-2 xl:col-span-4">
+              <summary className="cursor-pointer text-sm font-bold text-foreground">{tr('Advanced accounting fields', 'Qo‘shimcha buxgalteriya sozlamalari')}</summary>
+              <p className="mt-1 text-xs text-muted">{tr('Change these only together with your accountant.', 'Bu maydonlarni faqat buxgalter bilan kelishib o‘zgartiring.')}</p>
+              <div className="mt-3 grid gap-3 md:grid-cols-3">
+                <label><span className="compact-label">{tr('How to recognize it', 'Hisobda qanday aks etadi')}</span><select className="compact-control mt-1" value={categoryDraft.accountingTreatment} onChange={(event) => setCategoryDraft({ ...categoryDraft, accountingTreatment: event.target.value })}>{['EXPENSE', 'ASSET', 'LIABILITY_SETTLEMENT', 'PREPAYMENT', 'EQUITY'].map((value) => <option key={value} value={value}>{financeValueLabel(value)}</option>)}</select></label>
+                <label><span className="compact-label">{tr('Statement group code', 'Hisobot bo‘limi kodi')}</span><input className="compact-control mt-1 uppercase" value={categoryDraft.financialStatementGroup} onChange={(event) => setCategoryDraft({ ...categoryDraft, financialStatementGroup: event.target.value.toUpperCase() })} /></label>
+                <label><span className="compact-label">{tr('Cash-flow group', 'Pul oqimi guruhi')}</span><select className="compact-control mt-1" value={categoryDraft.cashFlowGroup} onChange={(event) => setCategoryDraft({ ...categoryDraft, cashFlowGroup: event.target.value })}>{['OPERATING', 'INVESTING', 'FINANCING', 'NON_CASH'].map((value) => <option key={value} value={value}>{financeValueLabel(value)}</option>)}</select></label>
+              </div>
+            </details>
+            <div className="flex justify-end md:col-span-2 xl:col-span-4"><button type="button" onClick={createExpenseCategory} disabled={savingCategory || !categoryDraft.code.trim() || !categoryDraft.name.trim()} className="min-h-10 rounded-md bg-primary px-6 text-sm font-bold text-ink disabled:opacity-50">{savingCategory ? tr('Saving…', 'Saqlanmoqda…') : tr('Add category', 'Kategoriya qo‘shish')}</button></div>
+          </div>
+          <div className="grid gap-4 rounded-lg border border-border bg-surface p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
+            <div>
+              <h4 className="font-bold text-foreground">{tr('Monthly expense budget', 'Oylik xarajat budjeti')}</h4>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <label><span className="compact-label">{tr('Month', 'Oy')}</span><input type="month" className="compact-control mt-1" value={budgetDraft.month} onChange={(event) => setBudgetDraft({ ...budgetDraft, month: event.target.value })} /></label>
+                <label><span className="compact-label">{tr('Category', 'Kategoriya')}</span><select className="compact-control mt-1" value={budgetDraft.expenseCategoryId} onChange={(event) => setBudgetDraft({ ...budgetDraft, expenseCategoryId: event.target.value })}><option value="">{tr('General budget', 'Umumiy budjet')}</option>{expenseCategories.filter((category) => category.isActive).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
+                <label><span className="compact-label">{tr('Amount', 'Summa')} ({firmCurrency})</span><input type="number" min="0.01" step="0.01" className="compact-control mt-1" value={budgetDraft.amount} onChange={(event) => setBudgetDraft({ ...budgetDraft, amount: event.target.value })} /></label>
+                <label><span className="compact-label">{tr('When exceeded', 'Limit oshganda')}</span><select className="compact-control mt-1" value={budgetDraft.limitAction} onChange={(event) => setBudgetDraft({ ...budgetDraft, limitAction: event.target.value })}>{['WARNING', 'REQUIRE_APPROVAL', 'BLOCK'].map((value) => <option key={value} value={value}>{financeValueLabel(value)}</option>)}</select></label>
+              </div>
+              <button type="button" onClick={createExpenseBudget} disabled={savingCategory || Number(budgetDraft.amount) <= 0} className="mt-3 rounded-md bg-primary px-4 py-2 text-sm font-bold text-ink disabled:opacity-50">{tr('Save budget', 'Budjetni saqlash')}</button>
+            </div>
+            <div className="overflow-x-auto"><table className="excel-table"><thead><tr><th>{tr('Period', 'Davr')}</th><th>{tr('Category', 'Kategoriya')}</th><th className="text-right">{tr('Amount', 'Summa')}</th><th>{tr('Rule', 'Qoida')}</th></tr></thead><tbody>{expenseBudgets.slice(0, 12).map((budget) => <tr key={budget.id}><td>{String(budget.periodStart).slice(0, 7)}</td><td>{budget.expenseCategory?.name || tr('General', 'Umumiy')}</td><td className="text-right font-mono">{Number(budget.amount).toLocaleString()} {budget.currency}</td><td className="text-xs">{financeValueLabel(budget.limitAction)}</td></tr>)}{!expenseBudgets.length && <tr><td colSpan={4} className="text-center text-muted">{tr('No budget configured.', 'Budjet belgilanmagan.')}</td></tr>}</tbody></table></div>
+          </div>
+        </div>
+      </SettingsSection>}
 
       <SettingsSection title={tr('Data templates', 'Ma’lumot shablonlari')} description={tr('Download ready-to-fill Excel and CSV templates.', 'Tayyor Excel va CSV shablonlarini yuklab oling.')} icon={FileSpreadsheet} open={activeSection === 'templates'} onToggle={() => toggleSection('templates')}>
       <section className="p-1">
@@ -422,7 +598,10 @@ export default function SettingsPage() {
                       <div className="text-2xl font-black tracking-[-0.03em] text-white">ADO</div>
                       <div className="mt-0.5 text-xl font-medium tracking-[-0.03em] text-white">Systems</div>
                       <div className="mt-2 text-xs font-medium text-white">
-                        powered by <span className="font-extrabold text-[#ff2337]">ADO-FINANCE</span>
+                        powered by{' '}
+                        <a href={loginContent.websiteUrl} target="_blank" rel="noopener noreferrer" className="font-extrabold text-[#ff2337] underline underline-offset-2">
+                          {resolveLocalizedText(loginContent.websiteLabel, language)}
+                        </a>
                       </div>
                     </div>
                   </div>
@@ -569,6 +748,24 @@ export default function SettingsPage() {
                 <label className="block text-sm font-medium text-muted">
                   {tr('Password placeholder', 'Parol placeholder')}
                   <input value={loginContent.passwordPlaceholder} onChange={(e) => updatePlainField('passwordPlaceholder', e.target.value)} className={editorFieldClassName} disabled={!canEditLoginContent} />
+                </label>
+              </div>
+            </div>
+
+            <div>
+              <h4 className="text-sm font-semibold uppercase tracking-wider text-muted">{tr('Website link', 'Veb-sayt havolasi')}</h4>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <label className="block text-sm font-medium text-muted">
+                  {tr('Link label (EN)', 'Havola matni (EN)')}
+                  <input value={loginContent.websiteLabel.en} onChange={(e) => updateLocalizedField('websiteLabel', 'en', e.target.value)} className={editorFieldClassName} disabled={!canEditLoginContent} />
+                </label>
+                <label className="block text-sm font-medium text-muted">
+                  {tr('Link label (UZ)', 'Havola matni (UZ)')}
+                  <input value={loginContent.websiteLabel.uz} onChange={(e) => updateLocalizedField('websiteLabel', 'uz', e.target.value)} className={editorFieldClassName} disabled={!canEditLoginContent} />
+                </label>
+                <label className="block text-sm font-medium text-muted md:col-span-2">
+                  {tr('Website URL', 'Veb-sayt manzili')}
+                  <input type="url" value={loginContent.websiteUrl} onChange={(e) => updatePlainField('websiteUrl', e.target.value)} placeholder="https://ado-finance.com" className={editorFieldClassName} disabled={!canEditLoginContent} />
                 </label>
               </div>
             </div>

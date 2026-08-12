@@ -11,6 +11,11 @@ function shouldLogActions(): boolean {
   return process.env.LOG_ACTIONS === '1' || process.env.NODE_ENV !== 'production';
 }
 
+function slowRequestThresholdMs(): number {
+  const value = Number(process.env.SLOW_REQUEST_MS || 1500);
+  return Number.isFinite(value) && value > 0 ? value : 1500;
+}
+
 export const requestLogger = (req: Request, res: Response, next: NextFunction) => {
   const start = process.hrtime.bigint();
 
@@ -26,8 +31,9 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
     const actionLogEnabled = shouldLogActions();
     const shouldLogAction = actionLogEnabled && isActor;
     const isWarnOrError = statusCode >= 400;
+    const isSlow = durationMs >= slowRequestThresholdMs();
 
-    if (!shouldLogAction && !isWarnOrError) return;
+    if (!shouldLogAction && !isWarnOrError && !isSlow) return;
 
     const method = req.method;
     const path = getLogSafePath(req.originalUrl || req.url || '/');
@@ -62,6 +68,11 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
 
     if (statusCode >= 400) {
       logger.warn(payload, 'Request warning');
+      return;
+    }
+
+    if (isSlow) {
+      logger.warn(payload, 'Slow request');
       return;
     }
 

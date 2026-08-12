@@ -9,12 +9,15 @@ import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { Plane, Tag, DollarSign, Briefcase, Activity, CheckCircle, Clock } from 'lucide-react';
+import { formatFlightDisplayName } from '@/lib/flight-display';
+import { formatNumber } from '@/lib/format';
 
 function FlightDetailContent() {
   const searchParams = useSearchParams();
   const id = searchParams.get("id");
   const [data, setData] = useState<any>(null);
   const [allocations, setAllocations] = useState<any[]>([]);
+  const [unallocatedPayments, setUnallocatedPayments] = useState<any[]>([]);
   const [allocationChangeRequests, setAllocationChangeRequests] = useState<any[]>([]);
   const [firms, setFirms] = useState<any[]>([]);
   const [kassaDesks, setKassaDesks] = useState<any[]>([]);
@@ -90,6 +93,8 @@ function FlightDetailContent() {
   const [cancelAllocationReason, setCancelAllocationReason] = useState('');
   const [cancelAllocationBusy, setCancelAllocationBusy] = useState(false);
   const [changeRequestBusyId, setChangeRequestBusyId] = useState<string | null>(null);
+  const [allocationDetails, setAllocationDetails] = useState<any>(null);
+  const [allocationHistory, setAllocationHistory] = useState<any>(null);
 
   const [deallocateConfirm, setDeallocateConfirm] = useState<null | { ticketId: string; status: string }>(null);
   const [deallocateBusy, setDeallocateBusy] = useState(false);
@@ -116,7 +121,7 @@ function FlightDetailContent() {
       const [reportRes, ticketsRes, allocationsRes, allocationChangeRes, firmsRes, cancelReqRes, desksRes] = await Promise.all([
         api.get(`/reports/flight?flight_id=${id}`),
         api.get(`/tickets?flight_id=${id}`),
-        api.get(`/tickets/allocations?flight_id=${id}`),
+        api.get(`/tickets/allocations?flight_id=${id}&includeFinance=true&includeHistory=true`),
         api.get(`/tickets/allocation-change-requests?flight_id=${id}`),
         canAllocateTickets ? api.get('/tickets/allocation-targets') : Promise.resolve({ data: [] as any[] }),
         api.get(`/tickets/cancel-sale-requests?flight_id=${id}&status=PENDING`).catch(() => ({ data: [] })),
@@ -128,7 +133,9 @@ function FlightDetailContent() {
         : reportRes.data;
 
       setData({ report, tickets: ticketsRes.data });
-      setAllocations(Array.isArray(allocationsRes.data) ? allocationsRes.data : []);
+      const allocationPayload = allocationsRes.data;
+      setAllocations(Array.isArray(allocationPayload) ? allocationPayload : Array.isArray(allocationPayload?.data) ? allocationPayload.data : []);
+      setUnallocatedPayments(Array.isArray(allocationPayload?.unallocatedPayments) ? allocationPayload.unallocatedPayments : []);
       setAllocationChangeRequests(Array.isArray(allocationChangeRes.data) ? allocationChangeRes.data : []);
 
       const pendingRequests = Array.isArray((cancelReqRes as any)?.data) ? (cancelReqRes as any).data : [];
@@ -640,7 +647,7 @@ function FlightDetailContent() {
       const response = await api.post(`/tickets/allocations/${cancelAllocation.id}/change-requests`, { type: 'CANCEL', quantity, reason });
       toast.success(response.data?.request?.requiresCounterpartyApproval
         ? tr('Cancellation request sent for approval', 'Bekor qilish so‘rovi tasdiqlash uchun yuborildi')
-        : tr('External-firm allocation cancelled automatically', 'Tashqi firma ajratmasi avtomatik bekor qilindi'));
+        : tr('Allocation cancelled', 'Ajratma bekor qilindi'));
       setCancelAllocation(null);
       await fetchData();
     } catch (err: any) { toast.error(err?.response?.data?.error || tr('Failed to cancel allocation', 'Ajratmani bekor qilib bo‘lmadi')); }
@@ -796,6 +803,7 @@ function FlightDetailContent() {
   }
 
   const summary = data?.report || {};
+  const flightDisplayName = formatFlightDisplayName(summary?.flight);
   const tickets = data?.tickets || [];
   const allocationOperationTicket = tickets.find((ticket: any) => String(ticket.id) === String(selectedTicketId || ''));
   const saleOperationTicket = tickets.find((ticket: any) => String(ticket.id) === String(sellConfirmTicketId || ''));
@@ -847,9 +855,8 @@ function FlightDetailContent() {
   const hasAllocatableTickets = tickets.some((ticket: any) => ticket.canAllocate !== false && ['AVAILABLE', 'ASSIGNED'].includes(String(ticket.status).toUpperCase()) && !ticket.soldPrice);
   const inventorySummary = summary.inventorySummary || {};
   const inventoryAmounts = (metric: any) => (metric?.amounts || []).map((row: any) => (
-    <div key={row.currency} className="flex items-baseline justify-between gap-2">
-      <span className="text-xs text-muted">{Number(row.count || 0)} ta</span>
-      <span className="text-lg font-bold">{Number(row.total || 0).toLocaleString()} {row.currency}</span>
+    <div key={row.currency} className="mt-2 border-t border-border/70 pt-2 text-lg font-bold">
+      {Number(row.total || 0).toLocaleString()} <span className="text-xs font-semibold text-muted">{row.currency}</span>
     </div>
   ));
   const mixedAllocationTotalQuantity = allocationRows.reduce((sum, row) => {
@@ -948,7 +955,7 @@ function FlightDetailContent() {
     <div className="space-y-8">
       <div className="flex items-center gap-3">
         <h2 className="text-3xl font-bold">
-          {tr('Flight', 'Reys')} #{id} {tr('Details', 'tafsilotlari')}
+          {flightDisplayName} {tr('Details', 'tafsilotlari')}
         </h2>
         <span
           className={
@@ -966,7 +973,7 @@ function FlightDetailContent() {
           <div className="flex items-center gap-2 text-primary mb-2">
             <Tag size={16} />
             <span className="text-sm font-medium">
-              {tr('Total received tickets', 'Jami olingan bilet soni / summasi')}
+              {tr('Total received tickets', 'Jami olingan biletlar')}
             </span>
           </div>
           <div className="space-y-1">
@@ -978,7 +985,7 @@ function FlightDetailContent() {
         <div className="bg-surface-2 border border-border rounded-lg p-5">
           <div className="flex items-center gap-2 text-green-600 mb-2">
             <Activity size={16} />
-            <span className="text-sm font-medium">{tr('Sold or allocated tickets', 'Jami sotilgan / ajratilgan bilet soni / summasi')}</span>
+            <span className="text-sm font-medium">{tr('Sold or allocated tickets', 'Sotilgan / ajratilgan biletlar')}</span>
           </div>
           <div className="space-y-1">
             <div className="text-2xl font-bold">{Number(inventorySummary.soldOrAllocated?.count || 0)} ta</div>
@@ -989,7 +996,7 @@ function FlightDetailContent() {
         <div className="bg-surface-2 border border-border rounded-lg p-5">
           <div className="flex items-center gap-2 text-yellow-600 mb-2">
             <Tag size={16} />
-            <span className="text-sm font-medium">{tr('Remaining tickets', 'Qolgan bilet soni / summasi')}</span>
+            <span className="text-sm font-medium">{tr('Remaining tickets', 'Qolgan biletlar')}</span>
           </div>
           <div className="space-y-1">
             <div className="text-2xl font-bold">{Number(inventorySummary.remaining?.count || 0)} ta</div>
@@ -1005,7 +1012,7 @@ function FlightDetailContent() {
               {tr('Total Debt (Payable)', 'Jami qarz (To‘lanishi kerak)')}
             </span>
           </div>
-          <div className="text-3xl font-bold">{Number(summary.total_allocated || 0).toFixed(2)}</div>
+          <div className="text-3xl font-bold">{formatNumber(summary.total_allocated || 0, 2)}</div>
         </div>
 
         <div className="bg-surface-2 border border-border rounded-lg p-5">
@@ -1015,7 +1022,7 @@ function FlightDetailContent() {
               {tr('Total Revenue (Sales)', 'Jami daromad (Sotuv)')}
             </span>
           </div>
-          <div className="text-3xl font-bold">{Number(summary.total_sales || 0).toFixed(2)}</div>
+          <div className="text-3xl font-bold">{formatNumber(summary.total_sales || 0, 2)}</div>
         </div>
 
         <div className="bg-surface-2 border border-border rounded-lg p-5">
@@ -1023,7 +1030,7 @@ function FlightDetailContent() {
             <CheckCircle size={16} />
             <span className="text-sm font-medium">{tr('Total Payments', 'Jami to\'lovlar')}</span>
           </div>
-          <div className="text-3xl font-bold">{Number(summary.total_payments || 0).toFixed(2)}</div>
+          <div className="text-3xl font-bold">{formatNumber(summary.total_payments || 0, 2)}</div>
         </div>
 
         <div className="bg-surface-2 border border-border rounded-lg p-5">
@@ -1032,7 +1039,7 @@ function FlightDetailContent() {
             <span className="text-sm font-medium">{tr('Outstanding Debt', 'Qoldiq qarz')}</span>
           </div>
           <div className="text-3xl font-bold">
-            {Number((summary.total_allocated || 0) - (summary.total_payments || 0)).toFixed(2)}
+            {formatNumber((summary.total_allocated || 0) - (summary.total_payments || 0), 2)}
           </div>
         </div>
 
@@ -1044,7 +1051,7 @@ function FlightDetailContent() {
               </span>
             </div>
             <div className="text-3xl font-bold text-indigo-600">
-              {Number((summary.total_sales || 0) - (summary.total_allocated || 0)).toFixed(2)}
+              {formatNumber((summary.total_sales || 0) - (summary.total_allocated || 0), 2)}
             </div>
           </div>
         )}
@@ -1104,24 +1111,44 @@ function FlightDetailContent() {
           <div><h3 className="text-xl font-bold text-foreground">{tr('Ticket allocations', 'Chipta ajratmalari')}</h3><p className="text-sm text-muted">{tr('Bulk allocations, single-ticket actions, edits and cancellations in one place.', 'Bulk ajratmalar, bitta chipta amallari, tahrir va bekor qilish bir joyda.')}</p></div>
           {canAllocate && hasAllocatableTickets && <button type="button" onClick={openAllocateBatchModal} disabled={flightCancelled} className="rounded-lg bg-yellow-600 px-4 py-2 font-bold text-white disabled:opacity-50">{tr('Bulk allocate', 'Bulk ajratish')}</button>}
         </div>
+        {unallocatedPayments.length > 0 && <div className="mt-4 rounded-lg border border-yellow-600/40 bg-yellow-600/10 p-3 text-sm">
+          <strong>{tr('Unallocated flight payment', 'Reys bo‘yicha taqsimlanmagan to‘lov')}:</strong>{' '}
+          {unallocatedPayments.map((row: any) => `${Number(row.total || 0).toLocaleString()} ${row.currency}`).join(' · ')}
+        </div>}
         <div className="mt-4 overflow-x-auto">
           <table className="excel-table">
-	            <thead><tr><th>{tr('Sender → Receiver', 'Yuboruvchi → Qabul qiluvchi')}</th><th>RT / OW</th><th>{tr('Status', 'Holat')}</th><th className="text-right">{tr('Tickets', 'Biletlar')}</th><th>{tr('Price rows', 'Narx qatorlari')}</th><th className="text-right">{tr('Total', 'Jami')}</th><th>{tr('Actions', 'Amallar')}</th></tr></thead>
+	            <thead><tr><th>{tr('Firm', 'Firma')}</th><th>RT / OW</th><th>{tr('Status', 'Holat')}</th><th className="text-right">{tr('Tickets received', 'Olgan bilet soni')}</th><th className="text-right">{tr('Unit price', '1 dona narxi')}</th><th className="text-right">{tr('Total amount', 'Jami summa')}</th><th className="text-right">{tr('Paid', 'To‘langan')}</th><th className="text-right">{tr('Debt', 'Qarzdorlik')}</th><th>{tr('Actions', 'Amallar')}</th></tr></thead>
             <tbody>
-	              {allocations.length === 0 ? <tr><td colSpan={7} className="text-center text-muted">{tr('No allocations yet', 'Hali ajratmalar yo‘q')}</td></tr> : allocations.map((allocation: any) => {
+	              {allocations.length === 0 ? <tr><td colSpan={9} className="text-center text-muted">{tr('No allocations yet', 'Hali ajratmalar yo‘q')}</td></tr> : allocations.map((allocation: any) => {
                 const hasPendingChange = allocationChangeRequests.some((request: any) => request.allocationId === allocation.id && request.status === 'PENDING_APPROVAL');
+                const pendingCancel = allocationChangeRequests.some((request: any) => request.allocationId === allocation.id && request.type === 'CANCEL' && request.status === 'PENDING_APPROVAL');
+                const prices = (allocation.priceRows || []).map((row: any) => Number(row.unitPrice)).filter(Number.isFinite);
+                const unitPrice = prices.length ? (Math.min(...prices) === Math.max(...prices)
+                  ? `${Math.min(...prices).toLocaleString()} ${allocation.currency}`
+                  : `${Math.min(...prices).toLocaleString()}–${Math.max(...prices).toLocaleString()} ${allocation.currency}`) : '—';
+                const statusLabel = pendingCancel
+                  ? tr('AWAITING COUNTERPARTY APPROVAL', 'QARSHI TOMON TASDIG‘I KUTILMOQDA')
+                  : allocation.cancellationStatus === 'PARTIALLY_CANCELLED'
+                    ? tr('PARTIALLY CANCELLED', 'QISMAN BEKOR QILINDI')
+                    : allocation.cancellationStatus === 'FULLY_CANCELLED'
+                      ? tr('FULLY CANCELLED', 'TO‘LIQ BEKOR QILINDI')
+                      : allocation.status;
                 return <tr key={allocation.id}>
-	                  <td><div className="font-semibold">{allocation.fromFirm?.name || '—'} → {allocation.toFirm?.name || '—'}</div><div className="text-xs text-muted">#{String(allocation.id).slice(0, 8)}</div></td>
+	                  <td><div className="font-semibold">{allocation.toFirm?.name || '—'}</div><div className="text-xs text-muted">{allocation.fromFirm?.name || '—'} → {allocation.toFirm?.name || '—'}</div></td>
 	                  <td><span className="rounded bg-primary/15 px-2 py-1 text-xs font-bold text-primary">{allocation.productType === 'ONE_WAY' ? `OW · ${allocation.direction}` : 'RT'}</span><div className="mt-1 text-xs text-muted">{allocation.segmentCount || 0} {tr('segments', 'segment')}</div></td>
-                  <td><span className={`rounded-full border px-2 py-1 text-xs font-bold ${allocation.status === 'PENDING' ? 'border-yellow-600/50 text-yellow-500' : allocation.status === 'ACCEPTED' ? 'border-green-600/50 text-green-500' : 'border-red-600/50 text-red-500'}`}>{allocation.status}</span>{hasPendingChange && <div className="mt-1 text-xs text-yellow-500">{tr('Change pending', 'O‘zgarish kutilmoqda')}</div>}</td>
-                  <td className="text-right"><div className="font-bold">{allocation.allocatedQuantity} ta</div><div className="text-xs text-muted">{tr('Free', 'Erkin')}: {allocation.cancellableQuantity || 0} · {tr('Sold', 'Sotilgan')}: {allocation.soldQuantity || 0}</div></td>
-                  <td><div className="flex min-w-56 flex-wrap gap-1">{(allocation.priceRows || []).map((row: any, index: number) => <span key={`${allocation.id}-${index}`} className="rounded border border-border px-2 py-1 text-xs">{row.quantity} × {Number(row.unitPrice).toLocaleString()} {allocation.currency}</span>)}</div></td>
+                  <td><span className={`rounded-full border px-2 py-1 text-xs font-bold ${allocation.status === 'PENDING' || pendingCancel ? 'border-yellow-600/50 text-yellow-500' : allocation.status === 'ACCEPTED' ? 'border-green-600/50 text-green-500' : 'border-red-600/50 text-red-500'}`}>{statusLabel}</span>{hasPendingChange && !pendingCancel && <div className="mt-1 text-xs text-yellow-500">{tr('Change pending', 'O‘zgarish kutilmoqda')}</div>}</td>
+                  <td className="text-right"><div className="font-bold">{allocation.activeQuantity ?? allocation.allocatedQuantity} ta</div><div className="text-xs text-muted">{tr('Free', 'Erkin')}: {allocation.cancellableQuantity || 0} · {tr('Sold', 'Sotilgan')}: {allocation.soldQuantity || 0} · {tr('Tour', 'Tur')}: {allocation.reservedForTourQuantity || 0}</div></td>
+                  <td className="text-right font-mono">{unitPrice}</td>
                   <td className="text-right font-bold">{Number(allocation.totalAmount || 0).toLocaleString()} {allocation.currency}</td>
-                  <td><div className="flex min-w-52 flex-wrap gap-2">
+                  <td className="text-right font-mono">{Number(allocation.paidAmount || 0).toLocaleString()} {allocation.currency}</td>
+                  <td className="text-right"><div className="font-mono font-bold">{Number(allocation.outstandingDebtAmount || 0).toLocaleString()} {allocation.currency}</div>{Number(allocation.overpaymentAmount || 0) > 0 && <div className="text-xs text-green-500">{tr('Advance / overpayment', 'Avans / Ortiqcha to‘lov')}: {Number(allocation.overpaymentAmount).toLocaleString()} {allocation.currency}</div>}</td>
+                  <td><div className="flex min-w-72 flex-wrap gap-2">
+                    <button type="button" onClick={() => setAllocationDetails(allocation)} className="rounded border border-border px-2 py-1 text-xs font-semibold">{tr('Details', 'Tafsilotlar')}</button>
                     {allocation.status === 'PENDING' && allocation.canReject && <button type="button" onClick={() => { setRejectAllocationModal(allocation); setRejectionReason(''); }} className="rounded border border-red-600/40 px-2 py-1 text-xs font-semibold text-red-500">{tr('Reject', 'Rad etish')}</button>}
                     {allocation.status === 'PENDING' && allocation.canConfirm && canConfirmAllocations && <button type="button" onClick={() => openConfirmAllocation(allocation.id)} className="rounded bg-yellow-600 px-2 py-1 text-xs font-semibold text-white">{tr('Confirm', 'Tasdiqlash')}</button>}
                     {allocation.canEdit && !hasPendingChange && <button type="button" onClick={() => openEditAllocation(allocation)} className="rounded border border-primary/50 px-2 py-1 text-xs font-semibold text-primary">{tr('Edit', 'Tahrirlash')}</button>}
                     {allocation.canCancel && Number(allocation.cancellableQuantity || 0) > 0 && !hasPendingChange && <button type="button" onClick={() => openCancelAllocation(allocation)} className="rounded border border-red-600/40 px-2 py-1 text-xs font-semibold text-red-500">{tr('Cancel', 'Bekor qilish')}</button>}
+                    <button type="button" onClick={() => setAllocationHistory(allocation)} className="rounded border border-border px-2 py-1 text-xs font-semibold">{tr('History', 'Tarix')}</button>
                   </div></td>
                 </tr>;
               })}
@@ -1139,7 +1166,7 @@ function FlightDetailContent() {
             return <tr key={request.id}>
               <td><div className="font-semibold">{request.allocation?.flight?.flightNumber}</div><div className="text-xs text-muted">{request.allocation?.fromFirm?.name} → {request.allocation?.toFirm?.name}</div></td>
               <td>{request.type === 'EDIT' ? tr('Edit', 'Tahrirlash') : tr('Cancel', 'Bekor qilish')}</td>
-              <td>{request.type === 'EDIT' ? <><div>{tr('Quantity', 'Miqdor')}: {oldValues.quantity} → {proposed.quantity}</div><div>{tr('Total', 'Jami')}: {Number(oldValues.totalAmount || 0).toLocaleString()} {oldValues.currency}</div></> : <div>{tr('Cancel quantity', 'Bekor qilinadi')}: {proposed.cancelQuantity} ta</div>}</td>
+              <td>{request.type === 'EDIT' ? <><div>{tr('Quantity', 'Miqdor')}: {oldValues.quantity} → {proposed.quantity}</div><div>{tr('Total', 'Jami')}: {Number(oldValues.totalAmount || 0).toLocaleString()} {oldValues.currency}</div></> : <><div>{tr('Cancel quantity', 'Bekor qilinadi')}: {proposed.cancelQuantity} ta</div><div>{tr('Allocation total', 'Ajratma jami')}: {Number(proposed.oldAllocationTotal || 0).toLocaleString()} → {Number(proposed.newAllocationTotal || 0).toLocaleString()} {request.allocation?.currency}</div><div>{tr('Current / new debt', 'Hozirgi / yangi qarz')}: {Number(proposed.oldOutstandingDebt || 0).toLocaleString()} → {Number(proposed.newOutstandingDebt || 0).toLocaleString()} {request.allocation?.currency}</div>{Number(proposed.overpayment || 0) > 0 && <div className="text-green-500">{tr('Advance', 'Avans')}: {Number(proposed.overpayment).toLocaleString()} {request.allocation?.currency}</div>}</>}</td>
               <td className="max-w-xs whitespace-normal">{request.reason}{request.rejectionReason && <div className="text-red-500">{request.rejectionReason}</div>}</td>
               <td>{request.autoApproved ? tr('Auto-approved', 'Avtomatik tasdiqlandi') : request.status}</td>
               <td><div className="flex gap-2">{request.canReject && <button type="button" disabled={changeRequestBusyId === request.id} onClick={() => decideAllocationChange(request, 'reject')} className="rounded border border-red-600/40 px-2 py-1 text-xs text-red-500">{tr('Reject', 'Rad etish')}</button>}{request.canApprove && <button type="button" disabled={changeRequestBusyId === request.id} onClick={() => decideAllocationChange(request, 'approve')} className="rounded bg-primary px-2 py-1 text-xs font-bold text-primary-foreground">{tr('Approve', 'Tasdiqlash')}</button>}</div></td>
@@ -1224,7 +1251,7 @@ function FlightDetailContent() {
                       </span>
                     </td>
                     <td className="p-4 text-foreground font-medium">
-                      {Number(ticket.price).toFixed(2)} {ticket.currency}
+                      {formatNumber(ticket.price, 2)} {ticket.currency}
                     </td>
                     <td className="p-4 text-muted">
                       <div className="flex items-center gap-2">
@@ -1336,7 +1363,7 @@ function FlightDetailContent() {
                     <div className="mt-3 text-sm text-foreground space-y-2">
                       <div className="flex items-center justify-between gap-3">
                         <span className="text-muted">{tr('Price', 'Narx')}</span>
-                        <span className="font-medium">{Number(ticket.price).toFixed(2)} {ticket.currency}</span>
+                        <span className="font-medium">{formatNumber(ticket.price, 2)} {ticket.currency}</span>
                       </div>
                       <div className="flex items-center justify-between gap-3">
                         <span className="text-muted">{tr('Firm', 'Firma')}</span>
@@ -1574,7 +1601,7 @@ function FlightDetailContent() {
                   </div>
                   <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-2 text-sm">
                     <span className="text-muted">{tr('Total rows', 'Qatorlar jami')}: {mixedAllocationTotalQuantity}</span>
-                    <span className="font-semibold text-foreground">{mixedAllocationTotalAmount.toFixed(2)}</span>
+                    <span className="font-semibold text-foreground">{formatNumber(mixedAllocationTotalAmount, 2)}</span>
                   </div>
                 </div>
               )}
@@ -1800,14 +1827,44 @@ function FlightDetailContent() {
         </div>
       )}
 
+      {allocationDetails && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <section role="dialog" aria-modal="true" className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-border bg-surface p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4"><div><h3 className="text-xl font-bold">{tr('Allocation details', 'Ajratma tafsilotlari')}</h3><p className="text-sm text-muted">{flightDisplayName} · {allocationDetails.fromFirm?.name} → {allocationDetails.toFirm?.name}</p></div><button type="button" onClick={() => setAllocationDetails(null)}>×</button></div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded border border-border p-3"><span className="compact-label">RT / OW</span><strong>{allocationDetails.productType === 'ONE_WAY' ? `OW · ${allocationDetails.direction}` : 'RT'}</strong></div>
+              <div className="rounded border border-border p-3"><span className="compact-label">{tr('Allocated', 'Ajratilgan')}</span><strong>{allocationDetails.originalQuantity || allocationDetails.allocatedQuantity} ta</strong></div>
+              <div className="rounded border border-border p-3"><span className="compact-label">{tr('Active', 'Faol')}</span><strong>{allocationDetails.activeQuantity ?? allocationDetails.allocatedQuantity} ta</strong></div>
+              <div className="rounded border border-border p-3"><span className="compact-label">{tr('Cancelled', 'Bekor qilingan')}</span><strong>{allocationDetails.cancelledQuantity || 0} ta</strong></div>
+            </div>
+            <div className="mt-4 overflow-x-auto"><table className="excel-table"><thead><tr><th>{tr('Quantity', 'Miqdor')}</th><th>{tr('Unit price', 'Bir dona narxi')}</th><th>{tr('Total', 'Jami')}</th></tr></thead><tbody>{(allocationDetails.priceRows || []).map((row: any, index: number) => <tr key={index}><td>{row.quantity} ta</td><td>{Number(row.unitPrice).toLocaleString()} {allocationDetails.currency}</td><td>{Number(row.totalAmount || row.quantity * row.unitPrice).toLocaleString()} {allocationDetails.currency}</td></tr>)}</tbody><tfoot><tr><th>{allocationDetails.activeQuantity ?? allocationDetails.allocatedQuantity} ta</th><th></th><th>{Number(allocationDetails.totalAmount || 0).toLocaleString()} {allocationDetails.currency}</th></tr></tfoot></table></div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-3"><div><span className="compact-label">{tr('Paid', 'To‘langan')}</span><strong>{Number(allocationDetails.paidAmount || 0).toLocaleString()} {allocationDetails.currency}</strong></div><div><span className="compact-label">{tr('Debt', 'Qarzdorlik')}</span><strong>{Number(allocationDetails.outstandingDebtAmount || 0).toLocaleString()} {allocationDetails.currency}</strong></div><div><span className="compact-label">{tr('Advance', 'Avans')}</span><strong>{Number(allocationDetails.overpaymentAmount || 0).toLocaleString()} {allocationDetails.currency}</strong></div></div>
+            <div className="mt-4 text-sm text-muted">{tr('Allocated at', 'Ajratilgan sana')}: {allocationDetails.createdAt ? new Date(allocationDetails.createdAt).toLocaleString() : '—'} · {tr('Accepted at', 'Tasdiqlangan sana')}: {allocationDetails.acceptedAt ? new Date(allocationDetails.acceptedAt).toLocaleString() : '—'}</div>
+            <div className="mt-6 flex justify-end"><button type="button" onClick={() => setAllocationDetails(null)} className="rounded bg-surface-2 px-4 py-2">{tr('Close', 'Yopish')}</button></div>
+          </section>
+        </div>
+      )}
+
+      {allocationHistory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <section role="dialog" aria-modal="true" className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-border bg-surface p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4"><div><h3 className="text-xl font-bold">{tr('Allocation history', 'Ajratma tarixi')}</h3><p className="text-sm text-muted">{allocationHistory.toFirm?.name} · {flightDisplayName}</p></div><button type="button" onClick={() => setAllocationHistory(null)}>×</button></div>
+            <div className="mt-4 overflow-x-auto"><table className="excel-table"><thead><tr><th>{tr('Date', 'Sana')}</th><th>{tr('Action', 'Amal')}</th><th>{tr('Quantity', 'Miqdor')}</th><th>{tr('Reason', 'Sabab')}</th><th>{tr('Status', 'Holat')}</th></tr></thead><tbody>{allocationChangeRequests.filter((request: any) => request.allocationId === allocationHistory.id).length ? allocationChangeRequests.filter((request: any) => request.allocationId === allocationHistory.id).map((request: any) => <tr key={request.id}><td>{new Date(request.createdAt).toLocaleString()}</td><td>{request.type === 'CANCEL' ? tr('Cancellation', 'Bekor qilish') : tr('Edit', 'Tahrirlash')}</td><td>{request.proposedValuesJson?.cancelQuantity || request.proposedValuesJson?.quantity || '—'}</td><td>{request.reason}{request.rejectionReason ? ` · ${tr('Rejected', 'Rad etildi')}: ${request.rejectionReason}` : ''}</td><td>{request.status}</td></tr>) : <tr><td colSpan={5} className="text-center text-muted">{tr('No changes yet', 'Hali o‘zgarishlar yo‘q')}</td></tr>}</tbody></table></div>
+            <div className="mt-6 flex justify-end"><button type="button" onClick={() => setAllocationHistory(null)} className="rounded bg-surface-2 px-4 py-2">{tr('Close', 'Yopish')}</button></div>
+          </section>
+        </div>
+      )}
+
       {cancelAllocation && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-xl border border-border bg-surface p-6 shadow-2xl">
+          <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-xl border border-border bg-surface p-6 shadow-2xl">
             <h3 className="text-xl font-bold">{tr('Cancel allocation', 'Ajratmani bekor qilish')}</h3>
             <p className="mt-1 text-sm text-muted">{tr('Only free, unsold and tour-unreserved tickets can be cancelled.', 'Faqat erkin, sotilmagan va turga band qilinmagan chiptalar bekor qilinadi.')}</p>
-            <label className="mt-4 block"><span className="compact-label">{tr('Ticket quantity', 'Bilet soni')} (max: {cancelAllocation.cancellableQuantity})</span><input type="number" min="1" max={cancelAllocation.cancellableQuantity} className="compact-control" value={cancelAllocationQuantity} onChange={(event) => setCancelAllocationQuantity(event.target.value)} /></label>
-            <label className="mt-4 block"><span className="compact-label">{tr('Required cancellation reason', 'Bekor qilish sababi (majburiy)')}</span><textarea className="compact-control" rows={4} maxLength={500} value={cancelAllocationReason} onChange={(event) => setCancelAllocationReason(event.target.value)} /></label>
-            <div className="mt-6 flex justify-end gap-3"><button type="button" disabled={cancelAllocationBusy} onClick={() => setCancelAllocation(null)} className="rounded bg-surface-2 px-4 py-2">{tr('Cancel', 'Bekor qilish')}</button><button type="button" disabled={cancelAllocationBusy || !cancelAllocationDraftValid} onClick={submitAllocationCancel} className="rounded bg-red-600 px-4 py-2 font-bold text-white disabled:opacity-50">{cancelAllocationBusy ? tr('Sending…', 'Yuborilmoqda…') : tr('Cancel tickets', 'Biletlarni bekor qilish')}</button></div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2"><div><span className="compact-label">{tr('Flight', 'Reys')}</span><strong>{flightDisplayName}</strong></div><div><span className="compact-label">{tr('Agent firm', 'Agent firma')}</span><strong>{cancelAllocation.toFirm?.name || '—'}</strong></div><div><span className="compact-label">RT / OW</span><strong>{cancelAllocation.productType === 'ONE_WAY' ? `OW · ${cancelAllocation.direction}` : 'RT'}</strong></div><div><span className="compact-label">{tr('Allocated', 'Ajratilgan')}</span><strong>{cancelAllocation.originalQuantity || cancelAllocation.allocatedQuantity} ta</strong></div><div><span className="compact-label">{tr('Sold', 'Sotilgan')}</span><strong>{cancelAllocation.soldQuantity || 0} ta</strong></div><div><span className="compact-label">{tr('Reserved for tour', 'Turga band')}</span><strong>{cancelAllocation.reservedForTourQuantity || 0} ta</strong></div></div>
+            <label className="mt-4 block"><span className="compact-label">{tr('Cancellation quantity', 'Bekor qilinadigan miqdor')} ({tr('maximum', 'maksimal')}: {cancelAllocation.cancellableQuantity})</span><input type="number" min="1" max={cancelAllocation.cancellableQuantity} className="compact-control" value={cancelAllocationQuantity} onChange={(event) => setCancelAllocationQuantity(event.target.value)} /></label>
+            <label className="mt-4 block"><span className="compact-label">{tr('Required cancellation reason', 'Bekor qilish sababi (majburiy)')}</span><textarea className="compact-control" rows={4} minLength={5} maxLength={500} value={cancelAllocationReason} onChange={(event) => setCancelAllocationReason(event.target.value)} /></label>
+            <div className="mt-4 rounded-lg border border-red-600/40 bg-red-600/10 p-3 text-sm">{tr('This is a business cancellation. The original allocation and payment history will not be deleted.', 'Bu biznes bekor qilish operatsiyasi. Original ajratma va oldingi to‘lovlar o‘chirilmaydi.')}</div>
+            <div className="mt-6 flex justify-end gap-3"><button type="button" disabled={cancelAllocationBusy} onClick={() => setCancelAllocation(null)} className="rounded bg-surface-2 px-4 py-2">{tr('Back', 'Ortga')}</button><button type="button" disabled={cancelAllocationBusy || !cancelAllocationDraftValid} onClick={submitAllocationCancel} className="rounded bg-red-600 px-4 py-2 font-bold text-white disabled:opacity-50">{cancelAllocationBusy ? tr('Sending…', 'Yuborilmoqda…') : tr('Confirm cancellation', 'Bekor qilishni tasdiqlash')}</button></div>
           </div>
         </div>
       )}

@@ -7,13 +7,13 @@ describe('financial transaction visibility', () => {
       AND: [
         { deletedAt: null },
         { status: { not: 'DELETED' } },
-        { NOT: [
+        { NOT: { OR: [
           { type: 'PAYABLE', OR: [
             { subjectType: { in: ['TICKET_ALLOCATION', 'TICKET_ALLOCATION_ADJUSTMENT'] } },
             { ticketId: { not: null }, subjectType: null },
           ] },
           { subjectType: 'SERVICE', direction: 'SERVICE_PURCHASE' },
-        ] },
+        ] } },
         { firmId: 'firm-1' },
       ],
     });

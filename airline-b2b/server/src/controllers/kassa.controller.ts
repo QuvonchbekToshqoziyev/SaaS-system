@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import {
   closeKassaService,
   createKassaDeskService,
+  createKassaTransferService,
   createPaymentCardService,
   deletePaymentCardService,
   getKassaDayService,
@@ -225,6 +226,15 @@ export const deletePaymentCard = async (req: Request, res: Response) => {
       before: result,
     });
     return res.json({ success: true, card: result });
+  } catch (err) {
+    return sendError(res, err);
+  }
+};
+
+export const createKassaTransfer = async (req: Request, res: Response) => {
+  try {
+    const result = await createKassaTransferService(getAuthUser(req), req.body || {});
+    return res.status(201).json(result);
   } catch (err) {
     return sendError(res, err);
   }

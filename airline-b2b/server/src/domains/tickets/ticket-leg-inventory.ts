@@ -386,11 +386,14 @@ export async function rejectLegAllocation(tx: Prisma.TransactionClient, input: {
   if (!allocation) throw new Error('Allocation not found');
   if (allocation.status !== 'PENDING') throw new Error('Ushbu ajratma allaqachon ko‘rib chiqilgan.');
   const legIds = allocation.legItems.map((item) => item.ticketLegId);
+  if (!legIds.length) throw new Error('Allocation segmentlari topilmadi');
   await tx.$queryRaw(Prisma.sql`SELECT id FROM "TicketLeg" WHERE id IN (${Prisma.join(legIds)}) FOR UPDATE`);
-  for (const item of allocation.legItems) {
-    if (item.ticketLeg.status !== TicketLegStatus.PENDING_ALLOCATION || item.ticketLeg.pendingAllocationId !== allocation.id) {
-      throw new Error('Allocation segment state is inconsistent');
-    }
+  const pendingItems = allocation.legItems.filter((item) => (
+    item.ticketLeg.status === TicketLegStatus.PENDING_ALLOCATION
+    && item.ticketLeg.pendingAllocationId === allocation.id
+  ));
+  if (!pendingItems.length) throw new Error('Ajratmaga tegishli kutilayotgan segmentlar topilmadi.');
+  for (const item of pendingItems) {
     await tx.ticketLeg.update({
       where: { id: item.ticketLegId },
       data: {
@@ -402,8 +405,8 @@ export async function rejectLegAllocation(tx: Prisma.TransactionClient, input: {
         allocationPriceSnapshot: null,
       },
     });
-    await tx.ticketAllocationLeg.update({ where: { id: item.id }, data: { status: 'REJECTED' } });
   }
+  await tx.ticketAllocationLeg.updateMany({ where: { allocationId: allocation.id, status: 'ACTIVE' }, data: { status: 'REJECTED' } });
   const updated = await tx.ticketAllocation.update({
     where: { id: allocation.id },
     data: { status: 'REJECTED', rejectionReason: input.reason, rejectedAt: new Date(), rejectedByUserId: input.rejectedByUserId || null },
@@ -467,6 +470,11 @@ function isCancellableAllocationUnit(allocation: AllocationWithLegItems, unit: R
   return unit.items.every((item) => {
     const leg = item.ticketLeg;
     if (leg.tourPackageId || leg.saleItems?.length) return false;
+    const alreadyRestored = leg.status === item.previousStatus
+      && leg.currentOwnerFirmId === item.previousOwnerFirmId
+      && !leg.pendingAllocationId
+      && !leg.acceptedAllocationId;
+    if (alreadyRestored) return true;
     if (allocation.status === 'PENDING') {
       return leg.status === TicketLegStatus.PENDING_ALLOCATION && leg.pendingAllocationId === allocation.id;
     }
@@ -478,6 +486,31 @@ function isCancellableAllocationUnit(allocation: AllocationWithLegItems, unit: R
 
 export function countCancellableLegAllocationUnits(allocation: AllocationWithLegItems) {
   return groupAllocationUnits(allocation).filter((unit) => isCancellableAllocationUnit(allocation, unit)).length;
+}
+
+export function summarizeLegAllocationUnits(allocation: AllocationWithLegItems) {
+  const activeUnits = groupAllocationUnits(allocation);
+  const originalQuantity = new Set(allocation.legItems.map((item) => item.ticketLeg.ticketId)).size;
+  return {
+    originalQuantity,
+    activeQuantity: activeUnits.length,
+    cancelledQuantity: Math.max(originalQuantity - activeUnits.length, 0),
+    soldQuantity: activeUnits.filter((unit) => unit.items.some((item) => item.ticketLeg.status === TicketLegStatus.SOLD || Boolean(item.ticketLeg.saleItems?.length))).length,
+    reservedForTourQuantity: activeUnits.filter((unit) => unit.items.some((item) => item.ticketLeg.status === TicketLegStatus.RESERVED_FOR_TOUR || Boolean(item.ticketLeg.tourPackageId))).length,
+    cancellableQuantity: activeUnits.filter((unit) => isCancellableAllocationUnit(allocation, unit)).length,
+  };
+}
+
+export function previewLegAllocationCancellation(allocation: AllocationWithLegItems, quantity: number) {
+  const cancellable = groupAllocationUnits(allocation).filter((unit) => isCancellableAllocationUnit(allocation, unit));
+  if (!Number.isInteger(quantity) || quantity <= 0 || quantity > cancellable.length) {
+    throw new Error(`Ushbu ajratmadan faqat ${cancellable.length} ta ${allocation.productType === TicketProductType.ROUND_TRIP ? 'RT bilet' : 'OW segment'} bekor qilinishi mumkin.`);
+  }
+  const units = cancellable.slice(-quantity);
+  return {
+    quantity,
+    cancelledValue: units.reduce((sum, unit) => sum.add(unit.items[0].productUnitPriceSnapshot), new Prisma.Decimal(0)).toDecimalPlaces(4),
+  };
 }
 
 function rowsFromUnitPrices(prices: Prisma.Decimal[]) {
@@ -506,6 +539,8 @@ export async function changeLegAllocation(tx: Prisma.TransactionClient, input: {
   const units = groupAllocationUnits(allocation);
   if (!units.length) throw new Error('Ajratma segmentlari topilmadi. Migratsiya tekshiruvini ishga tushiring.');
   if (!['PENDING', 'ACCEPTED'].includes(allocation.status)) throw new Error('Ushbu ajratmani endi o‘zgartirib bo‘lmaydi.');
+  const legIds = units.flatMap((unit) => unit.items.map((item) => item.ticketLegId));
+  await tx.$queryRaw(Prisma.sql`SELECT id FROM "TicketLeg" WHERE id IN (${Prisma.join(legIds)}) FOR UPDATE`);
 
   let cancelledUnits: typeof units = [];
   let retainedUnits = units;

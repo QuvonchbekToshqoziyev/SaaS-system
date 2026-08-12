@@ -13,6 +13,10 @@ import { softDeleteTransaction, visibleTransactionWhere } from '../utils/transac
 import { canOperateKassa } from '../utils/kassa-permissions';
 import { historicalKassaIdempotencyKey, normalizeHistoricalKassaImportRows, type HistoricalKassaImportError, type HistoricalKassaImportRow } from '../domains/transactions/historical-kassa-import';
 import { randomUUID } from 'node:crypto';
+import { maskCardNumber } from '../domains/transactions/transaction-display';
+import { activeFlightWhere, firmFlightParticipationWhere } from '../domains/flights/flight-scope';
+import { resolveKassaTransactionFlow } from '../services/kassa.service';
+import { expenseInputError } from '../domains/expenses/expense-classification';
 
 type AuthUser = {
   userId?: string;
@@ -182,6 +186,13 @@ export const importHistoricalKassaTransactions = async (req: Request, res: Respo
   };
   if (dryRun || errors.length) return res.status(dryRun ? 200 : 422).json(preview);
 
+  if (skippedKeys.size) {
+    await prisma.transaction.updateMany({
+      where: { idempotencyKey: { in: [...skippedKeys] }, sourceMode: { not: 'HISTORICAL_IMPORT' } },
+      data: { sourceMode: 'HISTORICAL_IMPORT' },
+    });
+  }
+
   const firm = await prisma.firm.findUnique({ where: { id: firmId }, select: { id: true, name: true } });
   if (!firm) return res.status(404).json({ error: 'Firma topilmadi.' });
 
@@ -262,7 +273,7 @@ export const getTransactions = async (req: Request, res: Response) => {
   const authUser = getAuthUser(req);
   const role = normalizeRole(authUser.role);
 
-  const { dateFrom, dateTo, firmId, flightId, allocationId, kassaDeskId, paymentCardId, paymentMethod, sourceMode, status, confirmedOnly, type, currency, page = '1', limit = '10' } = req.query;
+  const { dateFrom, dateTo, firmId, flightId, allocationId, kassaDeskId, paymentCardId, paymentMethod, sourceMode, operationType, status, confirmedOnly, type, currency, page = '1', limit = '10' } = req.query;
   const where: Prisma.TransactionWhereInput = {};
   const conditions: Prisma.TransactionWhereInput[] = [];
 
@@ -305,6 +316,7 @@ export const getTransactions = async (req: Request, res: Response) => {
   if (currency) where.currency = String(currency);
   if (paymentMethod) where.paymentMethod = String(paymentMethod).toLowerCase();
   if (sourceMode) where.sourceMode = String(sourceMode).toUpperCase();
+  if (operationType) where.operationType = String(operationType).toUpperCase();
   if (status) where.status = String(status).toUpperCase();
   if (String(confirmedOnly || '').toLowerCase() === 'true') where.status = 'CONFIRMED';
   if (conditions.length) where.AND = conditions;
@@ -318,7 +330,7 @@ export const getTransactions = async (req: Request, res: Response) => {
     prisma.transaction.count({ where: visibleWhere }),
     prisma.transaction.findMany({
       where: visibleWhere,
-      include: { firm: true, flight: true, payerFirm: true, receiverFirm: true, paymentCard: true, createdBy: { select: { id: true, email: true, fullName: true } }, kassaDesk: { include: { firm: true } } },
+      include: { firm: true, flight: true, payerFirm: true, receiverFirm: true, paymentCard: true, expenseCategory: true, sourceAccount: true, destinationAccount: true, createdBy: { select: { id: true, email: true, fullName: true } }, kassaDesk: { include: { firm: true } } },
       orderBy: { createdAt: 'desc' },
       skip,
       take: limitNum
@@ -341,24 +353,21 @@ export const getTransactions = async (req: Request, res: Response) => {
 
 export const getTransactionById = async (req: Request, res: Response) => {
   const authUser = getAuthUser(req);
-  const role = normalizeRole(authUser.role);
-
   const { id } = req.params;
+  const accessibleFirmIds = await getAccessibleFirmIds(authUser);
+  const accessWhere: Prisma.TransactionWhereInput = accessibleFirmIds ? { OR: [
+    { firmId: { in: accessibleFirmIds } },
+    { payerFirmId: { in: accessibleFirmIds } },
+    { receiverFirmId: { in: accessibleFirmIds } },
+  ] } : {};
   const tx = await prisma.transaction.findFirst({
-    where: visibleTransactionWhere({ id: String(id) }),
-    include: { firm: true, flight: true, ticket: true, payerFirm: true, receiverFirm: true, kassaDesk: { include: { firm: true } } }
+    where: visibleTransactionWhere({ id: String(id), ...accessWhere }),
+    include: { firm: true, flight: true, ticket: true, payerFirm: true, receiverFirm: true, expenseCategory: true, sourceAccount: true, destinationAccount: true, ledgerEntries: true, journalEntry: true, kassaDesk: { include: { firm: true } } }
   });
   if (!tx) {
     return res.status(404).json({ error: 'Transaction not found' });
   }
 
-  const accessibleFirmIds = await getAccessibleFirmIds(authUser);
-  if (accessibleFirmIds) {
-    const ids = [tx.firmId, tx.payerFirmId, tx.receiverFirmId].filter(Boolean) as string[];
-    if (!ids.some((id) => accessibleFirmIds.includes(id))) {
-      return res.status(404).json({ error: 'Transaction not found' });
-    }
-  }
   res.json(tx);
 };
 
@@ -366,17 +375,21 @@ async function getOwnedDailyCashTransaction(req: Request, id: string) {
   const authUser = getAuthUser(req);
   const row = await prisma.transaction.findFirst({ where: visibleTransactionWhere({ id }) });
   if (!row) throw new Error('Transaction not found');
-  if (row.type !== 'ADJUSTMENT' || !['KASSA_IN', 'KASSA_OUT'].includes(String(row.direction || ''))) {
-    throw new Error('Only manually entered cash income/expense can be changed');
+  const manualCash = row.type === 'ADJUSTMENT' && ['KASSA_IN', 'KASSA_OUT'].includes(String(row.direction || ''));
+  const manualPayment = row.type === 'PAYMENT' && String(row.sourceMode || '').startsWith('MANUAL_');
+  if (!manualCash && !manualPayment) {
+    throw new Error('Only manually entered income/expense can be changed');
   }
   const isCreator = Boolean(authUser.userId) && row.createdByUserId === String(authUser.userId);
+  const isSuperadmin = normalizeRole(authUser.role) === 'SUPERADMIN';
   const isOwnFirmAdmin = normalizeRole(authUser.role) === 'FIRM'
     && String(authUser.firmRole || '').toUpperCase() === 'FIRM_ADMIN'
     && Boolean(authUser.firmId)
     && row.firmId === String(authUser.firmId);
-  if (!isCreator && !isOwnFirmAdmin) {
+  if (!isSuperadmin && !isCreator && !isOwnFirmAdmin) {
     throw new Error('Only the creator or the firm admin can correct this transaction');
   }
+  if (isKassirUser(authUser)) await assertKassirDeskAccess(authUser, row.kassaDeskId);
   const metadata = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
     ? row.metadata as Record<string, unknown>
     : {};
@@ -387,19 +400,98 @@ async function getOwnedDailyCashTransaction(req: Request, id: string) {
 
 export const updateOwnDailyCashTransaction = async (req: Request, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const { row, metadata } = await getOwnedDailyCashTransaction(req, String(req.params.id || ''));
-    const note = String(req.body?.note || '').trim().slice(0, 500);
-    const correctionReason = requireCorrectionReason(req.body?.correctionReason);
-    const originalAmount = req.body?.amount == null ? row.originalAmount : Number(req.body.amount);
-    if (!Number.isFinite(Number(originalAmount)) || Number(originalAmount) <= 0) {
-      return res.status(400).json({ error: 'Amount must be greater than zero' });
+    const expectedUpdatedAt = String(req.body?.expectedUpdatedAt || '').trim();
+    if (expectedUpdatedAt && new Date(expectedUpdatedAt).getTime() !== row.updatedAt.getTime()) {
+      throw new TransactionConflictError('Transaction changed; refresh and retry');
     }
-    const baseAmount = Number(originalAmount) * Number(row.exchangeRate);
-    const updated = await prisma.transaction.update({
-      where: { id: row.id },
-      data: { originalAmount, baseAmount, metadata: { ...metadata, note, ...(correctionReason ? { correctionReason } : {}) } },
+    const note = String(req.body?.note ?? metadata.note ?? '').trim().slice(0, 1000);
+    const correctionReason = requireCorrectionReason(req.body?.correctionReason);
+    const amount = parseDecimal(req.body?.amount ?? row.originalAmount);
+    if (!amount?.gt(0)) return res.status(400).json({ error: 'Amount must be greater than zero' });
+    const flow = String(req.body?.flow || (resolveKassaTransactionFlow(row) || 'IN')).toUpperCase();
+    const method = String(req.body?.method || row.paymentMethod || 'cash').toLowerCase();
+    const currency = normalizeCurrency(req.body?.currency || row.currency);
+    const rawFlightId = String(req.body?.flightId ?? row.flightId ?? '').trim() || null;
+    const allocationInputProvided = Object.prototype.hasOwnProperty.call(req.body || {}, 'allocationId');
+    const rawAllocationId = String(allocationInputProvided ? (req.body?.allocationId || '') : (row.subjectType === 'TICKET_ALLOCATION' ? row.subjectId : '') || '').trim() || null;
+    const rawTourPackageId = String(req.body?.tourPackageId ?? (row.subjectType === 'TOUR_PACKAGE' ? row.subjectId : '') ?? '').trim() || null;
+    const operationPurpose = String(req.body?.operationPurpose || (rawAllocationId ? 'TICKET_ALLOCATION' : rawTourPackageId ? 'TOUR_PACKAGE' : rawFlightId ? 'FLIGHT' : 'GENERAL')).trim().toUpperCase();
+    if (!['GENERAL', 'FLIGHT', 'TICKET_ALLOCATION', 'TOUR_PACKAGE'].includes(operationPurpose)) return res.status(400).json({ error: 'Invalid operation purpose' });
+    const allocationId = operationPurpose === 'TICKET_ALLOCATION' ? rawAllocationId : null;
+    const tourPackageId = operationPurpose === 'TOUR_PACKAGE' ? rawTourPackageId : null;
+    const flightId = operationPurpose === 'GENERAL' ? null : rawFlightId;
+    const counterpartyFirmId = String(req.body?.counterpartyFirmId || (flow === 'IN' ? row.payerFirmId : row.receiverFirmId) || '').trim() || null;
+    if (!['IN', 'OUT'].includes(flow)) return res.status(400).json({ error: 'flow must be IN or OUT' });
+    if (!['cash', 'card', 'bank'].includes(method)) return res.status(400).json({ error: 'method must be cash, card or bank' });
+    if (!/^[A-Z]{3}$/.test(currency)) return res.status(400).json({ error: 'Invalid currency code' });
+
+    const kassaDeskId = String(req.body?.kassaDeskId ?? row.kassaDeskId ?? '').trim() || null;
+    const paymentCardId = method === 'card' ? String(req.body?.paymentCardId ?? row.paymentCardId ?? '').trim() : '';
+    const bankAccountId = method === 'bank' ? String(req.body?.bankAccountId || '').trim() : '';
+    if (method === 'cash' && !kassaDeskId) return res.status(400).json({ error: 'Cash transaction requires a kassa desk' });
+    if (method === 'card' && !paymentCardId) return res.status(400).json({ error: 'Card transaction requires a card' });
+    if (method === 'bank' && !bankAccountId) return res.status(400).json({ error: 'Bank transaction requires a bank account' });
+    if (operationPurpose === 'TICKET_ALLOCATION' && !allocationId) return res.status(400).json({ error: 'Ticket allocation must be selected' });
+    if (operationPurpose === 'FLIGHT' && !flightId) return res.status(400).json({ error: 'Flight must be selected' });
+    if (operationPurpose === 'TOUR_PACKAGE' && !tourPackageId) return res.status(400).json({ error: 'Tour package must be selected' });
+
+    if (counterpartyFirmId && !(await canViewRelatedFirm(authUser, counterpartyFirmId))) {
+      return res.status(403).json({ error: 'Kontragent bu firma doirasida emas' });
+    }
+
+    const [desk, card, bankAccount, flight, allocation, tourPackage, counterparty] = await Promise.all([
+      kassaDeskId ? resolveKassaDesk(authUser, kassaDeskId) : Promise.resolve(null),
+      paymentCardId ? prisma.paymentCard.findFirst({ where: { id: paymentCardId, deletedAt: null }, select: { id: true, firmId: true, ownerName: true, cardNumber: true, currency: true, status: true } }) : Promise.resolve(null),
+      bankAccountId ? prisma.financialAccount.findFirst({ where: { id: bankAccountId, status: 'ACTIVE' }, select: { id: true, firmId: true, name: true, currency: true, type: true } }) : Promise.resolve(null),
+      flightId ? prisma.flight.findFirst({ where: { id: flightId, AND: [activeFlightWhere(), firmFlightParticipationWhere([row.firmId])] }, select: { id: true, flightNumber: true, route: true } }) : Promise.resolve(null),
+      allocationId ? prisma.ticketAllocation.findFirst({ where: { id: allocationId, status: 'ACCEPTED', OR: [{ fromFirmId: row.firmId }, { toFirmId: row.firmId }] }, select: { id: true, flightId: true, fromFirmId: true, toFirmId: true } }) : Promise.resolve(null),
+      tourPackageId ? prisma.tourPackage.findFirst({ where: { id: tourPackageId, deletedAt: null, OR: [{ ownerFirmId: row.firmId }, { sales: { some: { deletedAt: null, OR: [{ sellerFirmId: row.firmId }, { buyerFirmId: row.firmId }] } } }] }, select: { id: true, name: true, flightId: true } }) : Promise.resolve(null),
+      counterpartyFirmId ? prisma.firm.findUnique({ where: { id: counterpartyFirmId }, select: { id: true, name: true } }) : Promise.resolve(null),
+    ]);
+    if (kassaDeskId) await assertKassirDeskAccess(authUser, kassaDeskId);
+    if (kassaDeskId && (!desk || desk.firmId !== row.firmId)) return res.status(403).json({ error: 'Kassa boshqa firmaga tegishli' });
+    if (paymentCardId && (!card || card.firmId !== row.firmId)) return res.status(403).json({ error: 'Karta boshqa firmaga tegishli' });
+    if (card && (card.status !== 'ACTIVE' || card.currency !== currency)) return res.status(400).json({ error: 'Karta faol va tranzaksiya valyutasiga mos bo‘lishi kerak' });
+    if (bankAccountId && (!bankAccount || bankAccount.firmId !== row.firmId || bankAccount.type !== 'BANK')) return res.status(403).json({ error: 'Bank hisobi boshqa firmaga tegishli yoki noto‘g‘ri' });
+    if (bankAccount && bankAccount.currency !== currency) return res.status(400).json({ error: 'Bank hisobi valyutasi mos emas' });
+    if (flightId && !flight) return res.status(403).json({ error: 'Reys bu firma doirasida emas' });
+    if (allocationId && (!allocation || (flightId && allocation.flightId !== flightId))) return res.status(400).json({ error: 'Tasdiqlangan ajratma topilmadi yoki reysga mos emas' });
+    if (tourPackageId && !tourPackage) return res.status(403).json({ error: 'Tur paketi bu firma doirasida emas' });
+    if (counterpartyFirmId && !counterparty) return res.status(404).json({ error: 'Kontragent topilmadi' });
+
+    const exchangeRate = req.body?.exchangeRate == null && currency === row.currency
+      ? new Prisma.Decimal(row.exchangeRate)
+      : await resolveExchangeRateToUzs(authUser, { currency, overrideRate: req.body?.exchangeRate, rateFirmId: row.firmId });
+    const operationalAccount = method === 'bank'
+      ? bankAccount!
+      : await ensureFinancialAccount({ firmId: row.firmId, currency, type: method === 'card' ? FinancialAccountType.CARD : FinancialAccountType.CASH, kassaDeskId: method === 'cash' ? kassaDeskId : undefined, paymentCardId: method === 'card' ? paymentCardId : undefined, createdByUserId: authUser.userId });
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Transaction" WHERE id = ${row.id} FOR UPDATE`;
+      const current = await tx.transaction.findUnique({ where: { id: row.id } });
+      if (!current || current.updatedAt.getTime() !== row.updatedAt.getTime()) throw new TransactionConflictError('Transaction changed; refresh and retry');
+      return tx.transaction.update({
+        where: { id: row.id },
+        data: {
+          direction: row.type === 'ADJUSTMENT' ? (flow === 'IN' ? 'KASSA_IN' : 'KASSA_OUT') : row.direction,
+          payerFirmId: flow === 'IN' ? (counterpartyFirmId || row.firmId) : row.firmId,
+          receiverFirmId: flow === 'OUT' ? (counterpartyFirmId || row.firmId) : row.firmId,
+          flightId: flightId || tourPackage?.flightId || null,
+          subjectType: allocationId ? 'TICKET_ALLOCATION' : tourPackageId ? 'TOUR_PACKAGE' : flightId ? 'FLIGHT' : row.type === 'PAYMENT' ? 'DEPOSIT' : 'KASSA', subjectId: allocationId || tourPackageId || flightId || row.firmId,
+          kassaDeskId, paymentMethod: method, paymentCardId: method === 'card' ? paymentCardId : null,
+          sourceAccountId: flow === 'OUT' ? operationalAccount.id : null, destinationAccountId: flow === 'IN' ? operationalAccount.id : null,
+          originalAmount: amount.toDecimalPlaces(4), currency, exchangeRate, baseAmount: amount.mul(exchangeRate).toDecimalPlaces(4),
+          sourceMode: method === 'card' ? 'MANUAL_CARD' : method === 'bank' ? 'MANUAL_BANK' : 'MANUAL_CASH',
+          updatedByUserId: authUser.userId || null,
+          counterpartyNameSnapshot: counterparty?.name || String(req.body?.counterpartyName || '').trim() || row.counterpartyNameSnapshot,
+          cardNameSnapshot: card?.ownerName || null, cardMaskedNumberSnapshot: card?.cardNumber ? maskCardNumber(card.cardNumber) : null,
+          metadata: { ...metadata, note, cashFlow: flow, correctionReason, operationPurpose, counterpartyFirmId, counterpartyLabel: counterparty?.name, paymentCardId: card?.id, paymentCardOwner: card?.ownerName, paymentCardNumber: card ? maskCardNumber(card.cardNumber) : null, bankAccountId: bankAccount?.id, bankAccountName: bankAccount?.name, allocationId, tourPackageId, tourPackageName: tourPackage?.name, flightNumber: flight?.flightNumber, kassaDeskId, kassaDeskLabel: desk?.name } as Prisma.InputJsonValue,
+        },
+      });
     });
-    await writeAuditLog(req, { action: 'UPDATE', entityType: 'transaction', entityId: row.id, summary: `Cash correction: ${correctionReason}`, before: row, after: updated, metadata: { correctionReason } });
+    await writeAuditLog(req, { action: 'CASH_TRANSACTION_UPDATED', entityType: 'transaction', entityId: row.id, summary: `Cash correction: ${correctionReason}`, before: row, after: updated, metadata: { transactionId: row.id, reason: correctionReason, oldCashDeskId: row.kassaDeskId, newCashDeskId: updated.kassaDeskId, oldCardId: row.paymentCardId, newCardId: updated.paymentCardId, oldAmount: row.originalAmount, newAmount: updated.originalAmount, oldPaymentMethod: row.paymentMethod, newPaymentMethod: updated.paymentMethod } });
     return res.json(updated);
   } catch (err: any) {
     return res.status(err instanceof TransactionConflictError ? 409 : err?.message === 'Transaction not found' ? 404 : 400).json({ error: err?.message || 'Failed to update transaction' });
@@ -410,8 +502,9 @@ export const deleteOwnDailyCashTransaction = async (req: Request, res: Response)
   try {
     const { row } = await getOwnedDailyCashTransaction(req, String(req.params.id || ''));
     const correctionReason = requireCorrectionReason(req.body?.correctionReason || req.body?.reason);
-    await softDeleteTransaction(prisma, row.id);
-    await writeAuditLog(req, { action: 'DELETE', entityType: 'transaction', entityId: row.id, summary: `Cash entry removed: ${correctionReason}`, before: row, metadata: { correctionReason } });
+    const deleted = await softDeleteTransaction(prisma, row.id, new Date(), { updatedByUserId: getAuthUser(req).userId || null, deletedByUserId: getAuthUser(req).userId || null, deletionReason: correctionReason });
+    await writeAuditLog(req, { action: 'CASH_TRANSACTION_CANCELLED', entityType: 'transaction', entityId: row.id, summary: `Cash entry removed: ${correctionReason}`, before: row, after: deleted, metadata: { transactionId: row.id, reason: correctionReason } });
+    await writeAuditLog(req, { action: 'CASH_TRANSACTION_REVERSED', entityType: 'transaction', entityId: row.id, summary: 'Tranzaksiyaning balans ta’siri chiqarildi', before: { status: row.status }, after: { status: deleted.status }, metadata: { transactionId: row.id, reason: correctionReason, amount: row.originalAmount, currency: row.currency } });
     return res.json({ ok: true });
   } catch (err: any) {
     return res.status(err instanceof TransactionConflictError ? 409 : err?.message === 'Transaction not found' ? 404 : 400).json({ error: err?.message || 'Failed to delete transaction' });
@@ -427,14 +520,15 @@ export const deleteTransaction = async (req: Request, res: Response) => {
   const row = await prisma.transaction.findFirst({ where: visibleTransactionWhere({ id }) });
   if (!row) return res.status(404).json({ error: 'Transaction not found' });
   if (!canDeleteFirmTransaction(authUser, row.firmId)) return res.status(403).json({ error: 'Only superadmin or the owning firm admin can delete this transaction' });
+  if (row.sourceMode === 'FINANCIAL_MODULE' && row.status === 'APPLIED') return res.status(409).json({ error: 'APPLIED moliyaviy tranzaksiya o‘chirilmaydi. Reversal funksiyasidan foydalaning.' });
   try {
     await assertTransactionKassaEditable(row);
   } catch (err: any) {
     return res.status(409).json({ error: err?.message || 'Kassa session must be open' });
   }
 
-  await softDeleteTransaction(prisma, id);
-  await writeAuditLog(req, { action: 'DELETE', entityType: 'transaction', entityId: id, summary: `Deleted transaction: ${reason}`, before: row, metadata: { reason } });
+  const deleted = await softDeleteTransaction(prisma, id, new Date(), { updatedByUserId: authUser.userId || null, deletedByUserId: authUser.userId || null, deletionReason: reason });
+  await writeAuditLog(req, { action: 'CASH_TRANSACTION_CANCELLED', entityType: 'transaction', entityId: id, summary: `Deleted transaction: ${reason}`, before: row, after: deleted, metadata: { transactionId: id, reason } });
   return res.json({ ok: true });
 };
 
@@ -597,6 +691,9 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
   const businessDate = parseBusinessDate(String(body.businessDate || body.date || ''));
   const method = String(body.method || body.paymentMethod || 'cash').trim().toLowerCase();
   const paymentCardId = String(body.paymentCardId || body.cardId || '').trim();
+  const expenseDirection = flow === 'OUT' ? String(body.expenseDirection || '').trim().toUpperCase() : '';
+  const expenseCategoryId = String(body.expenseCategoryId || '').trim() || undefined;
+  const employeeId = String(body.employeeId || '').trim() || undefined;
   let kassaDesk: Awaited<ReturnType<typeof resolveKassaDesk>> = null;
 
   let firmId = rawFirmId;
@@ -607,6 +704,11 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
   if (!['IN', 'OUT'].includes(flow)) {
     return res.status(400).json({ error: 'flow must be IN or OUT' });
   }
+  const expenseDirections = ['COMPANY_EXPENSE', 'EMPLOYEE_PAYMENT', 'COUNTERPARTY_PAYMENT', 'TAX_PAYMENT', 'ASSET_PURCHASE', 'ADVANCE_PAID', 'OWNER_WITHDRAWAL', 'DIVIDEND', 'INTERNAL_TRANSFER', 'OTHER_EXPENSE'];
+  if (flow === 'OUT' && !expenseDirections.includes(expenseDirection)) return res.status(400).json({ error: 'Chiqim yo‘nalishi tanlanishi kerak' });
+  if (expenseDirection === 'INTERNAL_TRANSFER') return res.status(400).json({ error: 'Hisoblararo o‘tkazmani Tranzaksiyalar modulida kiriting' });
+  const inputError = flow === 'OUT' ? expenseInputError({ direction: expenseDirection, categoryId: expenseCategoryId, employeeId }) : null;
+  if (inputError) return res.status(400).json({ error: inputError });
   if (!['cash', 'card'].includes(method)) {
     return res.status(400).json({ error: 'method must be cash or card' });
   }
@@ -643,13 +745,15 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
   }
 
   try {
-    const [firm, counterparty, flight, paymentCard] = await Promise.all([
+    const [firm, counterparty, flight, paymentCard, expenseCategory, employee] = await Promise.all([
       prisma.firm.findUnique({ where: { id: firmId }, select: { id: true, name: true, kind: true } }),
       counterpartyFirmId ? prisma.firm.findUnique({ where: { id: counterpartyFirmId }, select: { id: true, name: true, kind: true } }) : Promise.resolve(null),
       flightId ? prisma.flight.findUnique({ where: { id: flightId }, select: { id: true, flightNumber: true } }) : Promise.resolve(null),
       paymentCardId
         ? prisma.paymentCard.findUnique({ where: { id: paymentCardId }, select: { id: true, ownerName: true, cardNumber: true, currency: true, status: true } })
         : Promise.resolve(null),
+      expenseCategoryId ? prisma.expenseCategory.findFirst({ where: { id: expenseCategoryId, firmId, isActive: true, deletedAt: null } }) : Promise.resolve(null),
+      employeeId ? prisma.employee.findFirst({ where: { id: employeeId, firmId, status: 'ACTIVE', deletedAt: null }, select: { id: true, name: true, role: true } }) : Promise.resolve(null),
     ]);
     if (!firm) return res.status(404).json({ error: 'Firm not found' });
     if (counterpartyFirmId && !counterparty) return res.status(404).json({ error: 'Counterparty not found' });
@@ -658,13 +762,24 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
       if (!paymentCard) return res.status(404).json({ error: 'Payment card not found' });
       if (paymentCard.status !== 'ACTIVE') return res.status(400).json({ error: 'Payment card is not active' });
     }
+    if (expenseCategoryId && !expenseCategory) return res.status(403).json({ error: 'Xarajat kategoriyasi bu firma doirasida emas' });
+    if (employeeId && !employee) return res.status(403).json({ error: 'Xodim bu firma doirasida emas yoki faol emas' });
+    if (expenseCategory?.code === 'OTHER_OPERATING' && !note) return res.status(400).json({ error: 'Boshqa operatsion xarajat uchun izoh majburiy' });
+    const exchangeRate = await resolveExchangeRateToUzs(authUser, { currency, date: businessDate, overrideRate: rawExchangeRate, rateFirmId: firmId });
+    let budgetExceeded: { budgetId: string; limitAction: string; projected: Prisma.Decimal; limit: Prisma.Decimal } | null = null;
+    if (flow === 'OUT' && expenseCategory) {
+      const budget = await prisma.expenseBudget.findFirst({ where: { firmId, isActive: true, periodStart: { lte: businessDate }, periodEnd: { gte: businessDate }, OR: [{ expenseCategoryId: expenseCategory.id }, { expenseCategoryId: null }] }, orderBy: { expenseCategoryId: 'desc' } });
+      if (budget) {
+        const spent = await prisma.transaction.aggregate({ where: visibleTransactionWhere({ firmId, expenseCategoryId: expenseCategory.id, accountingTreatment: 'EXPENSE', status: { in: ['CONFIRMED', 'APPLIED', 'POSTED', 'PAID'] }, expenseDate: { gte: budget.periodStart, lte: budget.periodEnd } }), _sum: { baseAmount: true } });
+        const projected = new Prisma.Decimal(spent._sum.baseAmount || 0).add(amount.mul(exchangeRate));
+        if (projected.gt(budget.amount)) {
+          budgetExceeded = { budgetId: budget.id, limitAction: budget.limitAction, projected, limit: budget.amount };
+          const isApprover = role === 'SUPERADMIN' || (role === 'FIRM' && String(authUser.firmRole || '').toUpperCase() === 'FIRM_ADMIN');
+          if (budget.limitAction === 'BLOCK' || (budget.limitAction === 'REQUIRE_APPROVAL' && !isApprover)) return res.status(409).json({ error: `Xarajat budjet limitidan oshadi. Limit: ${budget.amount} ${budget.currency}` });
+        }
+      }
+    }
 
-    const exchangeRate = await resolveExchangeRateToUzs(authUser, {
-      currency,
-      date: businessDate || new Date(),
-      overrideRate: rawExchangeRate,
-      rateFirmId: firmId,
-    });
     const baseAmount = amount.mul(exchangeRate).toDecimalPlaces(4);
     const operationalAccount = await ensureFinancialAccount({
       firmId, currency,
@@ -673,8 +788,20 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
       paymentCardId: method === 'card' ? paymentCardId : undefined,
       createdByUserId: authUser.userId,
     });
-    const created = await prisma.transaction.create({
-      data: {
+    const treatmentByDirection: Record<string, { treatment: string; debit: string; cashFlow: string }> = {
+      COMPANY_EXPENSE: { treatment: expenseCategory?.accountingTreatment || 'EXPENSE', debit: expenseCategory?.defaultAccountCode || expenseCategory?.financialStatementGroup || 'OPERATING_EXPENSES', cashFlow: expenseCategory?.cashFlowGroup || 'OPERATING' },
+      EMPLOYEE_PAYMENT: { treatment: 'EXPENSE', debit: 'EMPLOYEE_EXPENSE', cashFlow: 'OPERATING' },
+      COUNTERPARTY_PAYMENT: { treatment: 'LIABILITY_SETTLEMENT', debit: 'ACCOUNTS_PAYABLE', cashFlow: 'OPERATING' },
+      TAX_PAYMENT: { treatment: 'LIABILITY_SETTLEMENT', debit: 'TAX_PAYABLE', cashFlow: 'OPERATING' },
+      ASSET_PURCHASE: { treatment: 'ASSET', debit: 'PROPERTY_PLANT_EQUIPMENT', cashFlow: 'INVESTING' },
+      ADVANCE_PAID: { treatment: 'PREPAYMENT', debit: 'SUPPLIER_ADVANCES', cashFlow: 'OPERATING' },
+      OWNER_WITHDRAWAL: { treatment: 'OWNER_WITHDRAWAL', debit: 'FOUNDER_RECEIVABLE', cashFlow: 'FINANCING' },
+      DIVIDEND: { treatment: 'EQUITY', debit: 'RETAINED_EARNINGS', cashFlow: 'FINANCING' },
+      OTHER_EXPENSE: { treatment: 'EXPENSE', debit: 'OTHER_EXPENSE', cashFlow: 'OPERATING' },
+    };
+    const impact = flow === 'OUT' ? treatmentByDirection[expenseDirection] : null;
+    const created = await prisma.$transaction(async (tx) => {
+      const transaction = await tx.transaction.create({ data: {
         firmId,
         payerFirmId: flow === 'IN' ? (counterpartyFirmId || firmId) : firmId,
         receiverFirmId: flow === 'OUT' ? (counterpartyFirmId || firmId) : firmId,
@@ -683,6 +810,22 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
         type: 'ADJUSTMENT',
         sourceMode: method === 'card' ? 'MANUAL_CARD' : 'MANUAL_CASH',
         status: 'CONFIRMED',
+        operationType: flow === 'OUT' ? expenseDirection : 'KASSA_INCOME',
+        expenseDirection: flow === 'OUT' ? expenseDirection : null,
+        accountingTreatment: impact?.treatment || (flow === 'IN' ? 'RECEIPT' : null),
+        expenseCategoryId: expenseCategory?.id,
+        expenseSubcategoryId: expenseCategory?.parentId ? expenseCategory.id : null,
+        employeeId: employee?.id || null,
+        counterpartyId: counterpartyFirmId || null,
+        expenseDate: flow === 'OUT' ? (parseBusinessDate(String(body.expenseDate || body.businessDate || '')) || businessDate) : null,
+        paymentDate: businessDate,
+        documentDate: body.documentDate ? parseBusinessDate(String(body.documentDate)) : null,
+        postingDate: businessDate,
+        reportingPeriod: String(body.reportingPeriod || businessDate.toISOString().slice(0, 7)),
+        documentNumber: String(body.documentNumber || '').trim() || null,
+        taxDeductible: expenseCategory?.taxDeductible ?? (body.taxDeductible === true),
+        vatAmount: parseDecimal(body.vatAmount),
+        approvalStatus: 'APPROVED',
         direction: flow === 'IN' ? 'KASSA_IN' : 'KASSA_OUT',
         subjectType: flightId ? 'FLIGHT' : 'KASSA',
         subjectId: flightId || firmId,
@@ -695,6 +838,9 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
         baseAmount,
         paymentMethod: method,
         paymentCardId: method === 'card' ? paymentCardId : undefined,
+        counterpartyNameSnapshot: counterparty?.name || null,
+        cardNameSnapshot: paymentCard?.ownerName || null,
+        cardMaskedNumberSnapshot: paymentCard?.cardNumber ? maskCardNumber(paymentCard.cardNumber) : null,
         metadata: {
           note,
           date: businessDate ? businessDate.toISOString().slice(0, 10) : undefined,
@@ -709,18 +855,27 @@ export const createManualCashTransaction = async (req: Request, res: Response) =
           counterpartyLabel: counterparty?.name,
           counterpartyKind: counterparty?.kind,
           flightNumber: flight?.flightNumber,
+          expenseDirection: flow === 'OUT' ? expenseDirection : undefined,
+          expenseCategoryCode: expenseCategory?.code,
+          expenseCategoryName: expenseCategory?.name,
+          employeeId: employee?.id,
+          employeeName: employee?.name,
+          employeeRole: employee?.role,
+          cashFlowCategory: impact?.cashFlow,
+          pnlEffect: impact?.treatment === 'EXPENSE' ? 'EXPENSE' : 'NONE',
+          documentNumber: String(body.documentNumber || '').trim() || undefined,
+          budgetExceeded: budgetExceeded ? { budgetId: budgetExceeded.budgetId, limitAction: budgetExceeded.limitAction, projected: budgetExceeded.projected.toString(), limit: budgetExceeded.limit.toString() } : undefined,
         },
       },
       include: { firm: true, flight: true, payerFirm: true, receiverFirm: true, kassaDesk: { include: { firm: true } } },
     });
-
-    await writeAuditLog(req, {
-      action: 'CREATE',
-      entityType: 'transaction',
-      entityId: created.id,
-      entityLabel: `${created.direction} ${created.originalAmount} ${created.currency}`,
-      summary: `Created kassa ${flow} transaction`,
-      after: created,
+      if (flow === 'OUT' && impact) {
+        const journal = await tx.journalEntry.create({ data: { firmId, transactionId: transaction.id, postingDate: businessDate, description: note || expenseDirection, postedByUserId: authUser.userId } });
+        await tx.ledgerEntry.create({ data: { transactionId: transaction.id, journalEntryId: journal.id, debitAccount: impact.debit, creditAccount: `${method === 'card' ? 'PAYMENT_CARD' : 'CASH_DESK'}:${operationalAccount.id}`, amount: baseAmount, currency: 'UZS', exchangeRateSnapshot: exchangeRate } });
+      }
+      await tx.auditLog.create({ data: { actorUserId: authUser.userId, actorRole: role, action: flow === 'OUT' ? 'EXPENSE_CREATED' : 'CREATE', entityType: 'transaction', entityId: transaction.id, entityLabel: `${transaction.direction} ${transaction.originalAmount} ${transaction.currency}`, summary: `Created kassa ${flow} transaction`, after: transaction as unknown as Prisma.InputJsonValue, metadata: { actorFirmId: authUser.firmId || null, expenseCategoryId: expenseCategory?.id || null, expenseDirection: expenseDirection || null, cashDeskId: kassaDesk?.id || null, cardId: paymentCardId || null, amount: amount.toString(), currency } } });
+      if (budgetExceeded) await tx.auditLog.create({ data: { actorUserId: authUser.userId, actorRole: role, action: 'EXPENSE_BUDGET_EXCEEDED', entityType: 'transaction', entityId: transaction.id, summary: 'Xarajat budjet limitidan oshdi', metadata: { actorFirmId: authUser.firmId || null, budgetId: budgetExceeded.budgetId, projected: budgetExceeded.projected.toString(), limit: budgetExceeded.limit.toString(), action: budgetExceeded.limitAction } } });
+      return transaction;
     });
     return res.status(201).json(created);
   } catch (err: any) {

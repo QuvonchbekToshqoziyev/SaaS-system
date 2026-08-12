@@ -3,7 +3,7 @@
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { usePathname, useRouter } from 'next/navigation';
-import { Plane, PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, Wallet, PackageOpen, BriefcaseBusiness, Users, ShieldCheck, MessageCircle, History, Bell, CheckCheck, Menu, MoreHorizontal, X, Activity } from 'lucide-react';
+import { Plane, PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, Wallet, PackageOpen, BriefcaseBusiness, Users, ShieldCheck, MessageCircle, History, Bell, CheckCheck, Menu, MoreHorizontal, X, Activity, Warehouse } from 'lucide-react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { useEffect, useState } from 'react';
@@ -34,6 +34,7 @@ type NavKey =
   | 'navServices'
   | 'navTransactions'
   | 'navKassa'
+  | 'navInventory'
   | 'navEmployees'
   | 'navChat'
   | 'navReports'
@@ -66,8 +67,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const firmRole = String(user?.firmRole || 'FIRM_ADMIN').toUpperCase();
   const isAirlineFirm = false;
   const isFirmKassir = normalizedRole === 'firm' && firmRole === 'KASSIR';
+  const isWarehouseManager = normalizedRole === 'firm' && firmRole === 'OMBOR_MUDIRI';
   const isFirmManager = normalizedRole === 'firm' && firmRole === 'MANAGER';
   const isKassirAllowedPath = pathname.startsWith('/kassa') || pathname.startsWith('/chat') || pathname.startsWith('/settings');
+  const isWarehouseManagerAllowedPath = pathname.startsWith('/inventory');
 
   useEffect(() => {
     const id = window.setTimeout(() => setCurrentTime(Date.now()), 0);
@@ -79,6 +82,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       router.replace('/kassa');
     }
   }, [isLoading, isFirmKassir, isKassirAllowedPath, router]);
+
+  useEffect(() => {
+    if (!isLoading && isWarehouseManager && !isWarehouseManagerAllowedPath) router.replace('/inventory');
+  }, [isLoading, isWarehouseManager, isWarehouseManagerAllowedPath, router]);
 
   useEffect(() => {
     if (!user) return;
@@ -170,7 +177,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { key: 'navSettings', href: '/settings', icon: Settings },
   ];
 
-  const firmNavLinks = isAirlineFirm ? airlineNavLinks : isFirmKassir ? [
+  const firmNavLinks = isAirlineFirm ? airlineNavLinks : isWarehouseManager ? [
+    { key: 'navInventory' as const, href: '/inventory', icon: Warehouse },
+  ] : isFirmKassir ? [
     { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
     { key: 'navChat' as const, href: '/chat', icon: MessageCircle },
     { key: 'navSettings' as const, href: '/settings', icon: Settings },
@@ -180,6 +189,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
     { key: 'navTours' as const, href: '/tours', icon: PackageOpen },
     { key: 'navServices' as const, href: '/services', icon: BriefcaseBusiness },
+    { key: 'navInventory' as const, href: '/inventory', icon: Warehouse },
     { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
     { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
     ...(isFirmManager ? [] : [{ key: 'navEmployees' as const, href: '/employees', icon: Users }]),
@@ -198,6 +208,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { key: 'navFlights', href: '/flights', icon: PlaneTakeoff },
     { key: 'navTours', href: '/tours', icon: PackageOpen },
     { key: 'navServices', href: '/services', icon: BriefcaseBusiness },
+    { key: 'navInventory', href: '/inventory', icon: Warehouse },
     { key: 'navTransactions', href: '/transactions', icon: ArrowRightLeft },
     { key: 'navKassa', href: '/kassa', icon: Wallet },
     { key: 'navEmployees', href: '/employees', icon: Users },
@@ -214,18 +225,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           { label: 'Money', links: airlineNavLinks.filter((link) => ['/transactions', '/kassa', '/reports'].includes(link.href)) },
           { label: 'Workspace', links: airlineNavLinks.filter((link) => ['/chat', '/settings'].includes(link.href)) },
         ]
+      : isWarehouseManager
+        ? [{ label: 'Ombor nazorati', links: firmNavLinks }]
       : isFirmKassir
         ? [{ label: 'Kassa Access', links: firmNavLinks }]
         : [
             { label: 'Overview', links: firmNavLinks.filter((link) => ['/firm', '/reports'].includes(link.href)) },
-            { label: 'Operations', links: firmNavLinks.filter((link) => ['/firms', '/flights', '/tours', '/services', '/employees'].includes(link.href)) },
+            { label: 'Operations', links: firmNavLinks.filter((link) => ['/firms', '/flights', '/tours', '/services', '/inventory', '/employees'].includes(link.href)) },
             { label: 'Money', links: firmNavLinks.filter((link) => ['/transactions', '/kassa'].includes(link.href)) },
             { label: 'Workspace', links: firmNavLinks.filter((link) => ['/chat', '/settings'].includes(link.href)) },
           ]
     : [
         { label: normalizedRole === 'superadmin' ? 'Command Center' : 'Overview', links: adminNavLinks.filter((link) => ['/admin', '/reports'].includes(link.href)) },
         { label: 'Organizations', links: adminNavLinks.filter((link) => ['/admins', '/airlines', '/firms', '/employees'].includes(link.href)) },
-        { label: 'Operations', links: adminNavLinks.filter((link) => ['/flights', '/tours', '/services'].includes(link.href)) },
+        { label: 'Operations', links: adminNavLinks.filter((link) => ['/flights', '/tours', '/services', '/inventory'].includes(link.href)) },
         { label: 'Finance', links: adminNavLinks.filter((link) => ['/transactions', '/kassa'].includes(link.href)) },
         { label: 'Oversight', links: adminNavLinks.filter((link) => ['/audit-log', '/monitoring', '/chat', '/settings'].includes(link.href)) },
       ];
@@ -245,7 +258,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <div className="mt-1 text-[11px] font-bold uppercase tracking-wide">{subscriptionDays === 0 ? 'Obuna muddati tugadi' : 'kun qoldi'}</div>
     </div>
   ) : null;
-  const bottomNavLinks = isFirmKassir ? navLinks : navLinks.filter((link) => ['/admin', '/firm', '/firms', '/flights', '/kassa', '/chat', '/reports'].includes(link.href)).slice(0, 4);
+  const bottomNavLinks = isFirmKassir || isWarehouseManager ? navLinks : navLinks.filter((link) => ['/admin', '/firm', '/firms', '/flights', '/kassa', '/chat', '/reports'].includes(link.href)).slice(0, 4);
   const bottomMoreLinks = navLinks.filter((link) => !bottomNavLinks.some((item) => item.href === link.href));
 
   return (
@@ -372,7 +385,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
           
           <div className="flex items-center gap-2 sm:gap-3">
-            {!isReadOnly && <NewOperationLauncher role={normalizedRole} firmRole={firmRole} />}
+            {!isReadOnly && !isWarehouseManager && <NewOperationLauncher role={normalizedRole} firmRole={firmRole} />}
             <div className="relative">
               <button
                 type="button"

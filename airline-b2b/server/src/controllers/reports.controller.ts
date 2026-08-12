@@ -1015,7 +1015,12 @@ export const getDashboardReport = async (req: Request, res: Response) => {
       : ownerFirmIds.length
         ? firmFlightParticipationWhere(ownerFirmIds)
         : { id: { in: [] } } satisfies Prisma.FlightWhereInput;
-    const [ledgerReports, upcomingFlights, pendingTotal] = await Promise.all([
+    const now = new Date();
+    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const monthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+    const expenseScope = { firmId: { in: ownerFirmIds }, accountingTreatment: 'EXPENSE', status: { in: ['CONFIRMED', 'APPLIED', 'POSTED', 'PAID'] } } satisfies Prisma.TransactionWhereInput;
+    const [ledgerReports, upcomingFlights, pendingTotal, todayExpenses, monthExpenses, monthBudget, pendingExpenseApprovals] = await Promise.all([
       buildAgentLedgerReports(ownerFirmIds),
       prisma.flight.findMany({
         where: {
@@ -1038,6 +1043,10 @@ export const getDashboardReport = async (req: Request, res: Response) => {
           ...(role === 'SUPERADMIN' ? {} : { assignedFirmId: { in: ownerFirmIds } }),
         },
       }),
+      prisma.transaction.aggregate({ where: visibleTransactionWhere({ ...expenseScope, expenseDate: { gte: todayStart } }), _sum: { baseAmount: true } }),
+      prisma.transaction.aggregate({ where: visibleTransactionWhere({ ...expenseScope, expenseDate: { gte: monthStart, lte: monthEnd } }), _sum: { baseAmount: true } }),
+      prisma.expenseBudget.aggregate({ where: { firmId: { in: ownerFirmIds }, isActive: true, periodStart: { lte: monthEnd }, periodEnd: { gte: monthStart } }, _sum: { amount: true } }),
+      prisma.transaction.count({ where: visibleTransactionWhere({ firmId: { in: ownerFirmIds }, approvalStatus: 'PENDING_APPROVAL' }) }),
     ]);
 
     type MoneyRow = { currency: string; total: number };
@@ -1074,6 +1083,13 @@ export const getDashboardReport = async (req: Request, res: Response) => {
         { key: 'payables', label: 'Biz qarz bo‘lgan firmalar', count: payables.length, href: '/reports' },
       ],
       pendingAllocations: { total: pendingTotal },
+      expenses: {
+        today: Number(todayExpenses._sum.baseAmount || 0),
+        currentMonth: Number(monthExpenses._sum.baseAmount || 0),
+        budget: Number(monthBudget._sum.amount || 0),
+        budgetUsagePercent: Number(monthBudget._sum.amount || 0) > 0 ? Number(monthExpenses._sum.baseAmount || 0) / Number(monthBudget._sum.amount || 0) * 100 : null,
+        pendingApprovals: pendingExpenseApprovals,
+      },
       duePayments: {
         totalOutstanding: summary.payableTotals.reduce((sum, row) => sum + row.total, 0),
         byFirm: payables.map((row) => ({ firmId: row.firmId, firmName: row.firmName, outstanding: row.currentDebt, currency: row.currency })),

@@ -13,6 +13,11 @@ export function isReadOnlyHttpMethod(method: unknown) {
   return ['GET', 'HEAD', 'OPTIONS'].includes(String(method || '').toUpperCase());
 }
 
+export function warehouseManagerCanAccessPath(path: unknown) {
+  const value = String(path || '').split('?')[0];
+  return value === '/inventory' || value.startsWith('/inventory/') || value === '/auth/change-password';
+}
+
 export const authMiddleware = async (req: Request, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) return sendApiError(res, new AppError(ERROR_CODES.AUTH_TOKEN_MISSING));
@@ -24,7 +29,10 @@ export const authMiddleware = async (req: Request, res: Response, next: NextFunc
     return sendApiError(res, new AppError(ERROR_CODES.CONFIG_MISSING, 'JWT_SECRET is missing'));
   }
   try {
-    const decoded = jwt.verify(token, jwtSecret) as { userId?: unknown; role?: unknown; firmId?: unknown; readOnlyAccess?: boolean };
+    const decoded = jwt.verify(token, jwtSecret) as { userId?: unknown; role?: unknown; firmRole?: unknown; firmId?: unknown; readOnlyAccess?: boolean };
+    if (String(decoded.role || '').toUpperCase() === 'FIRM' && String(decoded.firmRole || '').toUpperCase() === 'OMBOR_MUDIRI' && !warehouseManagerCanAccessPath(req.originalUrl)) {
+      return res.status(403).json({ error: 'Ombor mudiri faqat Ombor nazorati va operatsiyalariga kira oladi' });
+    }
     if (String(decoded.role || '').toUpperCase() === 'FIRM' && decoded.firmId) {
       const firm = await prisma.firm.findUnique({
         where: { id: String(decoded.firmId) },

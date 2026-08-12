@@ -1,5 +1,7 @@
+import { formatNumber } from '@/lib/format';
+
 export function formatMoney(value: number) {
-  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value);
+  return formatNumber(value);
 }
 
 export function formatCurrencyMap(values?: Record<string, number>) {

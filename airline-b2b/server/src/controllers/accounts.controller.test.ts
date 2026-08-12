@@ -17,4 +17,41 @@ describe('financial account balance', () => {
       { sourceAccountId: null, destinationAccountId: null, originalAmount: 40, currency: 'UZS', kassaDeskId: 'desk-1', type: 'ADJUSTMENT', direction: 'KASSA_OUT' },
     ])).toBe(160);
   });
+
+  it('replaces a 500 income with a 500 expense as a minus 1000 balance correction', () => {
+    const account = { id: 'cash', currency: 'USD', openingBalance: 0 };
+    const before = calculateAccountBalance(account, [
+      { sourceAccountId: null, destinationAccountId: 'cash', originalAmount: 500, currency: 'USD' },
+    ]);
+    const after = calculateAccountBalance(account, [
+      { sourceAccountId: 'cash', destinationAccountId: null, originalAmount: 500, currency: 'USD' },
+    ]);
+    expect(before).toBe(500);
+    expect(after).toBe(-500);
+    expect(after - before).toBe(-1000);
+  });
+
+  it('reduces an outgoing amount from 500 to 400 without duplicating the old effect', () => {
+    const account = { id: 'cash', currency: 'USD', openingBalance: 1000 };
+    const before = calculateAccountBalance(account, [
+      { sourceAccountId: 'cash', destinationAccountId: null, originalAmount: 500, currency: 'USD' },
+    ]);
+    const after = calculateAccountBalance(account, [
+      { sourceAccountId: 'cash', destinationAccountId: null, originalAmount: 400, currency: 'USD' },
+    ]);
+    expect(after - before).toBe(100);
+    expect(after).toBe(600);
+  });
+
+  it('moves a card income from the old card account to the new one', () => {
+    const transactions = [{ sourceAccountId: null, destinationAccountId: 'card-b', originalAmount: 1000, currency: 'USD' }];
+    expect(calculateAccountBalance({ id: 'card-a', currency: 'USD', openingBalance: 0 }, transactions)).toBe(0);
+    expect(calculateAccountBalance({ id: 'card-b', currency: 'USD', openingBalance: 0 }, transactions)).toBe(1000);
+  });
+
+  it('uses the destination amount and currency for currency exchange', () => {
+    const exchange = [{ sourceAccountId: 'usd', destinationAccountId: 'uzs', originalAmount: 500, currency: 'USD', destinationAmount: 6_300_000, destinationCurrency: 'UZS' }];
+    expect(calculateAccountBalance({ id: 'usd', currency: 'USD', openingBalance: 1000 }, exchange)).toBe(500);
+    expect(calculateAccountBalance({ id: 'uzs', currency: 'UZS', openingBalance: 0 }, exchange)).toBe(6_300_000);
+  });
 });

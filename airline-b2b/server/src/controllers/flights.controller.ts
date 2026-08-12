@@ -14,6 +14,7 @@ import { visibleTransactionWhere } from '../utils/transaction-visibility';
 import { writeAuditLog } from '../utils/audit';
 import { buildTicketInventorySummary } from '../domains/tickets/inventory-summary';
 import { createTicketLegInventory, normalizeTicketProductType, validateLegCosts } from '../domains/tickets/ticket-leg-inventory';
+import { ensureExternalAirlineFirm } from '../services/external-airline-firms';
 
 export interface AuthenticatedRequest extends Request {
   user?: any;
@@ -61,7 +62,7 @@ function validDate(value: unknown, label: string, required = true): Date | null 
 async function resolveAirlineIdForFlight(
   tx: Prisma.TransactionClient,
   input: { airlineId?: unknown; airlineName?: unknown; airlineCode?: unknown },
-  actor: { role: string; firmId?: string },
+  actor: { role: string; firmId?: string; userId?: string; currency?: string },
 ) {
   if (input.airlineId) {
     const airline = await tx.airline.findUnique({
@@ -98,6 +99,12 @@ async function resolveAirlineIdForFlight(
       },
       select: { id: true },
     });
+    if (actor.role === 'FIRM' && actor.firmId) {
+      await ensureExternalAirlineFirm(tx, {
+        id: updated.id, name: externalName, ownerFirmIds: [actor.firmId],
+        createdByUserId: actor.userId, currency: actor.currency,
+      });
+    }
     return updated.id;
   }
   const airline = await tx.airline.create({
@@ -108,6 +115,12 @@ async function resolveAirlineIdForFlight(
     },
     select: { id: true },
   });
+  if (actor.role === 'FIRM' && actor.firmId) {
+    await ensureExternalAirlineFirm(tx, {
+      id: airline.id, name: externalName, ownerFirmIds: [actor.firmId],
+      createdByUserId: actor.userId, currency: actor.currency,
+    });
+  }
   return airline.id;
 }
 
@@ -377,7 +390,9 @@ export const createFlight = async (req: Request, res: Response) => {
     const resolvedCurrency = normalizeCurrencyCode(currency || 'UZS');
     if (!resolvedCurrency) return sendApiError(res, new AppError(ERROR_CODES.VALIDATION_FAILED, 'Invalid currency code'));
     const newFlight = await prisma.$transaction(async (tx) => {
-      const resolvedAirlineId = await resolveAirlineIdForFlight(tx, { airlineId, airlineName, airlineCode }, { role, firmId });
+      const resolvedAirlineId = await resolveAirlineIdForFlight(tx, { airlineId, airlineName, airlineCode }, {
+        role, firmId, userId: authUser.userId ? String(authUser.userId) : undefined, currency: resolvedCurrency,
+      });
       if (!resolvedAirlineId) throw new Error('Airline is required');
       const created = await tx.flight.create({
         data: {
@@ -527,7 +542,9 @@ export const updateFlight = async (req: Request, res: Response) => {
       }
 
       const resolvedAirlineId = airlineId || normalizeOptionalString(airlineName)
-        ? await resolveAirlineIdForFlight(tx, { airlineId, airlineName, airlineCode }, { role, firmId })
+        ? await resolveAirlineIdForFlight(tx, { airlineId, airlineName, airlineCode }, {
+            role, firmId, userId: authUser.userId ? String(authUser.userId) : undefined, currency: nextCurrency || flight.currency,
+          })
         : undefined;
 
       const currentCount = flight.tickets.length;

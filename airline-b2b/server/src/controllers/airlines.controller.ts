@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { writeAuditLog } from '../utils/audit';
 import { createFirmNotification } from '../utils/notifications';
+import { backfillExternalAirlineFirms } from '../services/external-airline-firms';
 
 function normalizeCode(value: unknown): string | undefined {
   const code = String(value || '').trim().toUpperCase();
@@ -9,6 +10,7 @@ function normalizeCode(value: unknown): string | undefined {
 }
 
 export const listAirlines = async (req: Request, res: Response) => {
+  await backfillExternalAirlineFirms();
   const authUser = ((req as any).user || {}) as { role?: string; firmId?: string | null };
   const role = String(authUser.role || '').toUpperCase();
   const firmId = authUser.firmId ? String(authUser.firmId) : '';

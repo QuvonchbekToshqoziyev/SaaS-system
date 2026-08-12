@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTicketInventorySummary } from './inventory-summary';
+import { buildAllocationFinancialDetails, buildTicketInventorySummary } from './inventory-summary';
 
 describe('buildTicketInventorySummary', () => {
   it('does not count tickets allocated to another firm as the sender remaining stock', () => {
@@ -191,8 +191,8 @@ describe('buildTicketInventorySummary', () => {
       sourceFirmId: 'owner', originOwnerFirmId: 'owner', tickets: rtInventory(1),
       allocations: [{ id: 'accepted', fromFirmId: 'owner', toFirmId: 'agent', status: 'ACCEPTED', productType: 'ROUND_TRIP', parentTicketCount: 1, segmentCount: 2, currency: 'USD', totalAmount: 950 }],
       transactions: [
-        { id: 'usd', type: 'PAYMENT', receiverFirmId: 'owner', payerFirmId: 'agent', originalAmount: 100, currency: 'USD', status: 'CONFIRMED' },
-        { id: 'uzs', type: 'PAYMENT', receiverFirmId: 'owner', payerFirmId: 'agent', originalAmount: 1000000, currency: 'UZS', status: 'CONFIRMED' },
+        { id: 'usd', type: 'PAYMENT', receiverFirmId: 'owner', payerFirmId: 'agent', subjectType: 'TICKET_ALLOCATION', subjectId: 'accepted', originalAmount: 100, currency: 'USD', status: 'CONFIRMED' },
+        { id: 'uzs', type: 'PAYMENT', receiverFirmId: 'owner', payerFirmId: 'agent', subjectType: 'TICKET_ALLOCATION', subjectId: 'accepted', originalAmount: 1000000, currency: 'UZS', status: 'CONFIRMED' },
         { id: 'reversed', type: 'PAYMENT', receiverFirmId: 'owner', payerFirmId: 'agent', originalAmount: 50, currency: 'USD', status: 'CONFIRMED' },
         { id: 'reversal', type: 'REFUND', receiverFirmId: 'agent', payerFirmId: 'owner', originalAmount: -50, currency: 'USD', status: 'CONFIRMED', reversedTransactionId: 'reversed' },
       ],
@@ -201,5 +201,44 @@ describe('buildTicketInventorySummary', () => {
       { currency: 'USD', count: 0, total: 100 },
       { currency: 'UZS', count: 0, total: 1000000 },
     ]);
+  });
+
+  it('calculates each allocation payment, debt and overpayment without guessing flight-only payments', () => {
+    const allocations = [
+      { id: 'first', fromFirmId: 'owner', toFirmId: 'agent', status: 'ACCEPTED', productType: 'ROUND_TRIP', parentTicketCount: 11, segmentCount: 22, currency: 'USD', totalAmount: 4400, priceRows: [{ quantity: 11, unitPrice: 400 }] },
+      { id: 'mixed', fromFirmId: 'owner', toFirmId: 'agent', status: 'ACCEPTED', productType: 'ROUND_TRIP', parentTicketCount: 30, segmentCount: 60, currency: 'USD', totalAmount: 28425, priceRows: [{ quantity: 1, unitPrice: 875 }, { quantity: 29, unitPrice: 950 }] },
+    ];
+    const transactions = [
+      { id: 'linked', type: 'PAYMENT', receiverFirmId: 'owner', payerFirmId: 'agent', subjectType: 'TICKET_ALLOCATION', subjectId: 'first', originalAmount: 2000, currency: 'USD', status: 'CONFIRMED' },
+      { id: 'flight-only', type: 'PAYMENT', receiverFirmId: 'owner', payerFirmId: 'agent', subjectType: 'FLIGHT', subjectId: 'flight', originalAmount: 500, currency: 'USD', status: 'CONFIRMED' },
+      { id: 'pending', type: 'PAYMENT', receiverFirmId: 'owner', payerFirmId: 'agent', subjectType: 'TICKET_ALLOCATION', subjectId: 'first', originalAmount: 700, currency: 'USD', status: 'PENDING' },
+    ];
+    const summary: any = buildTicketInventorySummary({ sourceFirmId: 'owner', originOwnerFirmId: 'owner', tickets: rtInventory(1), allocations, transactions });
+
+    expect(summary.allocations[0]).toMatchObject({ quantity: 11, totalAmount: 4400, paidAmounts: [{ currency: 'USD', count: 0, total: 2000 }], outstandingDebt: [{ currency: 'USD', count: 0, total: 2400 }] });
+    expect(summary.allocations[1].priceRows).toEqual([{ quantity: 1, unitPrice: 875, totalAmount: 875 }, { quantity: 29, unitPrice: 950, totalAmount: 27550 }]);
+    expect(summary.unallocatedPaymentsByCurrency).toEqual([{ currency: 'USD', count: 0, total: 500 }]);
+  });
+
+  it('reports overpayment after an allocation total is reduced', () => {
+    const summary: any = buildTicketInventorySummary({
+      sourceFirmId: 'owner', originOwnerFirmId: 'owner', tickets: rtInventory(1),
+      allocations: [{ id: 'accepted', fromFirmId: 'owner', toFirmId: 'agent', status: 'ACCEPTED', productType: 'ROUND_TRIP', parentTicketCount: 5, segmentCount: 10, currency: 'USD', totalAmount: 2000 }],
+      transactions: [{ id: 'paid', type: 'PAYMENT', receiverFirmId: 'owner', payerFirmId: 'agent', subjectType: 'TICKET_ALLOCATION', subjectId: 'accepted', originalAmount: 3500, currency: 'USD', status: 'CONFIRMED' }],
+    });
+    expect(summary.allocations[0].outstandingDebt[0].total).toBe(0);
+    expect(summary.allocations[0].overpayment).toEqual([{ currency: 'USD', count: 0, total: 1500 }]);
+  });
+
+  it('moves a corrected payment to exactly one allocation debt ledger', () => {
+    const allocations = [
+      { id: 'old', status: 'ACCEPTED', currency: 'USD', totalAmount: 5000 },
+      { id: 'new', status: 'ACCEPTED', currency: 'USD', totalAmount: 5000 },
+    ];
+    const result = buildAllocationFinancialDetails(allocations as any, [
+      { id: 'payment', type: 'PAYMENT', subjectType: 'TICKET_ALLOCATION', subjectId: 'new', originalAmount: 4000, currency: 'USD', status: 'CONFIRMED' },
+    ] as any);
+    expect(result.details.find((row) => row.id === 'old')).toMatchObject({ paidAmounts: [], outstandingDebt: [{ currency: 'USD', count: 0, total: 5000 }] });
+    expect(result.details.find((row) => row.id === 'new')).toMatchObject({ paidAmounts: [{ currency: 'USD', count: 0, total: 4000 }], outstandingDebt: [{ currency: 'USD', count: 0, total: 1000 }] });
   });
 });

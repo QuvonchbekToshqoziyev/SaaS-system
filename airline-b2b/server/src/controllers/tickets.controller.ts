@@ -8,7 +8,9 @@ import { createFirmNotification } from '../utils/notifications';
 import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
 import { canManageFlightInventory, normalizeCurrency, normalizeOptionalString, parseAllocationRows, parsePositiveDecimal, parsePositiveInt, parsePurchaserInfo, requiresAirlineConnectionForAllocation, requiresAllocationApproval, restoredTicketState, validateAllocationRejectionReason } from '../domains/tickets/ticket-input';
 import { writeAuditLog } from '../utils/audit';
-import { cancelLegSale, changeLegAllocation, countCancellableLegAllocationUnits, createTicketLegInventory } from '../domains/tickets/ticket-leg-inventory';
+import { cancelLegSale, changeLegAllocation, countCancellableLegAllocationUnits, createTicketLegInventory, previewLegAllocationCancellation, summarizeLegAllocationUnits } from '../domains/tickets/ticket-leg-inventory';
+import { buildAllocationFinancialDetails } from '../domains/tickets/inventory-summary';
+import { visibleTransactionWhere } from '../utils/transaction-visibility';
 
 function normalizeRole(role: unknown): string {
   return String(role || '').toUpperCase();
@@ -220,9 +222,12 @@ export const listTicketAllocations = async (req: Request, res: Response) => {
   if (role === 'FIRM' && !firmId) return res.status(400).json({ error: 'Firm account is missing firmId' });
 
   const flightId = normalizeOptionalString(req.query?.flightId ?? req.query?.flight_id);
+  const includeFinance = String(req.query?.includeFinance || '').toLowerCase() === 'true';
+  const includeHistory = String(req.query?.includeHistory || '').toLowerCase() === 'true';
   const allocations = await prisma.ticketAllocation.findMany({
     where: {
       ...(flightId ? { flightId } : {}),
+      ...(!includeHistory ? { status: { not: 'CANCELLED' } } : {}),
       ...(scopedFirmIds ? { OR: [{ fromFirmId: { in: scopedFirmIds } }, { toFirmId: { in: scopedFirmIds } }] } : {}),
     },
     include: {
@@ -232,29 +237,44 @@ export const listTicketAllocations = async (req: Request, res: Response) => {
       priceRows: { orderBy: { position: 'asc' } },
       tickets: { where: { deletedAt: null }, select: { status: true } },
       legItems: {
-        where: { status: 'ACTIVE' },
-        include: { ticketLeg: { select: { id: true, ticketId: true, direction: true, status: true, currentOwnerFirmId: true, origin: true, destination: true } } },
+        include: { ticketLeg: { include: { saleItems: { where: { status: 'CONFIRMED', sale: { status: 'CONFIRMED' } }, select: { id: true } } } } },
       },
     },
     orderBy: { createdAt: 'desc' },
   });
 
-  return res.json(allocations.map((allocation) => {
-    const statusCounts = allocation.legItems.reduce<Record<string, number>>((counts, item) => {
-      const status = String(item.ticketLeg.status);
-      counts[status] = (counts[status] || 0) + 1;
-      return counts;
-    }, {});
+  const allocationIds = allocations.map((allocation) => allocation.id);
+  const transactions = includeFinance && (allocationIds.length || flightId)
+    ? await prisma.transaction.findMany({
+        where: visibleTransactionWhere({
+          type: 'PAYMENT',
+          OR: [
+            ...(allocationIds.length ? [{ subjectType: 'TICKET_ALLOCATION', subjectId: { in: allocationIds } } as Prisma.TransactionWhereInput] : []),
+            ...(flightId ? [{ flightId, subjectType: { not: 'TICKET_ALLOCATION' } } as Prisma.TransactionWhereInput] : []),
+          ],
+        }),
+        select: { id: true, type: true, firmId: true, payerFirmId: true, receiverFirmId: true, subjectType: true, subjectId: true, originalAmount: true, currency: true, sourceMode: true, status: true, reversedTransactionId: true, deletedAt: true, metadata: true },
+      })
+    : [];
+  const allocationFinance = includeFinance ? buildAllocationFinancialDetails(allocations as any, transactions) : null;
+  const rows = allocations.map((allocation) => {
     const actorFirmIds = scopedFirmIds || [];
     const canManage = role !== 'FIRM' || canManageFirmWork(user);
     const mayReceive = role === 'SUPERADMIN' || (canManage && actorFirmIds.includes(allocation.toFirmId));
     const maySend = role === 'SUPERADMIN' || (canManage && actorFirmIds.includes(allocation.fromFirmId));
+    const unitSummary = allocation.legItems.length ? summarizeLegAllocationUnits(allocation as any) : null;
+    const allocatedQuantity = allocation.parentTicketCount || allocation.priceRows.reduce((sum, row) => sum + row.quantity, 0) || allocation.tickets.length;
+    const cancellableQuantity = unitSummary
+      ? unitSummary.cancellableQuantity
+      : allocation.tickets.filter((ticket) => ticket.status === (allocation.status === 'PENDING' ? 'PENDING' : 'ASSIGNED')).length;
+    const finance = allocationFinance?.details.find((row) => row.id === allocation.id);
+    const activeLegItems = allocation.legItems.filter((item) => item.status === 'ACTIVE');
     return {
       id: allocation.id,
       flight: allocation.flight,
       fromFirm: allocation.fromFirm,
       toFirm: allocation.toFirm,
-      allocatedQuantity: allocation.parentTicketCount || allocation.priceRows.reduce((sum, row) => sum + row.quantity, 0) || allocation.tickets.length,
+      allocatedQuantity,
       parentTicketCount: allocation.parentTicketCount,
       segmentCount: allocation.segmentCount || allocation.legItems.length,
       productType: allocation.productType,
@@ -268,7 +288,7 @@ export const listTicketAllocations = async (req: Request, res: Response) => {
       rejectionReason: allocation.rejectionReason,
       rejectedAt: allocation.rejectedAt,
       createdAt: allocation.createdAt,
-      legs: allocation.legItems.map((item) => ({
+      legs: activeLegItems.map((item) => ({
         id: item.ticketLeg.id, ticketId: item.ticketLeg.ticketId, direction: item.ticketLeg.direction,
         status: item.ticketLeg.status, currentOwnerFirmId: item.ticketLeg.currentOwnerFirmId,
         origin: item.ticketLeg.origin, destination: item.ticketLeg.destination,
@@ -277,20 +297,33 @@ export const listTicketAllocations = async (req: Request, res: Response) => {
         acquisitionCurrency: item.acquisitionCurrencySnapshot,
         allocationCurrency: item.allocationCurrencySnapshot,
       })),
-      acceptedQuantity: allocation.status === 'ACCEPTED' ? allocation.parentTicketCount : 0,
-      availableQuantity: allocation.parentTicketCount,
-      soldQuantity: statusCounts.SOLD || 0,
-      cancellableQuantity: allocation.productType === 'ROUND_TRIP'
-        ? Array.from(new Set(allocation.legItems.filter((item) => ['ASSIGNED', 'PENDING_ALLOCATION'].includes(item.ticketLeg.status)).map((item) => item.ticketLeg.ticketId)))
-            .filter((ticketId) => allocation.legItems.filter((item) => item.ticketLeg.ticketId === ticketId && ['ASSIGNED', 'PENDING_ALLOCATION'].includes(item.ticketLeg.status)).length === 2).length
-        : allocation.legItems.filter((item) => ['ASSIGNED', 'PENDING_ALLOCATION'].includes(item.ticketLeg.status)).length,
+      originalQuantity: unitSummary?.originalQuantity || allocatedQuantity,
+      activeQuantity: unitSummary?.activeQuantity ?? allocatedQuantity,
+      cancelledQuantity: unitSummary?.cancelledQuantity || 0,
+      acceptedQuantity: allocation.status === 'ACCEPTED' ? allocatedQuantity : 0,
+      availableQuantity: allocatedQuantity,
+      soldQuantity: unitSummary?.soldQuantity || 0,
+      reservedForTourQuantity: unitSummary?.reservedForTourQuantity || 0,
+      cancellableQuantity,
+      paidAmounts: finance?.paidAmounts || [],
+      outstandingDebt: finance?.outstandingDebt || [],
+      overpayment: finance?.overpayment || [],
+      paidAmount: finance?.paidAmounts.find((row) => row.currency === allocation.currency)?.total || 0,
+      outstandingDebtAmount: finance?.outstandingDebt.find((row) => row.currency === allocation.currency)?.total || 0,
+      overpaymentAmount: finance?.overpayment.find((row) => row.currency === allocation.currency)?.total || 0,
+      cancellationStatus: allocation.status === 'CANCELLED'
+        ? 'FULLY_CANCELLED'
+        : (unitSummary?.cancelledQuantity || 0) > 0 ? 'PARTIALLY_CANCELLED' : null,
       version: allocation.version,
       canConfirm: allocation.status === 'PENDING' && mayReceive,
       canReject: allocation.status === 'PENDING' && mayReceive,
       canEdit: ['PENDING', 'ACCEPTED'].includes(allocation.status) && maySend,
       canCancel: ['PENDING', 'ACCEPTED'].includes(allocation.status) && maySend,
+      canFullyCancel: ['PENDING', 'ACCEPTED'].includes(allocation.status) && maySend && cancellableQuantity > 0 && cancellableQuantity === allocatedQuantity,
+      canDelete: ['PENDING', 'ACCEPTED'].includes(allocation.status) && maySend && cancellableQuantity > 0 && cancellableQuantity === allocatedQuantity,
     };
-  }));
+  });
+  return res.json(includeFinance ? { data: rows, unallocatedPayments: allocationFinance?.unallocatedPayments || [] } : rows);
 };
 
 type ChangePriceRow = { quantity: number; unitPrice: Prisma.Decimal; position: number };
@@ -367,6 +400,70 @@ function allocationSnapshot(allocation: any) {
     status: allocation.status,
     version: allocation.version,
   };
+}
+
+async function confirmedAllocationPaymentTotal(tx: Prisma.TransactionClient, allocationId: string, currency: string) {
+  const payments = await tx.transaction.findMany({
+    where: {
+      type: 'PAYMENT', status: 'CONFIRMED', deletedAt: null, currency,
+      OR: [
+        { subjectType: 'TICKET_ALLOCATION', subjectId: allocationId },
+        { metadata: { path: ['allocationId'], equals: allocationId } },
+      ],
+    },
+    select: { id: true, originalAmount: true, reversedTransactionId: true },
+  });
+  const reversed = payments.length
+    ? new Set((await tx.transaction.findMany({ where: { reversedTransactionId: { in: payments.map((row) => row.id) } }, select: { reversedTransactionId: true } })).map((row) => row.reversedTransactionId).filter(Boolean))
+    : new Set<string>();
+  return payments
+    .filter((row) => !row.reversedTransactionId && !reversed.has(row.id))
+    .reduce((sum, row) => sum.add(row.originalAmount), new Prisma.Decimal(0))
+    .toDecimalPlaces(4);
+}
+
+async function recordAppliedAllocationCancellation(
+  req: Request,
+  tx: Prisma.TransactionClient,
+  allocation: any,
+  request: any,
+  updated: any,
+) {
+  if (request.type !== 'CANCEL') return;
+  const oldTotal = new Prisma.Decimal(allocation.totalAmount);
+  const newTotal = new Prisma.Decimal(updated.totalAmount);
+  const cancelledValue = Prisma.Decimal.max(oldTotal.sub(newTotal), 0).toDecimalPlaces(4);
+  const paid = await confirmedAllocationPaymentTotal(tx, allocation.id, allocation.currency);
+  const oldDebt = allocation.status === 'ACCEPTED' ? Prisma.Decimal.max(oldTotal.sub(paid), 0) : new Prisma.Decimal(0);
+  const newDebt = allocation.status === 'ACCEPTED' ? Prisma.Decimal.max(newTotal.sub(paid), 0) : new Prisma.Decimal(0);
+  const overpayment = Prisma.Decimal.max(paid.sub(newTotal), 0).toDecimalPlaces(4);
+  const quantity = Number(request.proposedValuesJson?.cancelQuantity || 0);
+  const financials = {
+    ...request.proposedValuesJson,
+    oldAllocationTotal: oldTotal.toFixed(4), cancelledValue: cancelledValue.toFixed(4), newAllocationTotal: newTotal.toFixed(4),
+    confirmedPaidAmount: paid.toFixed(4), oldOutstandingDebt: oldDebt.toFixed(4), newOutstandingDebt: newDebt.toFixed(4), overpayment: overpayment.toFixed(4),
+  };
+  await tx.allocationChangeRequest.update({ where: { id: request.id }, data: { proposedValuesJson: financials } });
+
+  if (allocation.status === 'ACCEPTED' && cancelledValue.gt(0)) {
+    const exchangeRate = await resolveExchangeRateToUzs((req as any).user || {}, { currency: allocation.currency, rateFirmId: allocation.fromFirmId });
+    await tx.transaction.create({
+      data: {
+        firmId: allocation.fromFirmId, flightId: allocation.flightId, payerFirmId: allocation.toFirmId, receiverFirmId: allocation.fromFirmId,
+        createdByUserId: normalizeOptionalString((req as any).user?.userId), type: 'ADJUSTMENT', direction: 'ALLOCATION_DEBT_DECREASE',
+        subjectType: 'TICKET_ALLOCATION_ADJUSTMENT', subjectId: allocation.id, sourceMode: 'AUTO_ALLOCATION_CANCEL', status: 'CONFIRMED',
+        originalAmount: cancelledValue, currency: allocation.currency, exchangeRate, baseAmount: cancelledValue.mul(exchangeRate).toDecimalPlaces(4),
+        idempotencyKey: `allocation-cancel:${request.id}`,
+        metadata: { allocationId: allocation.id, changeRequestId: request.id, quantity, reason: request.reason, ...financials },
+      },
+    });
+  }
+
+  const full = String(updated.status).toUpperCase() === 'CANCELLED';
+  const metadata = { allocationId: allocation.id, flightId: allocation.flightId, changeRequestId: request.id, quantity, currency: allocation.currency, reason: request.reason, ...financials };
+  await writeAuditLog(req, { action: full ? 'ALLOCATION_FULLY_CANCELLED' : 'ALLOCATION_PARTIALLY_CANCELLED', entityType: 'ticketAllocation', entityId: allocation.id, entityLabel: allocation.flight?.flightNumber, summary: `${quantity} ta bilet ajratmasi ${full ? 'to‘liq' : 'qisman'} bekor qilindi`, before: allocationSnapshot(allocation), after: updated, metadata }, tx);
+  await writeAuditLog(req, { action: 'TICKETS_RETURNED_TO_OWNER', entityType: 'ticketAllocation', entityId: allocation.id, entityLabel: allocation.flight?.flightNumber, summary: `${quantity} ta bilet yuboruvchi firmaga qaytarildi`, metadata }, tx);
+  if (allocation.status === 'ACCEPTED') await writeAuditLog(req, { action: 'ALLOCATION_DEBT_ADJUSTED', entityType: 'ticketAllocation', entityId: allocation.id, entityLabel: allocation.flight?.flightNumber, summary: `Ajratma qarzi ${cancelledValue.toFixed(4)} ${allocation.currency} ga kamaytirildi`, before: { outstandingDebt: oldDebt.toFixed(4) }, after: { outstandingDebt: newDebt.toFixed(4), overpayment: overpayment.toFixed(4) }, metadata }, tx);
 }
 
 async function mayManageSendingFirm(user: any, fromFirmId: string): Promise<boolean> {
@@ -521,7 +618,7 @@ export const createAllocationChangeRequest = async (req: Request, res: Response)
           toFirm: {
             select: { id: true, name: true, _count: { select: { users: { where: { status: 'ACTIVE', deletedAt: null } }, userAccesses: { where: { user: { status: 'ACTIVE', deletedAt: null } } } } } },
           },
-          flight: { select: { id: true, flightNumber: true } },
+          flight: { select: { id: true, flightNumber: true, route: true } },
           priceRows: { orderBy: { position: 'asc' } },
           tickets: { where: { deletedAt: null }, orderBy: { createdAt: 'asc' } },
           legItems: {
@@ -554,10 +651,25 @@ export const createAllocationChangeRequest = async (req: Request, res: Response)
           : allocation.tickets.filter((ticket) => ticket.status === freeStatus && !ticket.tourPackageId && ticket.soldPrice == null).length;
         const cancelQuantity = parsePositiveInt(req.body?.quantity ?? req.body?.cancelQuantity) || cancellableQuantity;
         if (!cancelQuantity || cancelQuantity > cancellableQuantity) throw new Error(`Ushbu ajratmadan faqat ${cancellableQuantity} ta chipta bekor qilinishi mumkin.`);
-        proposedValues = { cancelQuantity };
+        const oldTotal = new Prisma.Decimal(allocation.totalAmount);
+        const cancelledValue = allocation.legItems.length
+          ? previewLegAllocationCancellation(allocation as any, cancelQuantity).cancelledValue
+          : oldTotal.sub(rowTotal(resizePriceRows(allocation.priceRows.map((row, position) => ({ quantity: row.quantity, unitPrice: new Prisma.Decimal(row.unitPrice), position })), Math.max(oldValues.quantity - cancelQuantity, 0))));
+        const newTotal = Prisma.Decimal.max(oldTotal.sub(cancelledValue), 0).toDecimalPlaces(4);
+        const paid = await confirmedAllocationPaymentTotal(tx, allocation.id, allocation.currency);
+        proposedValues = {
+          cancelQuantity,
+          oldAllocationTotal: oldTotal.toFixed(4), cancelledValue: cancelledValue.toFixed(4), newAllocationTotal: newTotal.toFixed(4),
+          confirmedPaidAmount: paid.toFixed(4),
+          oldOutstandingDebt: allocation.status === 'ACCEPTED' ? Prisma.Decimal.max(oldTotal.sub(paid), 0).toFixed(4) : '0.0000',
+          newOutstandingDebt: allocation.status === 'ACCEPTED' ? Prisma.Decimal.max(newTotal.sub(paid), 0).toFixed(4) : '0.0000',
+          overpayment: Prisma.Decimal.max(paid.sub(newTotal), 0).toFixed(4),
+        };
       }
 
-      const requiresApproval = requiresAllocationApproval(allocation.toFirm._count.users, allocation.toFirm._count.userAccesses);
+      const requiresApproval = allocation.status === 'ACCEPTED'
+        && normalizeRole(user?.role) !== 'SUPERADMIN'
+        && requiresAllocationApproval(allocation.toFirm._count.users, allocation.toFirm._count.userAccesses);
       const request = await tx.allocationChangeRequest.create({
         data: {
           allocationId, requestedByFirmId: allocation.fromFirmId, requestedByUserId: normalizeOptionalString(user?.userId), receivingFirmId: allocation.toFirmId,
@@ -568,7 +680,10 @@ export const createAllocationChangeRequest = async (req: Request, res: Response)
         },
       });
       let updatedAllocation = null;
-      if (!requiresApproval) updatedAllocation = await applyAllocationChange(tx, { allocation, request, actorUserId: normalizeOptionalString(user?.userId) });
+      if (!requiresApproval) {
+        updatedAllocation = await applyAllocationChange(tx, { allocation, request, actorUserId: normalizeOptionalString(user?.userId) });
+        await recordAppliedAllocationCancellation(req, tx, allocation, request, updatedAllocation);
+      }
       await createFirmNotification(tx, allocation.toFirmId, {
         title: requiresApproval ? 'Ajratma bo‘yicha o‘zgarish so‘rovi' : 'Ajratma avtomatik yangilandi',
         body: `${allocation.fromFirm.name} ${allocation.flight.flightNumber || 'reys'} ajratmasi bo‘yicha ${type === 'EDIT' ? 'tahrir' : 'bekor qilish'} so‘rovini yaratdi.`,
@@ -579,6 +694,11 @@ export const createAllocationChangeRequest = async (req: Request, res: Response)
         action: type === 'EDIT' ? 'ALLOCATION_EDIT_REQUESTED' : 'ALLOCATION_CANCEL_REQUESTED', entityType: 'allocationChangeRequest', entityId: request.id,
         entityLabel: allocation.flight.flightNumber, summary: `${allocation.fromFirm.name}: ajratma ${type === 'EDIT' ? 'tahriri' : 'bekor qilinishi'} so‘raldi`,
         before: oldValues, after: proposedValues, metadata: { allocationId, reason, autoApproved: !requiresApproval },
+      }, tx);
+      if (!requiresApproval && type === 'CANCEL') await writeAuditLog(req, {
+        action: 'ALLOCATION_CANCEL_APPROVED', entityType: 'allocationChangeRequest', entityId: request.id,
+        entityLabel: `${allocation.flight.flightNumber} · ${allocation.flight.route}`, summary: 'Ajratmani bekor qilish so‘rovi avtomatik tasdiqlandi',
+        before: { status: 'PENDING_APPROVAL' }, after: { status: 'APPROVED', autoApproved: true }, metadata: { allocationId, reason },
       }, tx);
       return { request, updatedAllocation };
     });
@@ -627,7 +747,7 @@ export const approveAllocationChangeRequest = async (req: Request, res: Response
         include: {
           fromFirm: { select: { id: true, name: true, kind: true } },
           toFirm: { select: { id: true, name: true } },
-          flight: { select: { id: true, flightNumber: true } },
+          flight: { select: { id: true, flightNumber: true, route: true } },
           priceRows: { orderBy: { position: 'asc' } },
           tickets: { where: { deletedAt: null }, orderBy: { createdAt: 'asc' } },
           legItems: {
@@ -640,6 +760,7 @@ export const approveAllocationChangeRequest = async (req: Request, res: Response
       if (!allocation) throw new Error('Ajratma topilmadi.');
       const actorUserId = normalizeOptionalString(user?.userId);
       const updated = await applyAllocationChange(tx, { allocation, request: change, actorUserId });
+      await recordAppliedAllocationCancellation(req, tx, allocation, change, updated);
       const decided = await tx.allocationChangeRequest.update({ where: { id: requestId }, data: { status: 'APPROVED', approvedByUserId: actorUserId, approvedAt: new Date(), appliedAt: new Date() } });
       await createFirmNotification(tx, change.requestedByFirmId, { title: 'Ajratma o‘zgarishi tasdiqlandi', body: `${allocation.toFirm.name} ajratma bo‘yicha so‘rovni tasdiqladi.`, type: change.type === 'EDIT' ? 'ALLOCATION_EDIT_APPROVED' : 'ALLOCATION_CANCEL_APPROVED', entityType: 'allocationChangeRequest', entityId: requestId, metadata: { allocationId: allocation.id, changeRequestId: requestId } });
       await writeAuditLog(req, { action: change.type === 'EDIT' ? 'ALLOCATION_EDIT_APPROVED' : 'ALLOCATION_CANCEL_APPROVED', entityType: 'allocationChangeRequest', entityId: requestId, entityLabel: allocation.flight.flightNumber, summary: `${allocation.toFirm.name} ajratma o‘zgarishini tasdiqladi`, before: change.oldValuesJson, after: change.proposedValuesJson, metadata: { allocationId: allocation.id } }, tx);
@@ -656,12 +777,12 @@ export const rejectAllocationChangeRequest = async (req: Request, res: Response)
     const rejectionReason = changeReason(req.body?.rejectionReason, 'Rad etish sababini yozing.');
     const result = await prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "AllocationChangeRequest" WHERE id = ${requestId} FOR UPDATE`;
-      const change = await tx.allocationChangeRequest.findUnique({ where: { id: requestId }, include: { allocation: { include: { flight: { select: { flightNumber: true } }, fromFirm: { select: { name: true } }, toFirm: { select: { name: true } } } } } });
+      const change = await tx.allocationChangeRequest.findUnique({ where: { id: requestId }, include: { allocation: { include: { flight: { select: { flightNumber: true, route: true } }, fromFirm: { select: { name: true } }, toFirm: { select: { name: true } } } } } });
       if (!change) throw new Error('O‘zgartirish so‘rovi topilmadi.');
       if (change.status !== 'PENDING_APPROVAL') throw new Error('Ushbu so‘rov allaqachon ko‘rib chiqilgan.');
       if (!(await mayManageReceivingFirm(user, change.receivingFirmId))) throw new Error('Ushbu so‘rovni rad etish huquqiga ega emassiz.');
       const rejected = await tx.allocationChangeRequest.update({ where: { id: requestId }, data: { status: 'REJECTED', rejectedByUserId: normalizeOptionalString(user?.userId), rejectionReason, rejectedAt: new Date() } });
-      await createFirmNotification(tx, change.requestedByFirmId, { title: 'Ajratma o‘zgarishi rad etildi', body: `${change.allocation.toFirm.name} ajratma o‘zgarishini rad etdi. Sababi: ${rejectionReason}`, type: change.type === 'EDIT' ? 'ALLOCATION_EDIT_REJECTED' : 'ALLOCATION_CANCEL_REJECTED', entityType: 'allocationChangeRequest', entityId: requestId, metadata: { allocationId: change.allocationId, changeRequestId: requestId, rejectionReason } });
+      await createFirmNotification(tx, change.requestedByFirmId, { title: 'Ajratma o‘zgarishi rad etildi', body: `${change.allocation.toFirm.name} ${change.allocation.flight.flightNumber} · ${change.allocation.flight.route} reysi bo‘yicha biletlarni qaytarib olish so‘rovini rad etdi. Sababi: ${rejectionReason}`, type: change.type === 'EDIT' ? 'ALLOCATION_EDIT_REJECTED' : 'ALLOCATION_CANCEL_REJECTED', entityType: 'allocationChangeRequest', entityId: requestId, metadata: { allocationId: change.allocationId, changeRequestId: requestId, rejectionReason } });
       await writeAuditLog(req, { action: change.type === 'EDIT' ? 'ALLOCATION_EDIT_REJECTED' : 'ALLOCATION_CANCEL_REJECTED', entityType: 'allocationChangeRequest', entityId: requestId, entityLabel: change.allocation.flight.flightNumber, summary: `${change.allocation.toFirm.name} ajratma o‘zgarishini rad etdi`, before: change.oldValuesJson, after: { status: 'REJECTED', rejectionReason }, metadata: { allocationId: change.allocationId } }, tx);
       return rejected;
     });

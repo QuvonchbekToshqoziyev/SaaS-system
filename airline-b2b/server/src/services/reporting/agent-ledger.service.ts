@@ -94,6 +94,7 @@ type LedgerTransaction = {
   direction: string | null;
   sourceMode: string;
   status: string;
+  operationType?: string | null;
   paymentMethod?: string | null;
   reversedTransactionId: string | null;
   metadata: unknown;
@@ -111,6 +112,14 @@ type AgentAccumulator = {
   purchases: Map<string, number>;
   received: Map<string, number>;
   sent: Map<string, number>;
+  settledReceivable: Map<string, number>;
+  settledPayable: Map<string, number>;
+  cashSettled: Map<string, number>;
+  mutualOffset: Map<string, number>;
+  ticketOffset: Map<string, number>;
+  tourOffset: Map<string, number>;
+  serviceOffset: Map<string, number>;
+  compensation: Map<string, number>;
   ticketCount: number;
   purchasedTicketCount: number;
   tourCount: number;
@@ -121,6 +130,7 @@ type AgentAccumulator = {
   serviceSales: Array<Record<string, unknown>>;
   paymentsReceived: Array<Record<string, unknown>>;
   paymentsMade: Array<Record<string, unknown>>;
+  settlements: Array<Record<string, unknown>>;
 };
 
 const number = (value: unknown) => {
@@ -169,6 +179,14 @@ export function summarizeAgentLedger(input: {
       purchases: new Map(),
       received: new Map(),
       sent: new Map(),
+      settledReceivable: new Map(),
+      settledPayable: new Map(),
+      cashSettled: new Map(),
+      mutualOffset: new Map(),
+      ticketOffset: new Map(),
+      tourOffset: new Map(),
+      serviceOffset: new Map(),
+      compensation: new Map(),
       ticketCount: 0,
       purchasedTicketCount: 0,
       tourCount: 0,
@@ -179,6 +197,7 @@ export function summarizeAgentLedger(input: {
       serviceSales: [],
       paymentsReceived: [],
       paymentsMade: [],
+      settlements: [],
     };
     agents.set(firm.id, created);
     return created;
@@ -342,8 +361,20 @@ export function summarizeAgentLedger(input: {
   }
 
   const reversedIds = new Set(input.transactions.map((row) => row.reversedTransactionId).filter((id): id is string => Boolean(id)));
+  const addSettlement = (agent: AgentAccumulator, code: string, total: number, operationType: string, createdAt: Date) => {
+    const bucket = operationType === 'TICKET_OFFSET' ? agent.ticketOffset
+      : operationType === 'TOUR_OFFSET' ? agent.tourOffset
+        : operationType === 'SERVICE_OFFSET' || operationType === 'PRODUCT_OFFSET' ? agent.serviceOffset
+          : operationType === 'COMPENSATION' ? agent.compensation
+            : agent.mutualOffset;
+    add(bucket, code, total);
+    add(agent.settledReceivable, code, total);
+    add(agent.settledPayable, code, total);
+    agent.settlements.push({ id: `${operationType}-${createdAt.getTime()}-${total}`, operationType, amount: total, currency: code, createdAt });
+  };
+
   for (const transaction of input.transactions) {
-    if (transaction.status !== 'CONFIRMED' || transaction.sourceMode === 'REVERSAL' || transaction.reversedTransactionId || reversedIds.has(transaction.id)) continue;
+    if (!['CONFIRMED', 'APPLIED', 'POSTED'].includes(transaction.status) || transaction.sourceMode === 'REVERSAL' || transaction.reversedTransactionId || reversedIds.has(transaction.id)) continue;
     const payerIsOwner = transaction.payerFirmId === ownerFirmId;
     const receiverIsOwner = transaction.receiverFirmId === ownerFirmId;
     if (payerIsOwner === receiverIsOwner) continue;
@@ -351,11 +382,17 @@ export function summarizeAgentLedger(input: {
     if (!agent) continue;
     const code = currency(transaction.currency);
     const total = number(transaction.originalAmount);
+    const operationType = String(transaction.operationType || '').toUpperCase();
+    if (['MUTUAL_OFFSET', 'SERVICE_OFFSET', 'TICKET_OFFSET', 'TOUR_OFFSET', 'PRODUCT_OFFSET', 'THREE_PARTY_SETTLEMENT', 'COMPENSATION', 'ADVANCE_OFFSET', 'OVERPAYMENT_OFFSET'].includes(operationType)) {
+      addSettlement(agent, code, total, operationType, transaction.createdAt);
+      continue;
+    }
     const isPayment = transaction.type === 'PAYMENT'
       || (transaction.type === 'ADJUSTMENT' && ['KASSA_IN', 'KASSA_OUT'].includes(String(transaction.direction || '')));
     if (isPayment) {
       const received = receiverIsOwner;
       add(received ? agent.received : agent.sent, code, total);
+      add(agent.cashSettled, code, total);
       const detail = {
         id: transaction.id,
         amount: total,
@@ -389,7 +426,7 @@ export function summarizeAgentLedger(input: {
   const result = Array.from(agents.values()).map((agent) => {
     const codes = new Set([
       ...agent.oldBalance.keys(), ...agent.sales.keys(), ...agent.purchases.keys(),
-      ...agent.received.keys(), ...agent.sent.keys(),
+      ...agent.received.keys(), ...agent.sent.keys(), ...agent.settledReceivable.keys(), ...agent.settledPayable.keys(),
     ]);
     const balance = new Map<string, number>();
     const receivable = new Map<string, number>();
@@ -400,16 +437,21 @@ export function summarizeAgentLedger(input: {
       const bought = agent.purchases.get(code) || 0;
       const paid = agent.received.get(code) || 0;
       const paymentsMade = agent.sent.get(code) || 0;
-      const current = old + sold - bought - paid + paymentsMade;
+      const settledReceivable = agent.settledReceivable.get(code) || 0;
+      const settledPayable = agent.settledPayable.get(code) || 0;
+      const currentReceivable = Math.max(0, Math.max(0, old) + sold - paid - settledReceivable);
+      const currentPayable = Math.max(0, Math.max(0, -old) + bought - paymentsMade - settledPayable);
+      const current = currentReceivable - currentPayable;
       balance.set(code, current);
-      if (current > 0) {
-        receivable.set(code, current);
-        add(receivableTotals, code, current);
-        receivables.push({ firmId: agent.id, firmName: agent.name, currency: code, charged: Math.max(0, old) + sold, paid, currentDebt: current });
-      } else if (current < 0) {
-        payable.set(code, -current);
-        add(payableTotals, code, -current);
-        payables.push({ firmId: agent.id, firmName: agent.name, currency: code, charged: Math.max(0, -old) + bought, paid: paymentsMade, currentDebt: -current });
+      if (currentReceivable > 0) {
+        receivable.set(code, currentReceivable);
+        add(receivableTotals, code, currentReceivable);
+        receivables.push({ firmId: agent.id, firmName: agent.name, currency: code, charged: Math.max(0, old) + sold, paid: paid + settledReceivable, currentDebt: currentReceivable });
+      }
+      if (currentPayable > 0) {
+        payable.set(code, currentPayable);
+        add(payableTotals, code, currentPayable);
+        payables.push({ firmId: agent.id, firmName: agent.name, currency: code, charged: Math.max(0, -old) + bought, paid: paymentsMade + settledPayable, currentDebt: currentPayable });
       }
     }
     return {
@@ -423,6 +465,12 @@ export function summarizeAgentLedger(input: {
       totalPurchases: rows(agent.purchases),
       totalPaid: rows(agent.received),
       totalPaidByUs: rows(agent.sent),
+      mutualOffset: rows(agent.mutualOffset),
+      ticketOffset: rows(agent.ticketOffset),
+      tourOffset: rows(agent.tourOffset),
+      serviceOffset: rows(agent.serviceOffset),
+      compensation: rows(agent.compensation),
+      cashSettled: rows(agent.cashSettled),
       currentBalance: rows(balance),
       receivable: rows(receivable),
       payable: rows(payable),
@@ -433,6 +481,7 @@ export function summarizeAgentLedger(input: {
       serviceSales: agent.serviceSales,
       paymentsReceived: agent.paymentsReceived,
       paymentsMade: agent.paymentsMade,
+      settlements: agent.settlements.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))),
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
 
@@ -521,7 +570,7 @@ export async function buildAgentLedgerReports(rawOwnerFirmIds: string[]) {
       }),
       select: {
         id: true, type: true, payerFirmId: true, receiverFirmId: true, originalAmount: true, currency: true,
-        direction: true, sourceMode: true, status: true, paymentMethod: true, reversedTransactionId: true, metadata: true, createdAt: true,
+        direction: true, sourceMode: true, status: true, operationType: true, paymentMethod: true, reversedTransactionId: true, metadata: true, createdAt: true,
         payerFirm: { select: { id: true, name: true } }, receiverFirm: { select: { id: true, name: true } },
         flight: { select: { id: true, flightNumber: true, route: true, departure: true } },
       },

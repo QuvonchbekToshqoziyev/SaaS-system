@@ -80,4 +80,39 @@ describe('agent ledger report', () => {
     expect(result.payables).toEqual([expect.objectContaining({ firmName: 'Centrum Air', currentDebt: 800 })]);
     expect(result.receivables).toEqual([expect.objectContaining({ firmName: 'HILOL', currentDebt: 200 })]);
   });
+
+  it('keeps receivable and payable separate after same-party mutual offset', () => {
+    const owner = { id: 'owner', name: 'ADO Systems' };
+    const agent = { id: 'agent', name: 'Firma A' };
+    const result = summarizeAgentLedger({
+      ownerFirm: owner,
+      allocations: [],
+      tourSales: [{
+        id: 'tour-sale', sellerFirmId: owner.id, buyerFirmId: agent.id, quantity: 1, unitPrice: 20_000,
+        currency: 'USD', totalAmount: 20_000, createdAt: new Date('2026-07-02'),
+        sellerFirm: owner, buyerFirm: agent,
+        package: { id: 'tour', name: 'Tour', flight: null },
+      }],
+      flightPurchases: [{
+        id: 'flight', ownerFirmId: owner.id, ownerFirm: owner, airlineFirm: agent,
+        flightNumber: 'A100', route: 'TAS-IST', departure: new Date('2026-08-01'),
+        createdAt: new Date('2026-07-01'), currency: 'USD',
+        tickets: [{ originPrice: 50_000 }],
+      }],
+      transactions: [{
+        id: 'mutual-offset', type: 'ADJUSTMENT', payerFirmId: agent.id, receiverFirmId: owner.id, originalAmount: 20_000,
+        currency: 'USD', direction: 'NON_CASH', sourceMode: 'FINANCIAL_MODULE', status: 'APPLIED', operationType: 'MUTUAL_OFFSET',
+        reversedTransactionId: null, metadata: {}, createdAt: new Date('2026-07-03'), payerFirm: agent, receiverFirm: owner,
+      }],
+    });
+
+    expect(result.agents[0]).toMatchObject({
+      totalSales: [{ currency: 'USD', total: 20_000 }],
+      totalPurchases: [{ currency: 'USD', total: 50_000 }],
+      mutualOffset: [{ currency: 'USD', total: 20_000 }],
+      receivable: [],
+      payable: [{ currency: 'USD', total: 30_000 }],
+      currentBalance: [{ currency: 'USD', total: -30_000 }],
+    });
+  });
 });

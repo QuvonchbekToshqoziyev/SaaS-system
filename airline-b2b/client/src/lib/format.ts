@@ -1,7 +1,10 @@
-export function formatMoney(value: number | string | null | undefined, currency = 'UZS'): string {
+export function formatNumber(value: number | string | null | undefined, maximumFractionDigits = 0): string {
   const n = Number(value ?? 0);
-  if (!Number.isFinite(n)) return `0 ${currency}`;
-  const formatted = new Intl.NumberFormat('uz-UZ', { maximumFractionDigits: 0 }).format(Math.round(n));
+  return new Intl.NumberFormat('uz-UZ', { maximumFractionDigits }).format(Number.isFinite(n) ? n : 0);
+}
+
+export function formatMoney(value: number | string | null | undefined, currency = 'UZS'): string {
+  const formatted = formatNumber(Math.round(Number(value ?? 0) || 0));
   return currency === 'UZS' ? `${formatted} so'm` : `${formatted} ${currency}`;
 }
 

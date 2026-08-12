@@ -8,6 +8,8 @@ describe('login page content helpers', () => {
       heroTitle: { en: '', uz: '  Yangi sarlavha  ' },
       emailPlaceholder: '  client@example.com  ',
       passwordPlaceholder: '',
+      websiteLabel: { en: '  Main website  ', uz: '  Asosiy sayt  ' },
+      websiteUrl: '  https://example.com/landing  ',
     });
 
     expect(content.brandName.en).toBe('Custom Brand');
@@ -16,6 +18,14 @@ describe('login page content helpers', () => {
     expect(content.heroTitle.uz).toBe('Yangi sarlavha');
     expect(content.emailPlaceholder).toBe('client@example.com');
     expect(content.passwordPlaceholder).toBe(defaultLoginPageContent.passwordPlaceholder);
+    expect(content.websiteLabel).toEqual({ en: 'Main website', uz: 'Asosiy sayt' });
+    expect(content.websiteUrl).toBe('https://example.com/landing');
+  });
+
+  it('rejects unsafe website links', () => {
+    const content = normalizeLoginPageContent({ websiteUrl: 'javascript:alert(1)' });
+
+    expect(content.websiteUrl).toBe(defaultLoginPageContent.websiteUrl);
   });
 
   it('resolves localized content for the active language', () => {

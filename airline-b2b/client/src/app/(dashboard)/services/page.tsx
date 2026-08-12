@@ -12,6 +12,7 @@ const emptyForm = {
   name: '', providerFirmId: '', providerName: '', flightId: '', quantity: '1',
   unitPrice: '', currency: 'UZS', exchangeRate: '', paymentStatus: 'DEBT', description: '',
 };
+const emptySale = { recipientFirmId: '', quantity: '1', notes: '' };
 
 export default function ServicesPage() {
   const { user } = useAuth();
@@ -22,6 +23,8 @@ export default function ServicesPage() {
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState('');
   const [saving, setSaving] = useState(false);
+  const [saleDrafts, setSaleDrafts] = useState<Record<string, typeof emptySale>>({});
+  const [sellingId, setSellingId] = useState('');
   const role = String(user?.role).toUpperCase();
   const firmRole = String(user?.firmRole || 'MANAGER').toUpperCase();
   const manage = role === 'FIRM'
@@ -30,11 +33,31 @@ export default function ServicesPage() {
 
   const load = async () => {
     const [services, firmRows, flightRows] = await Promise.all([
-      api.get('/services'), api.get('/firms'), api.get('/flights'),
+      api.get('/services'), api.get('/tour-packages/firms'), api.get('/flights'),
     ]);
     setRows(services.data || []);
     setFirms((firmRows.data || []).filter((firm: any) => firm.id !== user?.firmId));
     setFlights(flightRows.data || []);
+  };
+
+  const sell = async (service: any) => {
+    const draft = saleDrafts[service.id] || emptySale;
+    const quantity = Number(draft.quantity);
+    if (!draft.recipientFirmId || !Number.isInteger(quantity) || quantity < 1 || quantity > Number(service.availableQuantity || 0)) {
+      toast.error(tr('Select a buyer and valid quantity', 'Xaridorni tanlang va mavjud miqdorda son kiriting'));
+      return;
+    }
+    try {
+      setSellingId(service.id);
+      await api.post(`/services/${service.id}/assign`, { ...draft, quantity });
+      toast.success(tr('Service sold', 'Xizmat sotildi'));
+      setSaleDrafts((current) => ({ ...current, [service.id]: emptySale }));
+      await load();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Failed to sell service', 'Xizmatni sotib bo\'lmadi'));
+    } finally {
+      setSellingId('');
+    }
   };
 
   useEffect(() => { if (user) load().catch(() => toast.error(tr('Failed to load services', 'Xizmatlarni yuklab bo\'lmadi'))); }, [user]);
@@ -137,6 +160,19 @@ export default function ServicesPage() {
         </div>
       </div>
       {service.description && <p className="mt-2 text-sm text-muted">{service.description}</p>}
+      {manage && service.ownerFirmId === user?.firmId && Number(service.availableQuantity || 0) > 0 && <div className="mt-4 rounded-lg border border-border bg-background/40 p-3">
+        <div className="mb-2 text-sm font-bold">{tr('Sell service', 'Xizmat sotish')}</div>
+        <div className="flex flex-wrap items-end gap-2">
+          <select className="compact-control min-w-52" value={(saleDrafts[service.id] || emptySale).recipientFirmId} onChange={(e) => setSaleDrafts((current) => ({ ...current, [service.id]: { ...(current[service.id] || emptySale), recipientFirmId: e.target.value } }))}>
+            <option value="">{tr('Select buyer firm', 'Xaridor firmani tanlang')}</option>
+            {firms.filter((firm: any) => firm.id !== user?.firmId).map((firm: any) => <option key={firm.id} value={firm.id}>{firm.name}</option>)}
+          </select>
+          <input className="compact-control w-24 text-right" type="number" min="1" max={service.availableQuantity} value={(saleDrafts[service.id] || emptySale).quantity} onChange={(e) => setSaleDrafts((current) => ({ ...current, [service.id]: { ...(current[service.id] || emptySale), quantity: e.target.value } }))} />
+          <input className="compact-control min-w-52" placeholder={tr('Sale note', 'Sotuv izohi')} value={(saleDrafts[service.id] || emptySale).notes} onChange={(e) => setSaleDrafts((current) => ({ ...current, [service.id]: { ...(current[service.id] || emptySale), notes: e.target.value } }))} />
+          <button type="button" className="action-button action-button--primary" disabled={sellingId === service.id} onClick={() => sell(service)}>{sellingId === service.id ? tr('Selling…', 'Sotilmoqda…') : tr('Sell', 'Sotish')}</button>
+        </div>
+        {service.assignments?.length > 0 && <p className="mt-2 text-xs text-muted">{tr('Sold/assigned', 'Sotilgan/ajratilgan')}: {service.assignments.reduce((sum: number, row: any) => sum + Number(row.quantity || 0), 0)} ta</p>}
+      </div>}
     </div>)}</div>
   </div>;
 }

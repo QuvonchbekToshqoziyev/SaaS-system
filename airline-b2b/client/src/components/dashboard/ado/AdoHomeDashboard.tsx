@@ -10,12 +10,13 @@ import {
   ArrowRightLeft,
   Wallet,
   AlertCircle,
+  Boxes,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import toast from 'react-hot-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { formatMoney } from '@/lib/format';
+import { formatMoney, formatNumber } from '@/lib/format';
 import KpiCard from './KpiCard';
 import DashboardRightPanel from './DashboardRightPanel';
 
@@ -56,6 +57,16 @@ type DashboardReport = {
   upcomingFlights?: UpcomingFlight[];
   debts?: { receivables: DebtRow[]; payables: DebtRow[] };
   pendingAllocations?: { total: number };
+  expenses?: { today: number; currentMonth: number; budget: number; budgetUsagePercent: number | null; pendingApprovals: number };
+};
+
+type InventoryDashboard = {
+  inventoryValue: string;
+  monthPurchases: string;
+  monthSales: string;
+  cogs: string;
+  grossProfit: string;
+  expiredBatches: number;
 };
 
 const TX_TYPE_UZ: Record<string, string> = {
@@ -80,6 +91,7 @@ export default function AdoHomeDashboard() {
   const [loading, setLoading] = useState(true);
   const [dashboard, setDashboard] = useState<DashboardReport | null>(null);
   const [recentTx, setRecentTx] = useState<any[]>([]);
+  const [inventory, setInventory] = useState<InventoryDashboard | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -88,6 +100,7 @@ export default function AdoHomeDashboard() {
         const reqs = [
           api.get<DashboardReport>('/reports/dashboard'),
           api.get('/transactions', { params: { page: 1, limit: 8 } }),
+          ...(String(user.role || '').toUpperCase() === 'FIRM' ? [api.get<InventoryDashboard>('/inventory/dashboard')] : []),
         ];
         const results = await Promise.all(reqs);
         setDashboard(results[0].data || null);
@@ -95,6 +108,7 @@ export default function AdoHomeDashboard() {
         // The transactions endpoint returns { data: [...], meta: { ... } }
         const txResponseData = results[1].data;
         setRecentTx(Array.isArray(txResponseData) ? txResponseData : (txResponseData?.data || []));
+        if (results[2]) setInventory(results[2].data || null);
       } catch (err: any) {
         console.error('Dashboard load error:', err);
         toast.error(tr('Failed to load dashboard', 'Panel yuklanmadi'));
@@ -106,7 +120,7 @@ export default function AdoHomeDashboard() {
   }, [user, tr]);
 
   const fmtAmounts = (rows: MoneyRow[] | undefined) => rows?.length
-    ? rows.map((row) => `${Number(row.total || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${row.currency}`).join(' · ')
+    ? rows.map((row) => `${formatNumber(row.total || 0, 2)} ${row.currency}`).join(' · ')
     : '0';
 
   const panelNotifications = useMemo(() => {
@@ -179,6 +193,21 @@ export default function AdoHomeDashboard() {
             accent="red"
             href="/reports"
           />
+        </div>
+
+        {inventory && <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          <KpiCard title={tr('Inventory asset', 'Inventory aktivi')} value={`${formatMoney(Number(inventory.inventoryValue || 0))} UZS`} icon={<Boxes size={20} />} accent="gold" href="/inventory" />
+          <KpiCard title={tr('Month purchases', 'Joriy oy xaridi')} value={`${formatMoney(Number(inventory.monthPurchases || 0))} UZS`} icon={<Boxes size={20} />} accent="blue" href="/inventory" />
+          <KpiCard title={tr('Month product sales', 'Joriy oy mahsulot sotuvi')} value={`${formatMoney(Number(inventory.monthSales || 0))} UZS`} icon={<Boxes size={20} />} accent="green" href="/inventory" />
+          <KpiCard title="COGS" value={`${formatMoney(Number(inventory.cogs || 0))} UZS`} subtitle={`${tr('Gross profit', 'Yalpi foyda')}: ${formatMoney(Number(inventory.grossProfit || 0))}`} icon={<ArrowRightLeft size={20} />} accent="blue" href="/inventory" />
+          <KpiCard title={tr('Expired batches', 'Muddati o‘tgan partiyalar')} value={String(inventory.expiredBatches || 0)} icon={<AlertCircle size={20} />} accent={inventory.expiredBatches ? 'red' : 'green'} href="/inventory" />
+        </div>}
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiCard title={tr("Today's expenses", 'Bugungi xarajat')} value={formatMoney(dashboard?.expenses?.today || 0)} icon={<Wallet size={20} />} accent="red" href="/reports" />
+          <KpiCard title={tr('Current month expenses', 'Joriy oy xarajati')} value={formatMoney(dashboard?.expenses?.currentMonth || 0)} icon={<Wallet size={20} />} accent="gold" href="/reports" />
+          <KpiCard title={tr('Budget usage', 'Budjetdan foydalanish')} value={dashboard?.expenses?.budgetUsagePercent == null ? '—' : `${dashboard.expenses.budgetUsagePercent.toFixed(1)}%`} subtitle={`${formatMoney(dashboard?.expenses?.currentMonth || 0)} / ${formatMoney(dashboard?.expenses?.budget || 0)}`} icon={<AlertCircle size={20} />} accent={Number(dashboard?.expenses?.budgetUsagePercent || 0) > 100 ? 'red' : 'green'} href="/reports" />
+          <KpiCard title={tr('Pending expense approvals', 'Tasdiqlash kutilayotgan xarajatlar')} value={String(dashboard?.expenses?.pendingApprovals || 0)} icon={<AlertCircle size={20} />} accent="blue" href="/reports" />
         </div>
 
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
@@ -277,8 +306,8 @@ function DashboardDebtTable({ title, rows, kind, tr }: { title: string; rows: De
       <div className="overflow-x-auto"><table className="excel-table"><thead><tr><th>{tr('Airline / firm', 'Airline / firma')}</th><th>{tr('Paid', 'To‘langan')}</th><th>{tr('Current debt', 'Hozirgi qarz')}</th></tr></thead>
         <tbody>{rows.length ? rows.slice(0, 5).map((row) => <tr key={`${row.ownerFirmId || ''}-${row.firmId}-${row.currency}`}>
           <td className="font-semibold">{row.firmName}<div className="text-xs font-normal text-muted">{kind === 'receivable' ? `${row.firmName} → ${row.ownerFirmName || tr('Us', 'Biz')}` : `${row.ownerFirmName || tr('Us', 'Biz')} → ${row.firmName}`}</div></td>
-          <td className="whitespace-nowrap font-mono">{Number(row.paid || 0).toLocaleString()} {row.currency}</td>
-          <td className={`whitespace-nowrap font-mono font-bold ${kind === 'receivable' ? 'text-red-400' : 'text-amber-400'}`}>{Number(row.currentDebt || 0).toLocaleString()} {row.currency}</td>
+          <td className="whitespace-nowrap font-mono">{formatNumber(row.paid || 0)} {row.currency}</td>
+          <td className={`whitespace-nowrap font-mono font-bold ${kind === 'receivable' ? 'text-red-400' : 'text-amber-400'}`}>{formatNumber(row.currentDebt || 0)} {row.currency}</td>
         </tr>) : <tr><td colSpan={3} className="text-center text-muted">{tr('No debt', 'Qarz yo‘q')}</td></tr>}</tbody>
       </table></div>
     </div>

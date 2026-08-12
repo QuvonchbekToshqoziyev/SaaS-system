@@ -1,17 +1,20 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
 import { Prisma } from '@prisma/client';
+import { seedDefaultExpenseCategories } from '../services/expense-categories.service';
 import { isPayableDebtType, payableAndPaymentTypeFilter } from '../utils/transaction-types';
 import { canAccessFirm, canViewRelatedFirm, getRelatedFirmIds } from '../utils/access';
 import { writeAuditLog } from '../utils/audit';
 import { canManageFirmWork } from '../utils/firm-user-roles';
 import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
 import { visibleTransactionWhere } from '../utils/transaction-visibility';
+import { backfillExternalAirlineFirms } from '../services/external-airline-firms';
 
 type AuthUser = {
   userId?: string;
   role?: string;
   firmId?: string | null;
+  firmRole?: string | null;
 };
 
 function getAuthUser(req: Request): AuthUser {
@@ -201,6 +204,7 @@ function parseOptionalDate(value: unknown): Date | undefined {
 
 export const listFirms = async (req: Request, res: Response) => {
   const authUser = getAuthUser(req);
+  await backfillExternalAirlineFirms();
   const scopedFirmIds = await getRelatedFirmIds(authUser);
 
   const firms = await prisma.firm.findMany({
@@ -351,6 +355,8 @@ export const createFirm = async (req: Request, res: Response) => {
         });
       }
 
+      await seedDefaultExpenseCategories(tx, firm.id, actorUserId);
+
       if (priorBalance) {
         await createPriorBalanceTransaction({
           tx,
@@ -399,6 +405,12 @@ export const updateFirm = async (req: Request, res: Response) => {
         subscriptionEndsAt: true,
         creditLimit: true,
         currency: true,
+        accountingFramework: true,
+        accountingPolicyVersion: true,
+        chartOfAccountsVersion: true,
+        reportingStartDate: true,
+        fiscalYearStart: true,
+        timezone: true,
         kind: true,
         status: true,
       },
@@ -411,6 +423,14 @@ export const updateFirm = async (req: Request, res: Response) => {
       }
       if (typeof req.body?.currency === 'string' && req.body.currency.trim()) {
         data.currency = req.body.currency.trim().toUpperCase();
+      }
+      if (String(authUser.firmRole || '').toUpperCase() === 'FIRM_ADMIN') {
+        if (typeof req.body?.accountingFramework === 'string' && ['IFRS', 'BHMS', 'MANAGEMENT_ONLY'].includes(req.body.accountingFramework.toUpperCase())) data.accountingFramework = req.body.accountingFramework.toUpperCase();
+        if (typeof req.body?.accountingPolicyVersion === 'string' && req.body.accountingPolicyVersion.trim()) data.accountingPolicyVersion = req.body.accountingPolicyVersion.trim();
+        if (typeof req.body?.chartOfAccountsVersion === 'string' && req.body.chartOfAccountsVersion.trim()) data.chartOfAccountsVersion = req.body.chartOfAccountsVersion.trim();
+        if (typeof req.body?.timezone === 'string' && req.body.timezone.trim()) data.timezone = req.body.timezone.trim();
+        if (Number.isInteger(req.body?.fiscalYearStart) && req.body.fiscalYearStart >= 1 && req.body.fiscalYearStart <= 12) data.fiscalYearStart = req.body.fiscalYearStart;
+        if (req.body?.reportingStartDate !== undefined) data.reportingStartDate = req.body.reportingStartDate ? new Date(String(req.body.reportingStartDate)) : null;
       }
     } else if (role === 'SUPERADMIN') {
     if (typeof req.body?.name === 'string' && req.body.name.trim()) {
@@ -432,6 +452,12 @@ export const updateFirm = async (req: Request, res: Response) => {
     if (typeof req.body?.currency === 'string' && req.body.currency.trim()) {
       data.currency = req.body.currency.trim().toUpperCase();
     }
+    if (typeof req.body?.accountingFramework === 'string' && ['IFRS', 'BHMS', 'MANAGEMENT_ONLY'].includes(req.body.accountingFramework.toUpperCase())) data.accountingFramework = req.body.accountingFramework.toUpperCase();
+    if (typeof req.body?.accountingPolicyVersion === 'string' && req.body.accountingPolicyVersion.trim()) data.accountingPolicyVersion = req.body.accountingPolicyVersion.trim();
+    if (typeof req.body?.chartOfAccountsVersion === 'string' && req.body.chartOfAccountsVersion.trim()) data.chartOfAccountsVersion = req.body.chartOfAccountsVersion.trim();
+    if (typeof req.body?.timezone === 'string' && req.body.timezone.trim()) data.timezone = req.body.timezone.trim();
+    if (Number.isInteger(req.body?.fiscalYearStart) && req.body.fiscalYearStart >= 1 && req.body.fiscalYearStart <= 12) data.fiscalYearStart = req.body.fiscalYearStart;
+    if (req.body?.reportingStartDate !== undefined) data.reportingStartDate = req.body.reportingStartDate ? new Date(String(req.body.reportingStartDate)) : null;
     if (typeof req.body?.kind === 'string' && ['AGENCY', 'AIRLINE', 'CONTRACTOR'].includes(req.body.kind.toUpperCase())) {
       data.kind = req.body.kind.toUpperCase() as any;
     }
@@ -459,6 +485,12 @@ export const updateFirm = async (req: Request, res: Response) => {
               subscriptionEndsAt: true,
               creditLimit: true,
               currency: true,
+              accountingFramework: true,
+              accountingPolicyVersion: true,
+              chartOfAccountsVersion: true,
+              reportingStartDate: true,
+              fiscalYearStart: true,
+              timezone: true,
               kind: true,
               status: true,
               createdAt: true,
@@ -475,6 +507,12 @@ export const updateFirm = async (req: Request, res: Response) => {
               subscriptionEndsAt: true,
               creditLimit: true,
               currency: true,
+              accountingFramework: true,
+              accountingPolicyVersion: true,
+              chartOfAccountsVersion: true,
+              reportingStartDate: true,
+              fiscalYearStart: true,
+              timezone: true,
               kind: true,
               status: true,
               createdAt: true,

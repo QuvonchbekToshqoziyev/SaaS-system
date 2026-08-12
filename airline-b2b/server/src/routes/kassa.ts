@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { closeKassa, createKassaDesk, createPaymentCard, deletePaymentCard, getKassaDay, getKassaHistory, listKassaDesks, listPaymentCards, openKassa, reopenKassa, updateKassaDesk, updatePaymentCard } from '../controllers/kassa.controller';
+import { closeKassa, createKassaDesk, createKassaTransfer, createPaymentCard, deletePaymentCard, getKassaDay, getKassaHistory, listKassaDesks, listPaymentCards, openKassa, reopenKassa, updateKassaDesk, updatePaymentCard } from '../controllers/kassa.controller';
 import { authMiddleware } from '../middleware/auth';
 import { roleMiddleware } from '../middleware/role';
 
@@ -16,6 +16,7 @@ router.patch('/desks/:id', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), upda
 router.post('/cards', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), createPaymentCard);
 router.patch('/cards/:id', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), updatePaymentCard);
 router.delete('/cards/:id', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), deletePaymentCard);
+router.post('/transfers', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), createKassaTransfer);
 router.post('/open', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), openKassa);
 router.post('/close', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), closeKassa);
 router.post('/reopen', roleMiddleware(['SUPERADMIN', 'ADMIN', 'FIRM']), reopenKassa);

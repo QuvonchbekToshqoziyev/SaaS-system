@@ -8,6 +8,7 @@ import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
 import { canOperateKassa } from '../utils/kassa-permissions';
 import { assertKassirDeskAccess, KassaDeskAccessError } from '../utils/kassa-desk-access';
 import { ensureFinancialAccount } from '../utils/financial-accounts';
+import { maskCardNumber } from '../domains/transactions/transaction-display';
 
 type AuthUser = {
   userId?: string;
@@ -272,6 +273,9 @@ export const processPayment = async (req: Request, res: Response) => {
           baseAmount,
           paymentMethod: method,
           paymentCardId: method === 'card' ? paymentCardId : undefined,
+          counterpartyNameSnapshot: payerFirm.name,
+          cardNameSnapshot: paymentCard?.ownerName || null,
+          cardMaskedNumberSnapshot: paymentCard?.cardNumber ? maskCardNumber(paymentCard.cardNumber) : null,
           metadata: {
             ...(rawMetadata as Record<string, unknown>),
             paymentCardId: method === 'card' ? paymentCardId : undefined,

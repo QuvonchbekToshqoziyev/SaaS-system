@@ -35,7 +35,9 @@ function add(prefix, defaultRoles, rows) {
   }
 }
 
-add('/accounts', ALL, [['GET', ''], ['POST', '', { safeAllowedProbe: true, businessDeniedActors: ['manager', 'kassir'] }]]);
+add('/accounts', ALL, [['GET', ''], ['POST', '', { safeAllowedProbe: true, businessDeniedActors: ['manager', 'kassir'] }], ['PATCH', `/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['manager', 'kassir'] }], ['DELETE', `/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['manager', 'kassir'] }]]);
+add('/expense-categories', ALL, [['GET', ''], ['POST', '', { safeAllowedProbe: true, businessDeniedActors: ['admin', 'manager', 'kassir'] }], ['PATCH', `/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['admin', 'manager', 'kassir'] }], ['DELETE', `/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['admin', 'manager', 'kassir'] }]]);
+add('/expense-budgets', ALL, [['GET', ''], ['POST', '', { safeAllowedProbe: true, businessDeniedActors: ['admin', 'manager', 'kassir'] }], ['DELETE', `/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['admin', 'manager', 'kassir'] }]]);
 add('/airlines', ALL, [
   ['GET', ''], ['POST', '', { roles: SA, safeAllowedProbe: true }],
   ['GET', '/connections', { roles: SA_ADMIN }], ['POST', '/connections', { roles: SA, safeAllowedProbe: true }],
@@ -65,6 +67,7 @@ add('/chat', ALL, [
 add('/currency-rates', ALL, [['GET', ''], ['POST', '', { safeAllowedProbe: true }]]);
 add('/employees', ALL, [
   ['GET', ''], ['POST', '', { safeAllowedProbe: true, businessDeniedActors: ['manager', 'kassir'] }],
+  ['GET', `/${fakeId}/salary-history`, { expected: [403, 404] }],
   ['PATCH', `/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['manager', 'kassir'] }],
   ['DELETE', `/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['manager', 'kassir'] }],
 ]);
@@ -82,6 +85,30 @@ add('/invites', ALL, [
   ['POST', '', { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
   ['POST', '/accept', { authenticated: false, expected: [400], safeAllowedProbe: true }],
 ]);
+add('/inventory', ALL, [
+  ['GET', '/bootstrap?firmId=__ACCESSIBLE_FIRM__'],
+  ['GET', '/dashboard?firmId=__ACCESSIBLE_FIRM__'],
+  ['GET', '/products?firmId=__ACCESSIBLE_FIRM__'],
+  ['POST', '/products', { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
+  ['PATCH', `/products/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
+  ['DELETE', `/products/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
+  ['POST', '/categories', { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
+  ['PATCH', `/categories/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
+  ['DELETE', `/categories/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
+  ['POST', '/units', { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
+  ['PATCH', `/units/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
+  ['DELETE', `/units/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
+  ['GET', '/stock?firmId=__ACCESSIBLE_FIRM__'],
+  ['GET', '/reports?firmId=__ACCESSIBLE_FIRM__'],
+  ['GET', '/documents?firmId=__ACCESSIBLE_FIRM__'],
+  ['POST', '/documents/apply', { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
+  ['POST', `/documents/${fakeId}/cancel`, { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
+  ['GET', '/reservations?firmId=__ACCESSIBLE_FIRM__'],
+  ['POST', '/reservations', { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
+  ['POST', `/reservations/${fakeId}/release`, { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
+  ['GET', `/${fakeId}`, { expected: [403, 404] }],
+  ['POST', `/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['kassir'] }],
+]);
 add('/kassa', ALL, [
   ['GET', `?date=${new Date().toISOString().slice(0, 10)}`], ['GET', '/history'], ['GET', '/desks'], ['GET', '/cards'],
   ['POST', '/desks', { safeAllowedProbe: true, businessDeniedActors: ['manager', 'kassir'] }],
@@ -91,6 +118,7 @@ add('/kassa', ALL, [
   ['DELETE', `/cards/${fakeId}`, { safeAllowedProbe: true, businessDeniedActors: ['manager', 'kassir'] }],
   ['POST', '/open', { safeAllowedProbe: false }], ['POST', '/close', { safeAllowedProbe: false }],
   ['POST', '/reopen', { safeAllowedProbe: false }],
+  ['POST', '/transfers', { safeAllowedProbe: true }],
 ]);
 add('/logs', SA, [['GET', '/errors'], ['POST', `/errors/${fakeId}/resolve`, { safeAllowedProbe: true }]]);
 add('/notifications', ALL, [
@@ -104,7 +132,8 @@ add('/reports', ALL, [
   ['GET', '/monthly'], ['GET', '/calendar'], ['GET', '/dashboard'], ['GET', '/analytics'],
   ['GET', '/agents', { expected: [200, 400] }],
   ['GET', '/financial-health'], ['GET', '/profitability'], ['GET', '/cash-flow'],
-  ['GET', '/receivables'], ['GET', '/payables'], ['GET', '/flight-profitability'],
+  ['GET', '/receivables'], ['GET', '/payables'], ['GET', '/flight-profitability'], ['GET', '/expense-estimate'],
+  ['GET', `/expense-estimate/categories/${fakeId}/details`, { expected: [200, 400, 403, 404] }],
   ['GET', '/product-metrics', { roles: SA }], ['POST', '/data-transfer-event', { safeAllowedProbe: false }],
 ]);
 add('/search', ALL, [['GET', '?q=QA']]);
@@ -151,6 +180,9 @@ add('/transactions', ALL, [
   ['POST', '', { safeAllowedProbe: true, businessDeniedActors: ['manager', 'kassir'] }],
   ['POST', '/cash', { safeAllowedProbe: true }],
   ['POST', '/account', { safeAllowedProbe: true, businessDeniedActors: ['manager', 'kassir'] }],
+  ['POST', '/finance/preview', { safeAllowedProbe: true, businessDeniedActors: ['manager', 'kassir'] }],
+  ['POST', '/finance', { safeAllowedProbe: true, businessDeniedActors: ['manager', 'kassir'] }],
+  ['POST', `/${fakeId}/reversal`, { safeAllowedProbe: true, businessDeniedActors: ['manager', 'kassir'] }],
   ['POST', '/import/historical-kassa', { safeAllowedProbe: true }],
   ['PATCH', `/${fakeId}/daily-cash`, { safeAllowedProbe: true }],
   ['DELETE', `/${fakeId}/daily-cash`, { safeAllowedProbe: true }],

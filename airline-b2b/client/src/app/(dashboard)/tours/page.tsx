@@ -9,6 +9,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import ExportActions from '@/components/ui/ExportActions';
 import ActionButtons from '@/components/ui/ActionButtons';
+import { formatFlightDisplayName } from '@/lib/flight-display';
+import { formatNumber } from '@/lib/format';
 
 type FirmOption = {
   id: string;
@@ -68,7 +70,7 @@ type TourComponent = {
 };
 
 type SelectedServiceRow = { serviceId: string; quantityPerTour: number; exchangeRate: string };
-type SellRow = { buyerFirmId: string; quantity: number; unitPrice: string; exchangeRate: string };
+type SellRow = { buyerFirmId: string; quantity: number; unitPrice: string; exchangeRate: string; discountAmount: string; saleNote: string };
 
 const emptyCreateRow = {
   ownerFirmId: '',
@@ -89,7 +91,7 @@ const emptyServiceRow = {
   unitPrice: '', currency: 'UZS', exchangeRate: '', paymentStatus: 'DEBT', description: '',
 };
 
-const emptySellRow: SellRow = { buyerFirmId: '', quantity: 1, unitPrice: '', exchangeRate: '' };
+const emptySellRow: SellRow = { buyerFirmId: '', quantity: 1, unitPrice: '', exchangeRate: '', discountAmount: '0', saleNote: '' };
 
 export default function ToursPage() {
   const { user } = useAuth();
@@ -341,6 +343,7 @@ export default function ToursPage() {
     setSellRows((current) => ({ ...current, [sale.packageId]: {
       buyerFirmId: String(sale.buyerFirmId || ''), quantity: Number(sale.quantity || 1),
       unitPrice: String(sale.unitPrice || ''), exchangeRate: String(sale.transaction?.exchangeRate || ''),
+      discountAmount: String(sale.discountAmount || 0), saleNote: String(sale.saleNote || sale.notes || ''),
     } }));
     setEditingSaleId(sale.id);
     setSellingId(sale.packageId);
@@ -367,6 +370,19 @@ export default function ToursPage() {
       toast.error(tr('Enter a valid exchange rate', 'To‘g‘ri valyuta kursini kiriting'));
       return;
     }
+    const grossAmount = Number(row.quantity) * Number(row.unitPrice || pkg.unitPrice);
+    const discountAmount = Number(row.discountAmount || 0);
+    if (!Number.isFinite(discountAmount)) {
+      toast.error(tr('Enter a valid discount amount', 'Chegirma summasini to‘g‘ri kiriting'));
+      return;
+    }
+    const saleNote = row.saleNote.trim();
+    if (saleNote.length < 3 || saleNote.length > 1000) {
+      toast.error(tr('A 3–1000 character sale note is required', 'Tur sotuviga 3–1000 belgili izoh yozish majburiy.'));
+      return;
+    }
+    const fullDiscount = grossAmount > 0 && discountAmount === grossAmount;
+    if (fullDiscount && !window.confirm(tr('The final amount is 0. Continue with a free/100% discount sale?', 'Ushbu sotuvning yakuniy summasi 0. Operatsiyani bepul/100% chegirma bilan davom ettirmoqchimisiz?'))) return;
     try {
       setBusyId(pkg.id);
       const payload: any = {
@@ -374,6 +390,9 @@ export default function ToursPage() {
         quantity: row.quantity,
         unitPrice: row.unitPrice || undefined,
         exchangeRate: currency !== 'UZS' ? row.exchangeRate.trim() : undefined,
+        discountAmount,
+        saleNote,
+        confirmFullDiscount: fullDiscount,
       };
       if (editingSale) {
         const reason = window.prompt(tr('Why is this sale being corrected?', 'Sotuv nima sababdan tahrirlanmoqda?'))?.trim();
@@ -416,9 +435,9 @@ export default function ToursPage() {
     return new Date(value).toLocaleString();
   };
   const flightLabel = (flight?: FlightOption | null, fallbackId?: string | null) => {
-    if (flight) return `${flight.flightNumber} - ${flight.route}`;
-    if (fallbackId && flightNameById.has(fallbackId)) return flightNameById.get(fallbackId) || fallbackId;
-    return fallbackId || '-';
+    if (flight) return formatFlightDisplayName(flight);
+    if (fallbackId && flightNameById.has(fallbackId)) return flightNameById.get(fallbackId) || formatFlightDisplayName({ id: fallbackId });
+    return fallbackId ? formatFlightDisplayName({ id: fallbackId }) : '-';
   };
 
   const buyerOptionsFor = (pkg: TourPackage) => firms.filter((f) => f.id !== pkg.ownerFirmId);
@@ -763,6 +782,10 @@ export default function ToursPage() {
         const editingSale = editingSaleId ? sales.find((sale) => sale.id === editingSaleId) : null;
         const maxQuantity = sellingPackage.availableQuantity + Number(editingSale?.quantity || 0);
         const needsRate = String(sellingPackage.currency || 'UZS').trim().toUpperCase() !== 'UZS';
+        const grossAmount = Number(sellRow.quantity || 0) * Number(sellRow.unitPrice || sellingPackage.unitPrice || 0);
+        const discountAmount = Number(sellRow.discountAmount || 0);
+        const netAmount = Math.max(grossAmount - (Number.isFinite(discountAmount) ? discountAmount : 0), 0);
+        const rate = needsRate ? Number(sellRow.exchangeRate || 0) : 1;
         return <div
           className="fixed inset-0 z-[120] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm"
           onMouseDown={(event) => { if (event.target === event.currentTarget) closeSale(sellingPackage.id); }}
@@ -783,8 +806,18 @@ export default function ToursPage() {
               <label className="form-field--compact"><span className="compact-label">{tr('Quantity', 'Soni')}</span><input type="number" min="1" max={maxQuantity} className="compact-control text-right" value={sellRow.quantity} onChange={(e) => updateSellRow(sellingPackage.id, { quantity: Number(e.target.value) })} /></label>
               <label className="form-field--compact"><span className="compact-label">{tr('Unit price', 'Bir dona narxi')}</span><input type="number" min="0.01" step="0.01" className="compact-control text-right" placeholder={String(sellingPackage.unitPrice)} value={sellRow.unitPrice} onChange={(e) => updateSellRow(sellingPackage.id, { unitPrice: e.target.value })} /></label>
               {needsRate && <label className="form-field--compact"><span className="compact-label">{tr('Rate to UZS', 'UZS kursi')}</span><input type="number" inputMode="decimal" min="0.000001" step="any" className="compact-control text-right" placeholder="0.00" value={sellRow.exchangeRate} onChange={(e) => updateSellRow(sellingPackage.id, { exchangeRate: e.target.value })} /></label>}
-              <div className="form-preview">
-                {tr('Sale preview', 'Sotuv ko‘rinishi')}: {sellRow.quantity} × {sellRow.unitPrice || sellingPackage.unitPrice} {sellingPackage.currency} → {firms.find((firm) => firm.id === sellRow.buyerFirmId)?.name || tr('buyer not selected', 'xaridor tanlanmagan')}
+              <label className="form-field--compact"><span className="compact-label">{tr('Discount amount (- increases price)', 'Chegirma summasi (minus narxni oshiradi)')} ({sellingPackage.currency})</span><input type="number" step="0.01" className="compact-control text-right" value={sellRow.discountAmount} onChange={(e) => updateSellRow(sellingPackage.id, { discountAmount: e.target.value })} /></label>
+              <label className="form-field--full"><span className="compact-label">{tr('Note / discount reason', 'Izoh / chegirma sababi')}</span><textarea rows={3} minLength={3} maxLength={1000} className="compact-control" value={sellRow.saleNote} onChange={(e) => updateSellRow(sellingPackage.id, { saleNote: e.target.value })} /></label>
+              <div className="form-preview space-y-1">
+                <div className="font-bold">{tr('Sale summary', 'Sotuv xulosasi')}</div>
+                <div>{tr('Tour', 'Tur')}: {sellingPackage.name} · {formatFlightDisplayName(sellingPackage.flight)}</div>
+                <div>{tr('Buyer', 'Xaridor')}: {firms.find((firm) => firm.id === sellRow.buyerFirmId)?.name || tr('not selected', 'tanlanmagan')}</div>
+                <div>{tr('Quantity', 'Miqdor')}: {sellRow.quantity} ta · {tr('Unit price', 'Bir dona narxi')}: {Number(sellRow.unitPrice || sellingPackage.unitPrice || 0).toLocaleString()} {sellingPackage.currency}</div>
+                <div>{tr('Gross amount', 'Brutto summa')}: {formatNumber(grossAmount)} {sellingPackage.currency}</div>
+                <div>{tr('Discount', 'Chegirma')}: {formatNumber(Number.isFinite(discountAmount) ? discountAmount : 0)} {sellingPackage.currency}</div>
+                <div className="font-bold">{tr('Final amount', 'Yakuniy summa')}: {formatNumber(netAmount)} {sellingPackage.currency}</div>
+                {needsRate && rate > 0 && <div>{tr('Final UZS', 'Yakuniy UZS')}: {formatNumber(netAmount * rate)} UZS</div>}
+                {grossAmount > 0 && netAmount === 0 && <div className="mt-2 rounded border border-yellow-600/50 bg-yellow-600/10 p-2 font-semibold text-yellow-500">{tr('100% discount: extra confirmation will be required.', '100% chegirma: qo‘shimcha tasdiq talab qilinadi.')}</div>}
               </div>
               <ActionButtons
                 cancelLabel={tr('Cancel', 'Bekor qilish')}
@@ -798,6 +831,11 @@ export default function ToursPage() {
                   && Number(sellRow.quantity) <= maxQuantity
                   && (!sellRow.unitPrice || Number(sellRow.unitPrice) > 0)
                   && (!needsRate || Number(sellRow.exchangeRate) > 0)
+                  && Number.isFinite(discountAmount)
+                  && discountAmount >= 0
+                  && discountAmount <= grossAmount
+                  && sellRow.saleNote.trim().length >= 3
+                  && sellRow.saleNote.trim().length <= 1000
                 )}
                 onCancel={() => closeSale(sellingPackage.id)}
                 onConfirm={() => sellPackage(sellingPackage)}
@@ -813,9 +851,9 @@ export default function ToursPage() {
         return <div className="glass-panel p-4">
           <div className="mb-4 flex items-start justify-between"><div><h3 className="text-xl font-bold">{pkg.name}</h3><p className="text-sm text-muted">{flightLabel(pkg.flight, pkg.flightId)} · {pkg.destination}</p></div><button type="button" onClick={() => setDetailId(null)}><X /></button></div>
           <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <div><span className="compact-label">{tr('Total quantity', 'Jami soni')}</span><strong>{pkg.quantity}</strong></div><div><span className="compact-label">{tr('Sold', 'Sotilgan')}</span><strong>{pkg.soldQuantity || 0}</strong></div><div><span className="compact-label">{tr('Available', 'Qolgan')}</span><strong>{pkg.availableQuantity}</strong></div><div><span className="compact-label">{tr('Unit cost', 'Bir dona tannarx')}</span><strong>{Number(pkg.unitPrice).toFixed(2)} {pkg.currency}</strong></div><div><span className="compact-label">{tr('Total cost', 'Jami tannarx')}</span><strong>{Number(pkg.totalCost || 0).toFixed(2)} {pkg.currency}</strong></div>
+            <div><span className="compact-label">{tr('Total quantity', 'Jami soni')}</span><strong>{formatNumber(pkg.quantity)}</strong></div><div><span className="compact-label">{tr('Sold', 'Sotilgan')}</span><strong>{formatNumber(pkg.soldQuantity || 0)}</strong></div><div><span className="compact-label">{tr('Available', 'Qolgan')}</span><strong>{formatNumber(pkg.availableQuantity)}</strong></div><div><span className="compact-label">{tr('Unit cost', 'Bir dona tannarx')}</span><strong>{formatNumber(pkg.unitPrice, 2)} {pkg.currency}</strong></div><div><span className="compact-label">{tr('Total cost', 'Jami tannarx')}</span><strong>{formatNumber(pkg.totalCost || 0, 2)} {pkg.currency}</strong></div>
           </div>
-          <div className="overflow-x-auto"><table className="excel-table"><thead><tr><th>{tr('Component', 'Komponent')}</th><th className="text-right">{tr('Per tour', 'Har bir turga')}</th><th className="text-right">{tr('Total reserved', 'Jami band')}</th><th className="text-right">{tr('Unit cost', 'Bir dona tannarx')}</th><th className="text-right">{tr('Cost per tour', 'Bir turga tannarx')}</th><th className="text-right">{tr('Total cost', 'Jami tannarx')}</th></tr></thead><tbody>{(pkg.components || []).map((component) => <tr key={component.id}><td>{component.componentType === 'TICKET' ? tr('Ticket', 'Bilet') : component.service?.name || tr('Service', 'Xizmat')}</td><td className="text-right">{component.quantityPerTour}</td><td className="text-right">{component.totalReservedQuantity}</td><td className="text-right">{Number(component.unitCostSnapshot).toFixed(2)} {component.originalCurrency}</td><td className="text-right">{Number(component.costPerTourSnapshot).toFixed(2)} {component.currencySnapshot}</td><td className="text-right">{Number(component.totalCostSnapshot).toFixed(2)} {component.currencySnapshot}</td></tr>)}</tbody></table></div>
+          <div className="overflow-x-auto"><table className="excel-table"><thead><tr><th>{tr('Component', 'Komponent')}</th><th className="text-right">{tr('Per tour', 'Har bir turga')}</th><th className="text-right">{tr('Total reserved', 'Jami band')}</th><th className="text-right">{tr('Unit cost', 'Bir dona tannarx')}</th><th className="text-right">{tr('Cost per tour', 'Bir turga tannarx')}</th><th className="text-right">{tr('Total cost', 'Jami tannarx')}</th></tr></thead><tbody>{(pkg.components || []).map((component) => <tr key={component.id}><td>{component.componentType === 'TICKET' ? tr('Ticket', 'Bilet') : component.service?.name || tr('Service', 'Xizmat')}</td><td className="text-right">{formatNumber(component.quantityPerTour)}</td><td className="text-right">{formatNumber(component.totalReservedQuantity)}</td><td className="text-right">{formatNumber(component.unitCostSnapshot, 2)} {component.originalCurrency}</td><td className="text-right">{formatNumber(component.costPerTourSnapshot, 2)} {component.currencySnapshot}</td><td className="text-right">{formatNumber(component.totalCostSnapshot, 2)} {component.currencySnapshot}</td></tr>)}</tbody></table></div>
         </div>;
       })()}
 
@@ -828,25 +866,41 @@ export default function ToursPage() {
             <thead>
               <tr>
                 <th>{tr('Date', 'Sana')}</th>
-                <th>{tr('Package', 'Paket')}</th>
-                <th>{tr('Seller', 'Sotuvchi')}</th>
+                <th>{tr('Tour', 'Tur')}</th>
                 <th>{tr('Buyer', 'Xaridor')}</th>
                 <th className="text-right">{tr('Qty', 'Soni')}</th>
-                <th className="text-right">{tr('Total', 'Jami')}</th>
+                <th className="text-right">{tr('Unit price', 'Bir dona narxi')}</th>
+                <th className="text-right">{tr('Gross', 'Brutto summa')}</th>
+                <th className="text-right">{tr('Discount', 'Chegirma')}</th>
+                <th className="text-right">{tr('Final', 'Yakuniy summa')}</th>
+                <th className="text-right">{tr('Cost', 'Tannarx')}</th>
+                <th className="text-right">{tr('Gross profit', 'Yalpi foyda')}</th>
+                <th>{tr('Note', 'Izoh')}</th>
+                <th>{tr('Seller', 'Sotuvchi')}</th>
+                <th>{tr('Kassa', 'Kassa')}</th>
+                <th>{tr('Status', 'Holat')}</th>
                 <th>{tr('Actions', 'Amallar')}</th>
               </tr>
             </thead>
             <tbody>
               {visibleSales.length === 0 ? (
-                <tr><td colSpan={7} className="text-center text-muted">{tr('No tour sales yet.', 'Hali tur sotuvlari yo\'q.')}</td></tr>
+                <tr><td colSpan={15} className="text-center text-muted">{tr('No tour sales yet.', 'Hali tur sotuvlari yo\'q.')}</td></tr>
               ) : visibleSales.map((sale) => (
                 <tr key={sale.id}>
                   <td>{new Date(sale.createdAt).toLocaleString()}</td>
-                  <td>{sale.package?.name || sale.packageId}</td>
-                  <td>{sale.sellerFirm?.name || sale.sellerFirmId}</td>
-                  <td>{sale.buyerFirm?.name || sale.buyerFirmId}</td>
+                  <td>{sale.package?.name || '—'}</td>
+                  <td>{sale.buyerFirm?.name || '—'}</td>
                   <td className="text-right font-mono">{sale.quantity}</td>
-                  <td className="text-right font-mono">{Number(sale.totalAmount).toFixed(2)} {sale.currency}</td>
+                  <td className="text-right font-mono">{formatNumber(sale.unitPrice || 0, 2)} {sale.currency}</td>
+                  <td className="text-right font-mono">{formatNumber(sale.grossAmount || sale.totalAmount || 0, 2)} {sale.currency}</td>
+                  <td className="text-right font-mono">{formatNumber(sale.discountAmount || 0, 2)} {sale.currency}</td>
+                  <td className="text-right font-mono font-bold">{formatNumber(sale.netAmount ?? sale.totalAmount ?? 0, 2)} {sale.currency}</td>
+                  <td className="text-right font-mono">{formatNumber(sale.costOfGoodsSold || 0, 2)} {sale.currency}</td>
+                  <td className={`text-right font-mono ${Number(sale.grossProfit || 0) < 0 ? 'text-danger' : 'text-green-500'}`}>{formatNumber(sale.grossProfit || 0, 2)} {sale.currency}</td>
+                  <td className="max-w-64 whitespace-normal" title={sale.saleNote || sale.notes || ''}>{String(sale.saleNote || sale.notes || '—').length > 60 ? `${String(sale.saleNote || sale.notes).slice(0, 60)}…` : sale.saleNote || sale.notes || '—'}</td>
+                  <td><div>{sale.transaction?.createdBy?.fullName || sale.transaction?.createdBy?.email || '—'}</div><div className="text-xs text-muted">{sale.sellerFirm?.name || '—'}</div></td>
+                  <td>{sale.transaction?.kassaDesk ? [sale.transaction.kassaDesk.code, sale.transaction.kassaDesk.name].filter(Boolean).join(' — ') : '—'}</td>
+                  <td><span className="rounded border border-border px-2 py-1 text-xs">{Number(sale.discountPercent || 0) === 100 ? tr('100% discount', '100% chegirma') : sale.status}</span></td>
                   <td>{canCorrectTours && (role === 'SUPERADMIN' || sale.sellerFirmId === ownFirmId) ? <div className="flex gap-2">
                     <button type="button" aria-label={tr('Edit', 'Tahrirlash')} title={tr('Edit', 'Tahrirlash')} onClick={() => editSale(sale)} className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-border bg-surface hover:border-primary hover:text-primary"><Pencil size={17} /></button>
                     <button type="button" aria-label={tr('Delete', 'O‘chirish')} title={tr('Delete', 'O‘chirish')} onClick={() => deleteSale(sale)} disabled={busyId === `delete-sale-${sale.id}`} className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-danger/40 bg-surface text-danger disabled:opacity-50"><Trash2 size={17} /></button>

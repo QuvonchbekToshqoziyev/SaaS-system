@@ -42,6 +42,31 @@ type KassaDeskOption = {
   firm?: { id: string; name: string | null } | null;
 };
 
+const FINANCE_OPERATION_OPTIONS = [
+  ['BANK_INCOME', 'Bank kirimi'], ['BANK_EXPENSE', 'Bank chiqimi'], ['BANK_TO_BANK_TRANSFER', 'Banklararo o‘tkazma'],
+  ['DEBTOR_PAYMENT_RECEIVED', 'Debitor qarzini to‘ladi'], ['CREDITOR_PAYMENT_MADE', 'Kreditorga to‘lov'],
+  ['THREE_PARTY_SETTLEMENT', 'Uch tomonlama hisob-kitob'], ['MUTUAL_OFFSET', 'O‘zaro hisobga olish'],
+  ['SERVICE_OFFSET', 'Xizmat bilan qarzni yopish'], ['TICKET_OFFSET', 'Bilet bilan qarzni yopish'], ['TOUR_OFFSET', 'Tur bilan qarzni yopish'],
+  ['PRODUCT_OFFSET', 'Tovar bilan qarzni yopish'], ['COMPENSATION', 'Kompensatsiya'], ['ADVANCE_OFFSET', 'Avansdan yopish'],
+  ['OVERPAYMENT_OFFSET', 'Ortiqcha to‘lovdan yopish'], ['MANUAL_ACCOUNTING_ADJUSTMENT', 'Buxgalteriya tuzatishi'],
+  ['CASH_PAYMENT', 'Pul orqali to‘lov'], ['BANK_PAYMENT', 'Bank orqali to‘lov'], ['CARD_PAYMENT', 'Karta orqali to‘lov'],
+  ['DEBT_ASSIGNMENT', 'Qarzni o‘tkazish'], ['ADVANCE_RECEIVED', 'Olingan avans'],
+  ['ADVANCE_PAID', 'Berilgan avans'], ['OVERPAYMENT_REALLOCATION', 'Ortiqcha to‘lovni yo‘naltirish'],
+  ['BANK_FEE', 'Bank komissiyasi'], ['CURRENCY_EXCHANGE', 'Valyuta ayirboshlash'],
+  ['ACCOUNTING_ADJUSTMENT', 'Buxgalteriya tuzatishi'], ['OTHER_NON_CASH', 'Boshqa naqdsiz operatsiya'],
+] as const;
+
+const SETTLEMENT_OPERATIONS = ['THREE_PARTY_SETTLEMENT', 'MUTUAL_OFFSET', 'COMPENSATION', 'SERVICE_OFFSET', 'TICKET_OFFSET', 'TOUR_OFFSET', 'PRODUCT_OFFSET', 'ADVANCE_OFFSET', 'OVERPAYMENT_OFFSET', 'MANUAL_ACCOUNTING_ADJUSTMENT'] as const;
+const RECEIVABLE_OPERATIONS = ['BANK_INCOME', 'DEBTOR_PAYMENT_RECEIVED', 'CASH_PAYMENT', 'BANK_PAYMENT', 'CARD_PAYMENT', ...SETTLEMENT_OPERATIONS] as const;
+const PAYABLE_OPERATIONS = ['BANK_EXPENSE', 'CREDITOR_PAYMENT_MADE', 'CASH_PAYMENT', 'BANK_PAYMENT', 'CARD_PAYMENT', ...SETTLEMENT_OPERATIONS] as const;
+
+const emptyFinanceDraft = {
+  operationType: 'BANK_INCOME', sourceAccountId: '', destinationAccountId: '', amount: '', destinationAmount: '',
+  economicPurpose: '', expenseCategoryId: '', receivableId: '', payableId: '', counterpartyName: '',
+  paymentDate: format(new Date(), 'yyyy-MM-dd'), documentNumber: '', contractNumber: '', note: '', exchangeRate: '',
+  debitAccountCode: '', creditAccountCode: '', currency: 'UZS', settlementInstrument: '', settlementSubjectType: '', settlementSubjectId: '', settlementDetails: '',
+};
+
 export default function TransactionsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -51,20 +76,22 @@ export default function TransactionsPage() {
   const role = String(user?.role || '').toUpperCase();
   const canFilterFirm = role === 'ADMIN' || role === 'SUPERADMIN';
   const canCreateTransaction = canFilterFirm || (role === 'FIRM' && String(user?.firmRole || '').toUpperCase() === 'FIRM_ADMIN');
-  const canManageAccounts = role === 'FIRM' && String(user?.firmRole || '').toUpperCase() === 'FIRM_ADMIN';
+  const canManageAccounts = canCreateTransaction;
   const canDeleteTransaction = (transaction: any) => role === 'SUPERADMIN'
     || (role === 'FIRM' && String(user?.firmRole || '').toUpperCase() === 'FIRM_ADMIN' && String(transaction.firmId || '') === String(user?.firmId || ''));
 
   const [transactions, setTransactions] = useState<any[]>([]);
   const [accounts, setAccounts] = useState<any[]>([]);
-  const [accountDraft, setAccountDraft] = useState({ name: '', type: 'BANK', currency: 'UZS', openingBalance: '0' });
-  const [accountTx, setAccountTx] = useState({ accountId: '', flow: 'IN', amount: '', category: 'OTHER', counterpartyName: '', note: '', exchangeRate: '' });
+  const [accountDraft, setAccountDraft] = useState({ name: '', type: 'BANK_ACCOUNT', currency: 'UZS', openingBalance: '0', bankName: '', accountNumber: '', bankCode: '', swiftCode: '', isPrimary: false });
+  const [accountTx, setAccountTx] = useState({ ...emptyFinanceDraft });
+  const [expenseCategories, setExpenseCategories] = useState<any[]>([]);
   const [savingAccount, setSavingAccount] = useState(false);
   const [savingAccountTransaction, setSavingAccountTransaction] = useState(false);
   const [loading, setLoading] = useState(true);
   const [transactionsView, setTransactionsView] = useState<'list' | 'boxes'>('list');
   const [quickSearch, setQuickSearch] = useState('');
   const [filterType, setFilterType] = useState<string>('');
+  const [filterOperationType, setFilterOperationType] = useState<string>('');
   const [filterFirmId, setFilterFirmId] = useState<string>('');
   const [filterKassaDeskId, setFilterKassaDeskId] = useState<string>('');
   const [filterFlightId, setFilterFlightId] = useState<string>('');
@@ -95,15 +122,22 @@ export default function TransactionsPage() {
 
   useEffect(() => {
     if (!user) return;
-    api.get('/accounts').then((res) => setAccounts(Array.isArray(res.data) ? res.data : [])).catch(() => setAccounts([]));
-  }, [user, reloadKey]);
+    const params = canFilterFirm && filterFirmId ? { firmId: filterFirmId } : undefined;
+    Promise.all([
+      api.get('/accounts', { params }),
+      api.get('/expense-categories', { params }),
+    ]).then(([accountResponse, categoryResponse]) => {
+      setAccounts(Array.isArray(accountResponse.data) ? accountResponse.data : []);
+      setExpenseCategories(Array.isArray(categoryResponse.data) ? categoryResponse.data : []);
+    }).catch(() => { setAccounts([]); setExpenseCategories([]); });
+  }, [user, reloadKey, filterFirmId, canFilterFirm]);
 
   const createAccount = async (event: FormEvent) => {
     event.preventDefault();
     try {
       setSavingAccount(true);
-      await api.post('/accounts', { ...accountDraft, openingBalance: Number(accountDraft.openingBalance || 0) });
-      setAccountDraft({ name: '', type: 'BANK', currency: 'UZS', openingBalance: '0' });
+      await api.post('/accounts', { ...accountDraft, firmId: canFilterFirm ? filterFirmId : undefined, openingBalance: Number(accountDraft.openingBalance || 0) });
+      setAccountDraft({ name: '', type: 'BANK_ACCOUNT', currency: 'UZS', openingBalance: '0', bankName: '', accountNumber: '', bankCode: '', swiftCode: '', isPrimary: false });
       setReloadKey((key) => key + 1);
       toast.success(tr('Account created', 'Hisob yaratildi'));
     } catch (error: any) {
@@ -115,8 +149,17 @@ export default function TransactionsPage() {
     event.preventDefault();
     try {
       setSavingAccountTransaction(true);
-      await api.post('/transactions/account', { ...accountTx, amount: Number(accountTx.amount), exchangeRate: accountTx.exchangeRate || undefined });
-      setAccountTx({ accountId: '', flow: 'IN', amount: '', category: 'OTHER', counterpartyName: '', note: '', exchangeRate: '' });
+      const selectedSource = accounts.find((account) => account.id === accountTx.sourceAccountId);
+      const selectedDestination = accounts.find((account) => account.id === accountTx.destinationAccountId);
+      await api.post('/transactions/finance', {
+        ...accountTx,
+        firmId: canFilterFirm ? filterFirmId : undefined,
+        amount: Number(accountTx.amount),
+        destinationAmount: accountTx.destinationAmount ? Number(accountTx.destinationAmount) : undefined,
+        currency: selectedSource?.currency || selectedDestination?.currency || accountTx.currency,
+        exchangeRate: accountTx.exchangeRate || undefined,
+      });
+      setAccountTx({ ...emptyFinanceDraft });
       setReloadKey((key) => key + 1);
       toast.success(tr('Account transaction recorded', 'Hisob tranzaksiyasi qayd etildi'));
     } catch (error: any) {
@@ -232,6 +275,19 @@ export default function TransactionsPage() {
       setReloadKey((key) => key + 1);
     } catch (error: any) {
       toast.error(error?.response?.data?.error || tr('Failed to delete transaction', 'Tranzaksiyani o\'chirib bo\'lmadi'));
+    }
+  };
+
+  const reverseFinancialTransaction = async (transaction: any) => {
+    const reason = window.prompt(tr('Why is reversal required?', 'Reversal sababi nima?'));
+    if (!reason?.trim()) return;
+    if (!window.confirm(tr('Post an opposite entry and preserve the original?', 'Teskari yozuv yaratilib, asl tranzaksiya saqlansinmi?'))) return;
+    try {
+      await api.post(`/transactions/${transaction.id}/reversal`, { reason: reason.trim() });
+      toast.success(tr('Reversal posted', 'Reversal yaratildi'));
+      setReloadKey((key) => key + 1);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Failed to reverse transaction', 'Tranzaksiyani reversal qilib bo‘lmadi'));
     }
   };
 
@@ -519,6 +575,7 @@ export default function TransactionsPage() {
         setLoading(true);
         const query = new URLSearchParams();
         if (filterType) query.append('type', filterType.toUpperCase());
+        if (filterOperationType) query.append('operationType', filterOperationType);
         if (canFilterFirm && filterFirmId) query.append('firmId', filterFirmId);
         if (filterKassaDeskId) query.append('kassaDeskId', filterKassaDeskId);
         if (filterFlightId) query.append('flightId', filterFlightId);
@@ -554,7 +611,7 @@ export default function TransactionsPage() {
       }
     };
     fetchTransactions();
-  }, [prefsReady, filterType, filterFirmId, filterKassaDeskId, filterFlightId, filterCurrency, filterSourceMode, filterStatus, filterPaymentMethod, filterPaymentCardId, filterAllocationId, dateFrom, dateTo, page, limit, canFilterFirm, reloadKey, tr]);
+  }, [prefsReady, filterType, filterOperationType, filterFirmId, filterKassaDeskId, filterFlightId, filterCurrency, filterSourceMode, filterStatus, filterPaymentMethod, filterPaymentCardId, filterAllocationId, dateFrom, dateTo, page, limit, canFilterFirm, reloadKey, tr]);
 
   useEffect(() => {
     const loadOptions = async () => {
@@ -618,6 +675,7 @@ export default function TransactionsPage() {
 
   const hasActiveFilters = Boolean(
     filterType ||
+    filterOperationType ||
     (canFilterFirm && filterFirmId) ||
     filterKassaDeskId ||
     filterFlightId ||
@@ -629,6 +687,7 @@ export default function TransactionsPage() {
 
   const clearFilters = () => {
     setFilterType('');
+    setFilterOperationType('');
     setFilterFirmId('');
     setFilterKassaDeskId('');
     setFilterFlightId('');
@@ -647,6 +706,11 @@ export default function TransactionsPage() {
     const type = String(tx?.type || '').trim().toUpperCase();
     const amount = Number(tx?.baseAmount || tx?.base_amount || 0);
     if (!Number.isFinite(amount)) return 0;
+    if (tx?.sourceMode === 'FINANCIAL_MODULE' || tx?.sourceMode === 'REVERSAL') {
+      if (tx.sourceAccountId && !tx.destinationAccountId) return -amount;
+      if (!tx.sourceAccountId && tx.destinationAccountId) return amount;
+      return 0;
+    }
     if (type === 'PAYMENT') return amount;
     if (type === 'ADJUSTMENT' && tx?.direction === 'KASSA_IN') return amount;
     if (type === 'ADJUSTMENT' && tx?.direction === 'KASSA_OUT') return -amount;
@@ -670,6 +734,7 @@ export default function TransactionsPage() {
       const haystack = [
         t.id,
         t.type,
+        t.operationType,
         t.currency,
         t.firm?.name,
         t.firmId,
@@ -732,36 +797,59 @@ export default function TransactionsPage() {
       <CollapsibleCard collapsible tone="finance" title={tr('Firm accounts', 'Firma hisoblari')} description={tr('Cash desks, shared cards, bank and owner accounts with separate balances.', 'Kassalar, umumiy kartalar, bank va ta\'sischi hisoblari alohida qoldiq bilan.')} defaultOpen storageKey="firm-financial-accounts">
         {canManageAccounts && <form onSubmit={createAccount} className="operation-form form-grid mb-4">
           <label className="form-field--wide"><span className="compact-label">{tr('Account name', 'Hisob nomi')}</span><input name="accountName" autoComplete="off" className="compact-control" placeholder={tr('For example: Main bank', 'Masalan: Asosiy bank')} value={accountDraft.name} onChange={(e) => setAccountDraft({ ...accountDraft, name: e.target.value })} required /></label>
-          <label><span className="compact-label">{tr('Account type', 'Hisob turi')}</span><select name="accountType" className="compact-control" value={accountDraft.type} onChange={(e) => setAccountDraft({ ...accountDraft, type: e.target.value })}><option value="BANK">{tr('Bank', 'Bank')}</option><option value="OWNER">{tr('Owner capital', 'Ta\'sischi')}</option><option value="OTHER">{tr('Other', 'Boshqa')}</option></select></label>
+          <label><span className="compact-label">{tr('Account type', 'Hisob turi')}</span><select name="accountType" className="compact-control" value={accountDraft.type} onChange={(e) => setAccountDraft({ ...accountDraft, type: e.target.value })}><option value="BANK_ACCOUNT">{tr('Bank account', 'Bank hisobi')}</option><option value="FOUNDER_ACCOUNT">{tr('Founder account', 'Ta\'sischi hisobi')}</option><option value="ADVANCE_ACCOUNT">{tr('Advance account', 'Avans hisobi')}</option><option value="CLEARING_ACCOUNT">{tr('Clearing account', 'Kliring hisobi')}</option><option value="OTHER_ACCOUNT">{tr('Other', 'Boshqa')}</option></select></label>
           <label className="form-field--compact"><span className="compact-label">{tr('Currency', 'Valyuta')}</span><select name="accountCurrency" className="compact-control" value={accountDraft.currency} onChange={(e) => setAccountDraft({ ...accountDraft, currency: e.target.value })}><option>UZS</option><option>USD</option></select></label>
           <label className="form-field--compact"><span className="compact-label">{tr('Opening balance', 'Boshlang‘ich qoldiq')}</span><input name="accountOpeningBalance" autoComplete="off" inputMode="decimal" className="compact-control text-right" type="number" step="0.01" value={accountDraft.openingBalance} onChange={(e) => setAccountDraft({ ...accountDraft, openingBalance: e.target.value })} /></label>
+          {accountDraft.type === 'BANK_ACCOUNT' && <>
+            <label><span className="compact-label">{tr('Bank name', 'Bank nomi')}</span><input className="compact-control" value={accountDraft.bankName} onChange={(e) => setAccountDraft({ ...accountDraft, bankName: e.target.value })} /></label>
+            <label><span className="compact-label">{tr('Account number', 'Hisob raqami')}</span><input className="compact-control" value={accountDraft.accountNumber} onChange={(e) => setAccountDraft({ ...accountDraft, accountNumber: e.target.value })} placeholder={tr('Only the last 4 digits are stored', 'Faqat oxirgi 4 raqam saqlanadi')} /></label>
+            <label><span className="compact-label">MFO</span><input className="compact-control" value={accountDraft.bankCode} onChange={(e) => setAccountDraft({ ...accountDraft, bankCode: e.target.value })} /></label>
+            <label><span className="compact-label">SWIFT</span><input className="compact-control" value={accountDraft.swiftCode} onChange={(e) => setAccountDraft({ ...accountDraft, swiftCode: e.target.value })} /></label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={accountDraft.isPrimary} onChange={(e) => setAccountDraft({ ...accountDraft, isPrimary: e.target.checked })} /> <span>{tr('Primary account', 'Asosiy hisob')}</span></label>
+          </>}
           <ActionButtons
             cancelLabel={tr('Cancel', 'Bekor qilish')}
             confirmLabel={tr('Create account', 'Hisob yaratish')}
             busyLabel={tr('Creating...', 'Yaratilmoqda...')}
             busy={savingAccount}
             canConfirm={Boolean(accountDraft.name.trim() && /^[A-Z]{3}$/.test(accountDraft.currency.trim().toUpperCase()) && Number.isFinite(Number(accountDraft.openingBalance)))}
-            onCancel={() => setAccountDraft({ name: '', type: 'BANK', currency: 'UZS', openingBalance: '0' })}
+            onCancel={() => setAccountDraft({ name: '', type: 'BANK_ACCOUNT', currency: 'UZS', openingBalance: '0', bankName: '', accountNumber: '', bankCode: '', swiftCode: '', isPrimary: false })}
           />
         </form>}
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{accounts.map((account) => <div key={account.id} data-account-type={account.type} className="account-card p-4"><div className="text-xs font-semibold uppercase tracking-wide text-muted">{account.type}</div><div className="mt-1 font-semibold">{account.name}</div><div className="data-value mt-3 text-lg font-semibold">{Number(account.balance || 0).toLocaleString()} {account.currency}</div></div>)}</div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{accounts.map((account) => <div key={account.id} data-account-type={account.type} className="account-card p-4"><div className="text-xs font-semibold uppercase tracking-wide text-muted">{account.type}</div><div className="mt-1 font-semibold">{account.bankName ? `${account.bankName} · ` : ''}{account.name}{account.accountNumberMasked ? ` ${account.accountNumberMasked}` : ''}</div><div className="data-value mt-3 text-lg font-semibold">{Number(account.balance || 0).toLocaleString()} {account.currency}</div></div>)}</div>
         {canManageAccounts && <form onSubmit={createAccountTransaction} className="operation-form form-grid mt-4">
           <div className="form-heading"><div><h3 className="form-heading__title">{tr('Record an account movement', 'Hisob harakatini qayd etish')}</h3><p className="form-heading__description">{tr('Use this for owner capital, bank operations and other non-Kassa movements.', 'Ta’sischi mablag‘i, bank operatsiyasi va Kassa bo‘lmagan boshqa harakatlar uchun ishlating.')}</p></div></div>
-          <label className="form-field--wide"><span className="compact-label">{tr('Account', 'Hisob')}</span><select name="accountTransactionAccount" className="compact-control" value={accountTx.accountId} onChange={(e) => setAccountTx({ ...accountTx, accountId: e.target.value })} required><option value="">{tr('Select account', 'Hisobni tanlang')}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} ({account.currency})</option>)}</select></label>
-          <label className="form-field--compact"><span className="compact-label">{tr('Direction', 'Yo‘nalish')}</span><select name="accountTransactionFlow" className="compact-control" value={accountTx.flow} onChange={(e) => setAccountTx({ ...accountTx, flow: e.target.value })}><option value="IN">{tr('Money in', 'Kirim')}</option><option value="OUT">{tr('Money out', 'Chiqim')}</option></select></label>
-          <label className="form-field--wide"><span className="compact-label">{accountTx.flow === 'IN' ? tr('From whom?', 'Kimdan?') : tr('To whom?', 'Kimga?')}</span><input name="accountTransactionCounterparty" autoComplete="off" className="compact-control" placeholder={tr('Counterparty name…', 'Kontragent nomi…')} value={accountTx.counterpartyName} onChange={(e) => setAccountTx({ ...accountTx, counterpartyName: e.target.value })} required /></label>
-          <label><span className="compact-label">{tr('Category', 'Kategoriya')}</span><select name="accountTransactionCategory" className="compact-control" value={accountTx.category} onChange={(e) => setAccountTx({ ...accountTx, category: e.target.value })}><option value="OTHER">{tr('Other', 'Boshqa')}</option><option value="OWNER_INVESTMENT">{tr('Owner investment', 'Ta\'sischi mablag\'i')}</option><option value="LOAN">{tr('Loan', 'Qarz mablag\'i')}</option><option value="BANK">{tr('Bank operation', 'Bank operatsiyasi')}</option></select></label>
+          <label className="form-field--wide"><span className="compact-label">{tr('Operation type', 'Operatsiya turi')}</span><select className="compact-control" value={accountTx.operationType} onChange={(e) => setAccountTx({ ...emptyFinanceDraft, operationType: e.target.value })}>{FINANCE_OPERATION_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          {['BANK_EXPENSE', 'BANK_TO_BANK_TRANSFER', 'CREDITOR_PAYMENT_MADE', 'ADVANCE_PAID', 'BANK_FEE', 'CURRENCY_EXCHANGE'].includes(accountTx.operationType) && <label className="form-field--wide"><span className="compact-label">{tr('From account', 'Qaysi bank hisobidan')}</span><select className="compact-control" value={accountTx.sourceAccountId} onChange={(e) => setAccountTx({ ...accountTx, sourceAccountId: e.target.value })} required><option value="">{tr('Select account', 'Hisobni tanlang')}</option>{accounts.filter((account) => !['CASH', 'CARD', 'CASH_DESK', 'PAYMENT_CARD'].includes(account.type)).map((account) => <option key={account.id} value={account.id}>{account.name} ({account.currency})</option>)}</select></label>}
+          {['BANK_INCOME', 'BANK_TO_BANK_TRANSFER', 'DEBTOR_PAYMENT_RECEIVED', 'ADVANCE_RECEIVED', 'CURRENCY_EXCHANGE'].includes(accountTx.operationType) && <label className="form-field--wide"><span className="compact-label">{tr('To account', 'Qaysi bank hisobiga')}</span><select className="compact-control" value={accountTx.destinationAccountId} onChange={(e) => setAccountTx({ ...accountTx, destinationAccountId: e.target.value })} required><option value="">{tr('Select account', 'Hisobni tanlang')}</option>{accounts.filter((account) => !['CASH', 'CARD', 'CASH_DESK', 'PAYMENT_CARD'].includes(account.type)).map((account) => <option key={account.id} value={account.id}>{account.name} ({account.currency})</option>)}</select></label>}
+          {accountTx.operationType === 'BANK_INCOME' && <label><span className="compact-label">{tr('Economic purpose', 'Iqtisodiy mazmun')}</span><select className="compact-control" value={accountTx.economicPurpose} onChange={(e) => setAccountTx({ ...accountTx, economicPurpose: e.target.value })}><option value="">{tr('Select', 'Tanlang')}</option><option value="NEW_SALE">{tr('New sale revenue', 'Yangi sotuv daromadi')}</option><option value="ADVANCE_RECEIVED">{tr('Advance received', 'Olingan avans')}</option><option value="LOAN_REPAYMENT">{tr('Loan repayment', 'Qarz qaytarilishi')}</option><option value="FOUNDER_FUNDS">{tr('Founder funds', 'Ta’sischi mablag‘i')}</option><option value="OTHER">{tr('Other', 'Boshqa')}</option></select></label>}
+          {['BANK_EXPENSE', 'BANK_FEE'].includes(accountTx.operationType) && <label><span className="compact-label">{tr('Expense category', 'Xarajat kategoriyasi')}</span><select className="compact-control" value={accountTx.expenseCategoryId} onChange={(e) => setAccountTx({ ...accountTx, expenseCategoryId: e.target.value })}><option value="">{tr('Select', 'Tanlang')}</option>{expenseCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>}
+          {RECEIVABLE_OPERATIONS.includes(accountTx.operationType as any) && <label className="form-field--wide"><span className="compact-label">{tr('Receivable (optional)', 'Debitorlik qarzi')}</span><select className="compact-control" value={accountTx.receivableId} onChange={(e) => setAccountTx({ ...accountTx, receivableId: e.target.value })}><option value="">{tr('Select', 'Tanlang')}</option>{transactions.filter((row) => row.type === 'SALE' && !['REVERSED', 'CANCELLED'].includes(row.status)).map((row) => <option key={row.id} value={row.id}>{row.payerFirm?.name || row.firm?.name || row.id} · {Number(row.originalAmount).toLocaleString()} {row.currency}</option>)}</select></label>}
+          {PAYABLE_OPERATIONS.includes(accountTx.operationType as any) && <label className="form-field--wide"><span className="compact-label">{tr('Payable (optional)', 'Kreditorlik qarzi')}</span><select className="compact-control" value={accountTx.payableId} onChange={(e) => setAccountTx({ ...accountTx, payableId: e.target.value })}><option value="">{tr('Select', 'Tanlang')}</option>{transactions.filter((row) => row.type === 'PAYABLE' && !['REVERSED', 'CANCELLED'].includes(row.status)).map((row) => <option key={row.id} value={row.id}>{row.receiverFirm?.name || row.firm?.name || row.id} · {Number(row.originalAmount).toLocaleString()} {row.currency}</option>)}</select></label>}
+          <label className="form-field--wide"><span className="compact-label">{tr('Counterparty', 'Kontragent')}</span><input className="compact-control" value={accountTx.counterpartyName} onChange={(e) => setAccountTx({ ...accountTx, counterpartyName: e.target.value })} /></label>
           <label className="form-field--compact"><span className="compact-label">{tr('Amount', 'Summa')}</span><input name="accountTransactionAmount" autoComplete="off" inputMode="decimal" className="compact-control text-right" type="number" min="0.01" step="0.01" placeholder="0.00" value={accountTx.amount} onChange={(e) => setAccountTx({ ...accountTx, amount: e.target.value })} required /></label>
-          {accounts.find((account) => account.id === accountTx.accountId)?.currency === 'USD' && <label className="form-field--compact"><span className="compact-label">{tr('Firm rate (optional)', 'Firma kursi (ixtiyoriy)')}</span><input name="accountTransactionExchangeRate" autoComplete="off" className="compact-control text-right" inputMode="decimal" placeholder={tr('For example: 12 700', 'Masalan: 12 700')} value={accountTx.exchangeRate} onChange={(e) => setAccountTx({ ...accountTx, exchangeRate: e.target.value })} /></label>}
+          {!accountTx.sourceAccountId && !accountTx.destinationAccountId && <label className="form-field--compact"><span className="compact-label">{tr('Currency', 'Valyuta')}</span><select className="compact-control" value={accountTx.currency} onChange={(e) => setAccountTx({ ...accountTx, currency: e.target.value })}><option>UZS</option><option>USD</option><option>EUR</option></select></label>}
+          {accountTx.operationType === 'CURRENCY_EXCHANGE' && <label className="form-field--compact"><span className="compact-label">{tr('Amount received', 'Qabul qilingan summa')}</span><input className="compact-control text-right" type="number" min="0.01" step="0.01" value={accountTx.destinationAmount} onChange={(e) => setAccountTx({ ...accountTx, destinationAmount: e.target.value })} required /></label>}
+          <label className="form-field--compact"><span className="compact-label">{tr('Payment date', 'To‘lov sanasi')}</span><input className="compact-control" type="date" value={accountTx.paymentDate} onChange={(e) => setAccountTx({ ...accountTx, paymentDate: e.target.value })} required /></label>
+          <label><span className="compact-label">{tr('Bank document', 'Bank hujjati')}</span><input className="compact-control" value={accountTx.documentNumber} onChange={(e) => setAccountTx({ ...accountTx, documentNumber: e.target.value })} /></label>
+          {SETTLEMENT_OPERATIONS.includes(accountTx.operationType as any) && <>
+            <label><span className="compact-label">{tr('What closes the debt?', 'Qarzni nima bilan yopamiz?')}</span><select className="compact-control" value={accountTx.settlementInstrument} onChange={(e) => setAccountTx({ ...accountTx, settlementInstrument: e.target.value })}><option value="MUTUAL">O‘zaro qarzdorlik</option><option value="PUL">Pul</option><option value="TICKET">Bilet</option><option value="TOUR">Tur</option><option value="VISA">Visa</option><option value="HOTEL">Hotel</option><option value="PACKAGE">Paket</option><option value="SERVICE">Boshqa xizmat</option><option value="PRODUCT">Ombor mahsuloti</option><option value="ADVANCE">Avans</option><option value="OTHER">Boshqa</option></select></label>
+            <label><span className="compact-label">{tr('Debt object', 'Qaysi qarz yopilyapti')}</span><select className="compact-control" value={accountTx.settlementSubjectType} onChange={(e) => setAccountTx({ ...accountTx, settlementSubjectType: e.target.value })}><option value="">Tanlang</option><option value="RECEIVABLE">Debitorlik</option><option value="PAYABLE">Kreditorlik</option><option value="INVOICE">Invoice</option><option value="FLIGHT">Reys</option><option value="ALLOCATION">Allocation</option><option value="TOUR">Tur</option><option value="SERVICE">Xizmat</option><option value="PURCHASE">Purchase</option><option value="SALE">Sale</option></select></label>
+            <label><span className="compact-label">{tr('Subject ID', 'Hujjat ID')}</span><input className="compact-control" value={accountTx.settlementSubjectId} onChange={(e) => setAccountTx({ ...accountTx, settlementSubjectId: e.target.value })} /></label>
+            <label><span className="compact-label">{tr('Agreement number', 'Shartnoma raqami')}</span><input className="compact-control" value={accountTx.contractNumber} onChange={(e) => setAccountTx({ ...accountTx, contractNumber: e.target.value })} /></label>
+            <label className="form-field--full"><span className="compact-label">{tr('Settlement details', 'Settlement tafsilotlari')}</span><textarea className="compact-control" rows={2} value={accountTx.settlementDetails} onChange={(e) => setAccountTx({ ...accountTx, settlementDetails: e.target.value })} placeholder="Reys, RT/OW, segment, bilet soni, tur/xizmat/ombor mahsuloti miqdori va narxi" /></label>
+          </>}
+          {(accounts.find((account) => account.id === accountTx.sourceAccountId)?.currency === 'USD' || accounts.find((account) => account.id === accountTx.destinationAccountId)?.currency === 'USD') && <label className="form-field--compact"><span className="compact-label">{tr('Firm rate (optional)', 'Firma kursi (ixtiyoriy)')}</span><input name="accountTransactionExchangeRate" autoComplete="off" className="compact-control text-right" inputMode="decimal" placeholder={tr('For example: 12 700', 'Masalan: 12 700')} value={accountTx.exchangeRate} onChange={(e) => setAccountTx({ ...accountTx, exchangeRate: e.target.value })} /></label>}
+          {['ACCOUNTING_ADJUSTMENT', 'OTHER_NON_CASH', 'DEBT_ASSIGNMENT', 'OVERPAYMENT_REALLOCATION'].includes(accountTx.operationType) && <><label><span className="compact-label">{tr('Debit account code', 'Debet schyot kodi')}</span><input className="compact-control" value={accountTx.debitAccountCode} onChange={(e) => setAccountTx({ ...accountTx, debitAccountCode: e.target.value })} /></label><label><span className="compact-label">{tr('Credit account code', 'Kredit schyot kodi')}</span><input className="compact-control" value={accountTx.creditAccountCode} onChange={(e) => setAccountTx({ ...accountTx, creditAccountCode: e.target.value })} /></label></>}
           <label className="form-field--full"><span className="compact-label">{tr('Note (optional)', 'Izoh (ixtiyoriy)')}</span><textarea name="accountTransactionNote" autoComplete="off" className="compact-control" rows={3} placeholder={tr('Describe this account movement…', 'Ushbu hisob harakatini batafsil yozing…')} value={accountTx.note} onChange={(e) => setAccountTx({ ...accountTx, note: e.target.value })} /></label>
-          <div className="form-preview">{accountTx.flow === 'IN' ? `${accountTx.counterpartyName || 'Kimdan'} → ${accounts.find((a) => a.id === accountTx.accountId)?.name || 'Hisob'}` : `${accounts.find((a) => a.id === accountTx.accountId)?.name || 'Hisob'} → ${accountTx.counterpartyName || 'Kimga'}`}</div>
+          <div className="form-preview"><strong>{FINANCE_OPERATION_OPTIONS.find(([value]) => value === accountTx.operationType)?.[1]}</strong><br />{SETTLEMENT_OPERATIONS.includes(accountTx.operationType as any) ? tr('Bank/Kassa effect: 0 · P&L effect: 0', 'Bank/Kassa ta’siri: 0 · P&L ta’siri: 0') : `${Number(accountTx.amount || 0).toLocaleString()} ${accounts.find((a) => a.id === accountTx.sourceAccountId)?.currency || accounts.find((a) => a.id === accountTx.destinationAccountId)?.currency || accountTx.currency}`}</div>
           <ActionButtons
             cancelLabel={tr('Cancel', 'Bekor qilish')}
             confirmLabel={tr('Record', 'Qayd etish')}
             busyLabel={tr('Recording...', 'Qayd etilmoqda...')}
             busy={savingAccountTransaction}
-            canConfirm={Boolean(accountTx.accountId && accountTx.counterpartyName.trim() && Number(accountTx.amount) > 0)}
-            onCancel={() => setAccountTx({ accountId: '', flow: 'IN', amount: '', category: 'OTHER', counterpartyName: '', note: '', exchangeRate: '' })}
+            canConfirm={Boolean(Number(accountTx.amount) > 0 && accountTx.paymentDate)}
+            onCancel={() => setAccountTx({ ...emptyFinanceDraft })}
           />
         </form>}
       </CollapsibleCard>
@@ -1192,8 +1280,9 @@ export default function TransactionsPage() {
               className="compact-control"
             />
           </div>
-          <div><label className="compact-label">{tr('Source', 'Manba')}</label><select className="compact-control" value={filterSourceMode} onChange={(e) => { setFilterSourceMode(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option><option value="AUTO_TICKET_SALE">AUTO_TICKET_SALE</option><option value="AUTO_TOUR_SALE">AUTO_TOUR_SALE</option><option value="HISTORICAL_IMPORT">HISTORICAL_IMPORT</option><option value="MANUAL_CASH">MANUAL_CASH</option><option value="MANUAL_CARD">MANUAL_CARD</option><option value="MANUAL_BANK">MANUAL_BANK</option><option value="REVERSAL">REVERSAL</option></select></div>
-          <div><label className="compact-label">{tr('Status', 'Holat')}</label><select className="compact-control" value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option><option value="CONFIRMED">CONFIRMED</option><option value="PENDING">PENDING</option><option value="REVERSED">REVERSED</option></select></div>
+          <div><label className="compact-label">{tr('Operation type', 'Operatsiya turi')}</label><select className="compact-control" value={filterOperationType} onChange={(e) => { setFilterOperationType(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option>{FINANCE_OPERATION_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
+          <div><label className="compact-label">{tr('Source', 'Manba')}</label><select className="compact-control" value={filterSourceMode} onChange={(e) => { setFilterSourceMode(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option><option value="AUTO_TICKET_SALE">AUTO_TICKET_SALE</option><option value="AUTO_TOUR_SALE">AUTO_TOUR_SALE</option><option value="HISTORICAL_IMPORT">HISTORICAL_IMPORT</option><option value="MANUAL_CASH">MANUAL_CASH</option><option value="MANUAL_CARD">MANUAL_CARD</option><option value="MANUAL_BANK">MANUAL_BANK</option><option value="FINANCIAL_MODULE">FINANCIAL_MODULE</option><option value="REVERSAL">REVERSAL</option></select></div>
+          <div><label className="compact-label">{tr('Status', 'Holat')}</label><select className="compact-control" value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option><option value="CONFIRMED">CONFIRMED</option><option value="APPLIED">APPLIED</option><option value="PENDING">PENDING</option><option value="REVERSED">REVERSED</option></select></div>
           <div><label className="compact-label">{tr('Payment method', 'To‘lov usuli')}</label><select className="compact-control" value={filterPaymentMethod} onChange={(e) => { setFilterPaymentMethod(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option><option value="cash">{tr('Cash', 'Naqd')}</option><option value="card">{tr('Card', 'Karta')}</option><option value="bank">{tr('Bank', 'Bank')}</option></select></div>
           <div><label className="compact-label">{tr('Payment card', 'To‘lov kartasi')}</label><select className="compact-control" value={filterPaymentCardId} onChange={(e) => { setFilterPaymentCardId(e.target.value); setPage(1); }}><option value="">{tr('All', 'Barchasi')}</option>{paymentCards.map((card) => <option key={card.id} value={card.id}>{card.ownerName} · {card.cardNumber}</option>)}</select></div>
           <div><label className="compact-label">{tr('Allocation ID', 'Ajratma ID')}</label><input className="compact-control" value={filterAllocationId} onChange={(e) => { setFilterAllocationId(e.target.value); setPage(1); }} /></div>
@@ -1257,7 +1346,7 @@ export default function TransactionsPage() {
                   <tr key={t.id}>
                     <td className="text-muted">{format(new Date(t.createdAt || t.created_at), 'yyyy-MM-dd HH:mm')}</td>
                     <td className="font-medium" title={getTransactionTypeHelp(t.type, t.direction)}>
-                      {getTransactionTypeLabel(t.type, t.direction)}
+                      {FINANCE_OPERATION_OPTIONS.find(([value]) => value === t.operationType)?.[1] || getTransactionTypeLabel(t.type, t.direction)}
                     </td>
                     {canFilterFirm && <td>{t.firm?.name || t.firmId || t.firm_id}</td>}
                     <td>{t.kassaDesk?.name || t.kassaDeskId || '-'}</td>
@@ -1290,7 +1379,8 @@ export default function TransactionsPage() {
                       {canChangeOwnDailyCash(t) &&
                         <button type="button" onClick={() => editOwnDailyCash(t)} className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold">{tr('Edit', 'Tahrir')}</button>
                       }
-                      {canDeleteTransaction(t) && <button type="button" onClick={() => deleteTransaction(t)} className="border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs font-semibold text-red-600">{tr('Delete', "O'chirish")}</button>}
+                      {t.sourceMode === 'FINANCIAL_MODULE' && t.status === 'APPLIED' && canDeleteTransaction(t) && <button type="button" onClick={() => reverseFinancialTransaction(t)} className="border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs font-semibold text-amber-700">Reversal</button>}
+                      {t.sourceMode !== 'FINANCIAL_MODULE' && canDeleteTransaction(t) && <button type="button" onClick={() => deleteTransaction(t)} className="border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs font-semibold text-red-600">{tr('Delete', "O'chirish")}</button>}
                       </div>
                     </td>
                   </tr>

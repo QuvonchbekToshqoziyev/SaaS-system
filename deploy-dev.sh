@@ -26,11 +26,13 @@ REMOTE_BACKEND_DIR="${DEV_REMOTE_BACKEND_DIR:-/root/apps/ado-b2b-dev/airline-b2b
 REMOTE_WEBROOT="/var/www/${DOMAIN}/html"
 PM2_APP_NAME="${DEV_PM2_APP_NAME:-airline-b2b-dev-server}"
 NGINX_CONF_NAME="${DOMAIN}"
+DEV_RELEASE_STATE_DIR="/root/apps/ado-b2b-dev/.release-state"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_DIR="$REPO_ROOT/airline-b2b/server"
 CLIENT_DIR="$REPO_ROOT/airline-b2b/client"
 NGINX_CONF_SRC="$REPO_ROOT/nginx.conf.dev.b2b.ado-finance.com"
+SOURCE_FINGERPRINT_SCRIPT="$REPO_ROOT/scripts/source-fingerprint.mjs"
 
 BACKEND_ONLY=0
 FRONTEND_ONLY=0
@@ -98,9 +100,29 @@ header "Pre-flight checks"
 command -v rsync >/dev/null 2>&1 || { error "rsync not found"; exit 1; }
 command -v npm >/dev/null 2>&1 || { error "npm not found"; exit 1; }
 [[ -f "$NGINX_CONF_SRC" ]] || { error "Missing nginx config: $NGINX_CONF_SRC"; exit 1; }
+[[ -f "$SOURCE_FINGERPRINT_SCRIPT" ]] || { error "Missing source fingerprint script: $SOURCE_FINGERPRINT_SCRIPT"; exit 1; }
 
 info "Target: ${REMOTE_HOST}  domain: ${DOMAIN}"
 remote "echo 'SSH OK'" && success "SSH connection OK"
+
+install_remote_dependencies() {
+  local package_dir="$1" fingerprint
+  fingerprint=$(node "$SOURCE_FINGERPRINT_SCRIPT" dependencies "$package_dir/package-lock.json")
+  remote "cd '$REMOTE_BACKEND_DIR' && expected='$fingerprint'; current=\$(cat node_modules/.ado-dependencies.sha256 2>/dev/null || true); if [ -d node_modules ] && [ \"\$current\" = \"\$expected\" ]; then echo 'Dependencies unchanged - npm ci skipped'; else timeout 180s npm ci --prefer-offline --no-audit --no-fund; printf '%s\n' \"\$expected\" > node_modules/.ado-dependencies.sha256; fi"
+}
+
+install_local_dependencies() {
+  local package_dir="$1" fingerprint stamp current
+  fingerprint=$(node "$SOURCE_FINGERPRINT_SCRIPT" dependencies "$package_dir/package-lock.json")
+  stamp="$package_dir/node_modules/.ado-dependencies.sha256"
+  current=$(cat "$stamp" 2>/dev/null || true)
+  if [[ -d "$package_dir/node_modules" && "$current" == "$fingerprint" ]]; then
+    info "Client dependencies unchanged - npm ci skipped"
+    return
+  fi
+  timeout 180s npm --prefix "$package_dir" ci --prefer-offline --no-audit --no-fund
+  printf '%s\n' "$fingerprint" > "$stamp"
+}
 
 deploy_backend() {
   header "Dev backend - sync source"
@@ -156,7 +178,7 @@ REMOTE_ENV
   success "Remote dev .env updated"
 
   header "Dev backend - install deps & build"
-  remote "cd '$REMOTE_BACKEND_DIR' && npm ci"
+  install_remote_dependencies "$SERVER_DIR"
   remote "cd '$REMOTE_BACKEND_DIR' && npx prisma generate"
 
   if [[ "$RUN_SCHEMA" == "1" ]]; then
@@ -166,10 +188,13 @@ REMOTE_ENV
     remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260715_rt_ow_ticket_legs/migration.sql --schema prisma/schema.prisma"
     remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260715_unique_allocation_payable/migration.sql --schema prisma/schema.prisma"
     remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260717_remove_inventory_transactions/migration.sql --schema prisma/schema.prisma"
+    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260721_tour_sale_discount/migration.sql --schema prisma/schema.prisma"
+    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260721_transaction_history_fields/migration.sql --schema prisma/schema.prisma"
     success "Dev schema pushed"
   fi
 
   remote "cd '$REMOTE_BACKEND_DIR' && npm run build"
+  remote "cd '$REMOTE_BACKEND_DIR' && npm run backfill:expense-categories"
   remote "cd '$REMOTE_BACKEND_DIR' && ALLOW_DEV_QA_SEED=1 npm run seed:dev-qa"
   remote "cd '$REMOTE_BACKEND_DIR' && npm run audit:business-invariants"
   success "Build, release seed, and invariant audit complete"
@@ -201,7 +226,7 @@ deploy_frontend() {
   header "Dev frontend - build static export"
 
   info "Building Next.js static export..."
-  npm --prefix "$CLIENT_DIR" install --silent
+  install_local_dependencies "$CLIENT_DIR"
   NEXT_PUBLIC_API_URL=/api npm --prefix "$CLIENT_DIR" run build
   success "Static export complete"
 
@@ -295,8 +320,19 @@ NGINX_SETUP
   warn "Frontend check inconclusive. DNS may not point at ${REMOTE_SERVER_IP} yet."
 }
 
-if [[ "$FRONTEND_ONLY" == "0" ]]; then deploy_backend; fi
-if [[ "$BACKEND_ONLY" == "0" ]]; then deploy_frontend; fi
+if [[ "$FRONTEND_ONLY" == "0" ]]; then
+  backend_source=$(node "$SOURCE_FINGERPRINT_SCRIPT" backend)
+  deploy_backend
+  remote "mkdir -p '$DEV_RELEASE_STATE_DIR' && printf '%s\n' '$backend_source' > '$DEV_RELEASE_STATE_DIR/backend.sha256'"
+  if [[ "$RUN_SCHEMA" == "1" ]]; then
+    remote "printf '%s\n' '$backend_source' > '$DEV_RELEASE_STATE_DIR/schema.sha256'"
+  fi
+fi
+if [[ "$BACKEND_ONLY" == "0" ]]; then
+  frontend_source=$(node "$SOURCE_FINGERPRINT_SCRIPT" frontend)
+  deploy_frontend
+  remote "mkdir -p '$DEV_RELEASE_STATE_DIR' && printf '%s\n' '$frontend_source' > '$DEV_RELEASE_STATE_DIR/frontend.sha256'"
+fi
 
 echo ""
 echo -e "${BOLD}ADO B2B - Dev Deploy Complete${RESET}"

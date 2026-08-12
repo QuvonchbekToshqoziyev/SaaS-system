@@ -14,6 +14,8 @@ import { api } from '@/lib/api';
 import { formatCardLabel, formatCurrencyMap, formatMoney, totalsByCurrency } from '@/features/kassa/format';
 import DailyReconciliationActions from '@/features/kassa/DailyReconciliationActions';
 import HistoricalKassaImport from '@/features/kassa/HistoricalKassaImport';
+import { formatFlightDisplayName } from '@/lib/flight-display';
+import { formatNumber } from '@/lib/format';
 
 type FirmOption = { id: string; name: string; currency?: string | null; kind?: string | null };
 type FlightOption = { id?: string; flight_id?: string; flightNumber?: string; route?: string };
@@ -47,6 +49,28 @@ type KassaDesk = {
   assignedCashierUserId?: string | null;
   assignedCashier?: { id: string; email: string; fullName?: string | null; status?: string } | null;
 };
+
+type FinancialAccount = {
+  id: string;
+  firmId: string;
+  name: string;
+  currency: string;
+  type: string;
+};
+
+type AllocationOption = {
+  id: string;
+  fromFirm?: { name?: string | null } | null;
+  toFirm?: { name?: string | null } | null;
+  allocatedQuantity?: number;
+  totalAmount?: number;
+  currency?: string;
+};
+
+type TourOption = { id: string; name: string; flightId?: string | null; ownerFirmId?: string | null; currency?: string | null };
+type EmployeeOption = { id: string; name: string; role: string; firmId?: string | null; status?: string; salary?: string | number; currency?: string };
+
+const oppositeExchangeCurrency = (currency: string) => currency === 'USD' ? 'UZS' : 'USD';
 
 type KassaSummary = {
   businessDate: string;
@@ -162,6 +186,17 @@ export default function KassaPage() {
   const [deskOptions, setDeskOptions] = useState<KassaDesk[]>([]);
   const [flightOptions, setFlightOptions] = useState<FlightOption[]>([]);
   const [paymentCards, setPaymentCards] = useState<PaymentCard[]>([]);
+  const [financialAccounts, setFinancialAccounts] = useState<FinancialAccount[]>([]);
+  const [expenseCategories, setExpenseCategories] = useState<any[]>([]);
+  const [employeeOptions, setEmployeeOptions] = useState<EmployeeOption[]>([]);
+  const [allocationOptions, setAllocationOptions] = useState<AllocationOption[]>([]);
+  const [tourOptions, setTourOptions] = useState<TourOption[]>([]);
+  const [editingDailyTransaction, setEditingDailyTransaction] = useState<any | null>(null);
+  const [savingDailyTransaction, setSavingDailyTransaction] = useState(false);
+  const [dailyEditDraft, setDailyEditDraft] = useState({
+    flow: 'IN', operationPurpose: 'GENERAL', method: 'cash', amount: '', currency: 'UZS', exchangeRate: '', counterpartyFirmId: '',
+    flightId: '', allocationId: '', tourPackageId: '', kassaDeskId: '', paymentCardId: '', bankAccountId: '', note: '', correctionReason: '', expectedUpdatedAt: '',
+  });
 
   const [payFirmId, setPayFirmId] = useState('');
   const [payReceiverFirmId, setPayReceiverFirmId] = useState('');
@@ -188,7 +223,33 @@ export default function KassaPage() {
   const [cashNote, setCashNote] = useState('');
   const [cashFlightId, setCashFlightId] = useState('');
   const [cashKassaDeskId, setCashKassaDeskId] = useState('');
+  const [cashExpenseDirection, setCashExpenseDirection] = useState('COMPANY_EXPENSE');
+  const [cashExpenseCategoryId, setCashExpenseCategoryId] = useState('');
+  const [cashEmployeeId, setCashEmployeeId] = useState('');
+  const [cashCategorySearch, setCashCategorySearch] = useState('');
+  const [cashExpenseDate, setCashExpenseDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [cashDocumentDate, setCashDocumentDate] = useState('');
+  const [cashDocumentNumber, setCashDocumentNumber] = useState('');
+  const [cashVatAmount, setCashVatAmount] = useState('');
   const [recordingCash, setRecordingCash] = useState(false);
+  const [recordingTransfer, setRecordingTransfer] = useState(false);
+  const [transferDraft, setTransferDraft] = useState({
+    operationType: 'CASH_TO_CARD',
+    sourceCashDeskId: '',
+    destinationCashDeskId: '',
+    sourceCardId: '',
+    destinationCardId: '',
+    sourceAccountId: '',
+    destinationAccountId: '',
+    amount: '',
+    currency: 'UZS',
+    destinationAmount: '',
+    destinationCurrency: 'UZS',
+    feeAmount: '',
+    exchangeRate: '',
+    note: '',
+    reason: '',
+  });
   const [cardOwnerName, setCardOwnerName] = useState('');
   const [cardNumber, setCardNumber] = useState('');
   const [cardCurrency, setCardCurrency] = useState('UZS');
@@ -204,8 +265,8 @@ export default function KassaPage() {
   });
   const [savingCard, setSavingCard] = useState(false);
   const [deletingCardId, setDeletingCardId] = useState('');
-  const [deskName, setDeskName] = useState('');
-  const [deskCode, setDeskCode] = useState('');
+  const [deskName, setDeskName] = useState('Asosiy kassa');
+  const [deskCode, setDeskCode] = useState('K-01');
   const [deskFirmId, setDeskFirmId] = useState('');
   const [creatingDesk, setCreatingDesk] = useState(false);
   const [confirmAction, setConfirmAction] = useState<KassaConfirmAction | null>(null);
@@ -272,6 +333,20 @@ export default function KassaPage() {
     () => deskOptions.filter((desk) => !cashDeskFirmId || desk.firmId === cashDeskFirmId),
     [deskOptions, cashDeskFirmId],
   );
+  const cashTransactionFirmId = canChooseTransactionFirm ? cashFirmId : String(user?.firmId || '');
+  const cashEmployeeOptions = useMemo(
+    () => employeeOptions.filter((employee) => employee.status !== 'DELETED' && Boolean(cashTransactionFirmId) && employee.firmId === cashTransactionFirmId),
+    [employeeOptions, cashTransactionFirmId],
+  );
+  const cashExpenseCategories = useMemo(() => {
+    const search = cashCategorySearch.trim().toLowerCase();
+    return expenseCategories.filter((category) => (
+      category.isActive !== false
+      && Boolean(cashTransactionFirmId)
+      && category.firmId === cashTransactionFirmId
+      && (category.id === cashExpenseCategoryId || !search || `${category.name} ${category.code} ${category.parent?.name || ''}`.toLowerCase().includes(search))
+    ));
+  }, [expenseCategories, cashTransactionFirmId, cashCategorySearch, cashExpenseCategoryId]);
 
   const setPaymentCurrencyCode = (currency: string) => {
     const next = String(currency || '').trim().toUpperCase();
@@ -337,6 +412,34 @@ export default function KassaPage() {
     setCashNote('');
     setCashFlightId('');
     setCashKassaDeskId('');
+    setCashExpenseDirection('COMPANY_EXPENSE');
+    setCashExpenseCategoryId('');
+    setCashEmployeeId('');
+    setCashCategorySearch('');
+    setCashExpenseDate(selectedDate);
+    setCashDocumentDate('');
+    setCashDocumentNumber('');
+    setCashVatAmount('');
+  };
+
+  const resetTransferDraft = () => {
+    setTransferDraft({
+      operationType: 'CASH_TO_CARD',
+      sourceCashDeskId: summaryKassaDeskId || '',
+      destinationCashDeskId: '',
+      sourceCardId: '',
+      destinationCardId: '',
+      sourceAccountId: '',
+      destinationAccountId: '',
+      amount: '',
+      currency: 'UZS',
+      destinationAmount: '',
+      destinationCurrency: 'UZS',
+      feeAmount: '',
+      exchangeRate: '',
+      note: '',
+      reason: '',
+    });
   };
 
   const resetCardDraft = () => {
@@ -388,23 +491,77 @@ export default function KassaPage() {
   }, [summary?.status, summary?.openingSuggestion?.openingBalance, summary?.openingSuggestion?.openingBalances?.USD, summaryKassaDeskId, selectedDate]);
 
   useEffect(() => {
+    if (summary?.status !== 'OPEN') return;
+    setClosingBalance((current) => current || String(summary.totals.expectedCash ?? 0));
+    setClosingBalanceUsd((current) => current || String(summary.totals.expectedCashByCurrency?.USD ?? 0));
+  }, [summary?.status, summary?.totals.expectedCash, summary?.totals.expectedCashByCurrency?.USD, summaryKassaDeskId, selectedDate]);
+
+  useEffect(() => {
     if (!canAccess) return;
     const loadOptions = async () => {
-      try {
-        const [flightsRes, firmsRes, desksRes] = await Promise.all([
-          api.get('/flights'),
-          canLoadTransactionFirms ? api.get('/firms') : Promise.resolve({ data: [] }),
-          api.get('/kassa/desks'),
-        ]);
-        setFlightOptions(Array.isArray(flightsRes.data) ? flightsRes.data : []);
-        setFirmOptions(Array.isArray(firmsRes.data) ? firmsRes.data : []);
-        setDeskOptions(Array.isArray(desksRes.data) ? desksRes.data : []);
-      } catch {
-        // non-fatal
-      }
+      const getOptions = async (endpoint: string) => {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            return await api.get(endpoint);
+          } catch {
+            if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 300 * (attempt + 1)));
+          }
+        }
+        return { data: [] };
+      };
+      const loadInto = (endpoint: string, setter: (rows: any[]) => void) => {
+        void getOptions(endpoint).then((response) => setter(Array.isArray(response.data) ? response.data : []));
+      };
+      loadInto('/flights', setFlightOptions);
+      if (canLoadTransactionFirms) loadInto('/firms', setFirmOptions);
+      else setFirmOptions([]);
+      loadInto('/kassa/desks', setDeskOptions);
+      loadInto('/accounts', setFinancialAccounts);
+      loadInto('/tour-packages', setTourOptions);
+      loadInto('/employees', setEmployeeOptions);
     };
     loadOptions();
   }, [canLoadTransactionFirms, canAccess, reloadKey]);
+
+  useEffect(() => {
+    if (!canAccess) return;
+    const firmId = canChooseTransactionFirm ? cashFirmId : String(user?.firmId || '');
+    if (!firmId) {
+      setExpenseCategories([]);
+      return;
+    }
+    let active = true;
+    const loadCategories = async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const response = await api.get('/expense-categories', { params: { firmId } });
+          if (active) setExpenseCategories(Array.isArray(response.data) ? response.data : []);
+          return;
+        } catch {
+          if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 300 * (attempt + 1)));
+        }
+      }
+      if (active) setExpenseCategories([]);
+    };
+    void loadCategories();
+    return () => { active = false; };
+  }, [canAccess, canChooseTransactionFirm, cashFirmId, reloadKey, user?.firmId]);
+
+  useEffect(() => {
+    if (!editingDailyTransaction || !dailyEditDraft.flightId) {
+      setAllocationOptions([]);
+      return;
+    }
+    let active = true;
+    api.get(`/tickets/allocations?flight_id=${encodeURIComponent(dailyEditDraft.flightId)}&includeFinance=true`)
+      .then((response) => {
+        if (!active) return;
+        const rows = Array.isArray(response.data?.data) ? response.data.data : Array.isArray(response.data) ? response.data : [];
+        setAllocationOptions(rows.filter((row: AllocationOption & { status?: string }) => row.status === 'ACCEPTED'));
+      })
+      .catch(() => active && setAllocationOptions([]));
+    return () => { active = false; };
+  }, [editingDailyTransaction, dailyEditDraft.flightId]);
 
   const monitoringFirmOptions = useMemo(() => {
     const firms = new Map<string, FirmOption>();
@@ -447,6 +604,14 @@ export default function KassaPage() {
       setCashCurrencyCode(selectedCashFirm.currency);
     }
   }, [selectedCashFirm?.currency]);
+
+  useEffect(() => {
+    if (cashEmployeeId && !cashEmployeeOptions.some((employee) => employee.id === cashEmployeeId)) setCashEmployeeId('');
+    if (cashExpenseDirection === 'EMPLOYEE_PAYMENT' && !cashExpenseCategoryId) {
+      const salaryCategory = expenseCategories.find((category) => category.firmId === cashTransactionFirmId && category.code === 'SALARY' && category.isActive !== false);
+      if (salaryCategory) setCashExpenseCategoryId(salaryCategory.id);
+    }
+  }, [cashEmployeeId, cashEmployeeOptions, cashExpenseDirection, cashExpenseCategoryId, expenseCategories, cashTransactionFirmId]);
 
   useEffect(() => {
     if (payKassaDeskId && payDeskFirmId && !payDeskOptions.some((desk) => desk.id === payKassaDeskId)) {
@@ -572,6 +737,18 @@ export default function KassaPage() {
       toast.error(tr('Invalid currency code', 'Noto\'g\'ri valyuta kodi'));
       return;
     }
+    if (cashFlow === 'OUT' && !cashExpenseDirection) {
+      toast.error(tr('Select an expense direction', 'Chiqim yo‘nalishini tanlang'));
+      return;
+    }
+    if (cashFlow === 'OUT' && cashExpenseDirection === 'COMPANY_EXPENSE' && !cashExpenseCategoryId) {
+      toast.error(tr('Select an expense category', 'Xarajat kategoriyasini tanlang'));
+      return;
+    }
+    if (cashFlow === 'OUT' && cashExpenseDirection === 'EMPLOYEE_PAYMENT' && (!cashExpenseCategoryId || !cashEmployeeId)) {
+      toast.error(tr('Select an employee and salary category', 'Xodim va ish haqi kategoriyasini tanlang'));
+      return;
+    }
     const body = {
         flow: cashFlow,
         method: cashMethod,
@@ -585,6 +762,13 @@ export default function KassaPage() {
         currency,
         exchangeRate: currency !== 'UZS' ? cashExchangeRate.trim() : undefined,
         note: cashNote.trim() || undefined,
+        expenseDirection: cashFlow === 'OUT' ? cashExpenseDirection : undefined,
+        expenseCategoryId: cashFlow === 'OUT' ? cashExpenseCategoryId || undefined : undefined,
+        employeeId: cashFlow === 'OUT' && cashExpenseDirection === 'EMPLOYEE_PAYMENT' ? cashEmployeeId : undefined,
+        expenseDate: cashFlow === 'OUT' ? cashExpenseDate : undefined,
+        documentDate: cashFlow === 'OUT' ? cashDocumentDate || undefined : undefined,
+        documentNumber: cashFlow === 'OUT' ? cashDocumentNumber.trim() || undefined : undefined,
+        vatAmount: cashFlow === 'OUT' && cashVatAmount ? Number(cashVatAmount) : undefined,
       };
     setConfirmAction({
       kind: 'cash',
@@ -603,6 +787,8 @@ export default function KassaPage() {
       setCashCounterpartyFirmId('');
       setCashFlightId('');
       setCashExchangeRate('');
+      setCashEmployeeId('');
+      setCashCategorySearch('');
       setReloadKey((k) => k + 1);
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to record cash movement', 'Kassa harakatini qayd etib bo\'lmadi'));
@@ -611,44 +797,127 @@ export default function KassaPage() {
     }
   };
 
+  const submitTransfer = async (e: FormEvent) => {
+    e.preventDefault();
+    if (recordingTransfer || !isEditable || !canManageKassa) return;
+    if (!Number.isFinite(Number(transferDraft.amount)) || Number(transferDraft.amount) <= 0) {
+      toast.error(tr('Enter a valid amount', 'To‘g‘ri summani kiriting'));
+      return;
+    }
+    const operationType = transferDraft.operationType;
+    const body: any = {
+      operationType,
+      amount: transferDraft.amount,
+      currency: transferDraft.currency,
+      destinationAmount: transferDraft.destinationAmount || transferDraft.amount,
+      destinationCurrency: transferDraft.destinationCurrency || transferDraft.currency,
+      feeAmount: transferDraft.feeAmount || undefined,
+      exchangeRate: transferDraft.exchangeRate || undefined,
+      operationDate: selectedDate,
+      note: transferDraft.note.trim() || undefined,
+      reason: transferDraft.reason.trim() || undefined,
+    };
+    if (operationType === 'CASH_TO_CARD') {
+      body.sourceCashDeskId = transferDraft.sourceCashDeskId;
+      body.destinationCardId = transferDraft.destinationCardId;
+    } else if (operationType === 'CARD_TO_CASH') {
+      body.sourceCardId = transferDraft.sourceCardId;
+      body.destinationCashDeskId = transferDraft.destinationCashDeskId;
+    } else if (operationType === 'CASH_DESK_TO_CASH_DESK') {
+      body.sourceCashDeskId = transferDraft.sourceCashDeskId;
+      body.destinationCashDeskId = transferDraft.destinationCashDeskId;
+    } else {
+      body.sourceCashDeskId = transferDraft.sourceCashDeskId || undefined;
+      body.destinationCashDeskId = transferDraft.destinationCashDeskId || undefined;
+      body.sourceCardId = transferDraft.sourceCardId || undefined;
+      body.destinationCardId = transferDraft.destinationCardId || undefined;
+      body.sourceAccountId = transferDraft.sourceAccountId || undefined;
+      body.destinationAccountId = transferDraft.destinationAccountId || undefined;
+    }
+    if ((operationType === 'CASH_TO_CARD' && (!body.sourceCashDeskId || !body.destinationCardId))
+      || (operationType === 'CARD_TO_CASH' && (!body.sourceCardId || !body.destinationCashDeskId))
+      || (operationType === 'CASH_DESK_TO_CASH_DESK' && (!body.sourceCashDeskId || !body.destinationCashDeskId))) {
+      toast.error(tr('Select source and destination', 'Manba va qabul qiluvchini tanlang'));
+      return;
+    }
+    try {
+      setRecordingTransfer(true);
+      await api.post('/kassa/transfers', body);
+      toast.success(tr('Transfer recorded', 'Transfer qayd etildi'));
+      resetTransferDraft();
+      setReloadKey((key) => key + 1);
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || tr('Failed to record transfer', 'Transferni qayd etib bo‘lmadi'));
+    } finally {
+      setRecordingTransfer(false);
+    }
+  };
+
   const canChangeDailyCash = (tx: any) => {
     const txDate = String(tx.metadata?.date || tx.createdAt || '').slice(0, 10);
-    return tx.type === 'ADJUSTMENT' && ['KASSA_IN', 'KASSA_OUT'].includes(String(tx.direction || ''))
+    const manualCash = tx.type === 'ADJUSTMENT' && ['KASSA_IN', 'KASSA_OUT'].includes(String(tx.direction || ''));
+    const manualPayment = tx.type === 'PAYMENT' && String(tx.sourceMode || '').startsWith('MANUAL_');
+    return (manualCash || manualPayment)
       && isEditable
       && Boolean(summaryKassaDeskId)
       && String(tx.kassaDeskId || '') === summaryKassaDeskId
       && txDate === selectedDate
-      && (String(tx.createdByUserId || '') === actorUserId
+      && (isSuperAdmin || String(tx.createdByUserId || '') === actorUserId
         || (isFirm && firmRole === 'FIRM_ADMIN' && String(tx.firmId || '') === String(user?.firmId || '')));
   };
 
-  const editDailyCash = async (tx: any) => {
-    const amount = window.prompt(tr('Edit amount', 'Summani tahrirlash'), String(tx.originalAmount || ''));
-    if (amount === null) return;
-    if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) {
+  const editDailyCash = (tx: any) => {
+    setEditingDailyTransaction(tx);
+    setDailyEditDraft({
+      flow: tx.transactionType === 'EXPENSE' || tx.direction === 'KASSA_OUT' ? 'OUT' : 'IN',
+      operationPurpose: String(tx.operationPurpose || 'GENERAL'),
+      method: String(tx.paymentMethod || 'cash').toLowerCase(), amount: String(tx.originalAmount || ''), currency: String(tx.currency || 'UZS'),
+      exchangeRate: String(tx.exchangeRate || ''), counterpartyFirmId: String(tx.counterpartyId || ''), flightId: String(tx.flightId || ''),
+      allocationId: String(tx.allocationId || ''), tourPackageId: String(tx.tourPackageId || ''), kassaDeskId: String(tx.kassaDeskId || ''), paymentCardId: String(tx.paymentCardId || ''),
+      bankAccountId: String(tx.bankAccountId || ''), note: String(tx.note || tx.metadata?.note || ''), correctionReason: '', expectedUpdatedAt: String(tx.updatedAt || ''),
+    });
+  };
+
+  const saveDailyCash = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!editingDailyTransaction || savingDailyTransaction) return;
+    if (!Number.isFinite(Number(dailyEditDraft.amount)) || Number(dailyEditDraft.amount) <= 0) {
       toast.error(tr('Amount must be greater than zero', 'Summa noldan katta bo\'lishi kerak'));
       return;
     }
-    const note = window.prompt(tr('Edit note', 'Izohni tahrirlash'), String(tx.metadata?.note || ''));
-    if (note === null) return;
-    const correctionReason = window.prompt(tr('Why is this correction needed?', 'Tuzatish sababi nima?'));
-    if (!correctionReason?.trim()) return;
+    if (dailyEditDraft.correctionReason.trim().length < 5) {
+      toast.error(tr('Correction reason must be at least 5 characters', 'Tuzatish sababi kamida 5 ta belgi bo‘lishi kerak'));
+      return;
+    }
     try {
-      await api.patch(`/transactions/${tx.id}/daily-cash`, { amount: Number(amount), note, correctionReason: correctionReason.trim() });
+      setSavingDailyTransaction(true);
+      await api.patch(`/transactions/${editingDailyTransaction.id}/daily-cash`, {
+        ...dailyEditDraft,
+        amount: Number(dailyEditDraft.amount),
+        exchangeRate: dailyEditDraft.currency === 'UZS' ? 1 : Number(dailyEditDraft.exchangeRate),
+        allocationId: dailyEditDraft.allocationId || null,
+        paymentCardId: dailyEditDraft.method === 'card' ? dailyEditDraft.paymentCardId : null,
+        bankAccountId: dailyEditDraft.method === 'bank' ? dailyEditDraft.bankAccountId : null,
+        kassaDeskId: dailyEditDraft.method === 'cash' ? dailyEditDraft.kassaDeskId : dailyEditDraft.kassaDeskId || null,
+        correctionReason: dailyEditDraft.correctionReason.trim(),
+      });
       toast.success(tr('Transaction updated', 'Tranzaksiya tahrirlandi'));
+      setEditingDailyTransaction(null);
       setReloadKey((key) => key + 1);
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to update transaction', 'Tranzaksiyani tahrirlab bo\'lmadi'));
+    } finally {
+      setSavingDailyTransaction(false);
     }
   };
 
   const deleteDailyCash = async (tx: any) => {
     const reason = window.prompt(tr('Why should this entry be removed?', 'Yozuvni o‘chirish sababi nima?'));
     if (!reason?.trim()) return;
-    if (!window.confirm(tr('Delete this transaction?', 'Ushbu tranzaksiyani o\'chirasizmi?'))) return;
+    if (!window.confirm(tr('Cancel this transaction and remove its balance effect?', 'Ushbu tranzaksiya bekor qilinib, balans ta’siri chiqarilsinmi?'))) return;
     try {
       await api.delete(`/transactions/${tx.id}/daily-cash`, { data: { reason: reason.trim() } });
-      toast.success(tr('Transaction deleted', 'Tranzaksiya o\'chirildi'));
+      toast.success(tr('Transaction cancelled', 'Tranzaksiya bekor qilindi'));
       setReloadKey((key) => key + 1);
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to delete transaction', 'Tranzaksiyani o\'chirib bo\'lmadi'));
@@ -658,10 +927,10 @@ export default function KassaPage() {
   const deleteTransaction = async (tx: any) => {
     const reason = window.prompt(tr('Why should this transaction be deleted?', 'Tranzaksiya nima sababdan o\'chiriladi?'));
     if (!reason?.trim()) return;
-    if (!window.confirm(tr('Delete this transaction permanently?', 'Ushbu tranzaksiya butunlay o\'chirilsinmi?'))) return;
+    if (!window.confirm(tr('Cancel this transaction and keep its audit history?', 'Tranzaksiya bekor qilinib, audit tarixi saqlansinmi?'))) return;
     try {
       await api.delete(`/transactions/${tx.id}`, { data: { reason: reason.trim() } });
-      toast.success(tr('Transaction deleted', 'Tranzaksiya o\'chirildi'));
+      toast.success(tr('Transaction cancelled', 'Tranzaksiya bekor qilindi'));
       setReloadKey((key) => key + 1);
     } catch (error: any) {
       toast.error(error?.response?.data?.error || tr('Failed to delete transaction', 'Tranzaksiyani o\'chirib bo\'lmadi'));
@@ -857,8 +1126,8 @@ export default function KassaPage() {
         firmId: canFilterFirm ? deskFirmId : undefined,
       });
       toast.success(tr('Kassa desk added', 'Kassa qo\'shildi'));
-      setDeskName('');
-      setDeskCode('');
+      setDeskName('Asosiy kassa');
+      setDeskCode('K-01');
       setReloadKey((k) => k + 1);
     } catch (err: any) {
       toast.error(err?.response?.data?.error || tr('Failed to add kassa desk', 'Kassani qo\'shib bo\'lmadi'));
@@ -956,7 +1225,7 @@ export default function KassaPage() {
           description={tr('Create a kassa without assigning a separate cashier. A firm admin can operate it directly.', 'Alohida kassir biriktirmasdan kassa yarating. Firma admini uni bevosita ishlata oladi.')}
           storageKey="kassa-desk-create-card"
         >
-          <form onSubmit={createDesk} className="compact-toolbar">
+          <form onSubmit={createDesk} className="compact-toolbar" aria-label={tr('Create kassa', 'Kassa yaratish')}>
             {canFilterFirm && (
               <div className="min-w-[220px]">
                 <label className="compact-label">{tr('Firm', 'Firma')}</label>
@@ -968,11 +1237,11 @@ export default function KassaPage() {
             )}
             <div className="min-w-[220px] flex-1">
               <label className="compact-label">{tr('Kassa name', 'Kassa nomi')}</label>
-              <input value={deskName} onChange={(e) => setDeskName(e.target.value)} className="compact-control" placeholder={tr('Main kassa', 'Asosiy kassa')} required />
+              <input aria-label={tr('Kassa name', 'Kassa nomi')} value={deskName} onChange={(e) => setDeskName(e.target.value)} className="compact-control" placeholder={tr('Main kassa', 'Asosiy kassa')} required />
             </div>
             <div className="min-w-[140px]">
               <label className="compact-label">{tr('Code (optional)', 'Kod (ixtiyoriy)')}</label>
-              <input value={deskCode} onChange={(e) => setDeskCode(e.target.value)} className="compact-control" placeholder="K-01" />
+              <input aria-label={tr('Kassa code', 'Kassa kodi')} value={deskCode} onChange={(e) => setDeskCode(e.target.value)} className="compact-control" placeholder="K-01" />
             </div>
             <ActionButtons
               cancelLabel={tr('Cancel', 'Bekor qilish')}
@@ -980,7 +1249,7 @@ export default function KassaPage() {
               busyLabel={tr('Creating…', 'Yaratilyapti…')}
               busy={creatingDesk}
               canConfirm={Boolean(deskName.trim() && (!canFilterFirm || deskFirmId))}
-              onCancel={() => { setDeskFirmId(''); setDeskName(''); setDeskCode(''); }}
+              onCancel={() => { setDeskFirmId(''); setDeskName('Asosiy kassa'); setDeskCode('K-01'); }}
             />
           </form>
         </CollapsibleCard>
@@ -1069,12 +1338,13 @@ export default function KassaPage() {
           description={tr('Start the cash register for this day before recording payments.', 'To\'lovlarni qayd etishdan oldin ushbu kun uchun kassani oching.')}
           storageKey="kassa-open-card"
         >
-          <form onSubmit={handleOpenKassa} className="compact-toolbar max-w-2xl">
+          <form onSubmit={handleOpenKassa} className="compact-toolbar max-w-2xl" aria-label={tr('Open kassa', 'Kassani ochish')}>
             <div>
               <label className="compact-label">
                 {tr('Opening cash balance (UZS)', 'Boshlang\'ich naqd balans (UZS)')}
               </label>
               <input
+                aria-label={tr('Opening cash balance (UZS)', 'Boshlang‘ich naqd balans (UZS)')}
                 type="number"
                 min="0"
                 step="1"
@@ -1088,6 +1358,7 @@ export default function KassaPage() {
                 {tr('Opening cash balance (USD)', 'Boshlang\'ich naqd balans (USD)')}
               </label>
               <input
+                aria-label={tr('Opening cash balance (USD)', 'Boshlang‘ich naqd balans (USD)')}
                 type="number"
                 min="0"
                 step="0.01"
@@ -1166,7 +1437,7 @@ export default function KassaPage() {
         defaultOpen={true}
       >
         {!loading && visibleDeskOptions.length === 0 ? (
-          <p className="py-6 text-center text-sm text-muted">{tr('No kassas are assigned to this firm yet.', 'Firmangizga hozircha kassa biriktirilmagan.')}</p>
+          <p className="py-6 text-center text-sm text-muted">{tr('No kassa exists yet. Add the prefilled Main kassa above, then select it and open it.', 'Hali kassa yaratilmagan. Yuqoridagi tayyor Asosiy kassani qo‘shing, so‘ng uni tanlab oching.')}</p>
         ) : (
           <div className="overflow-x-auto scroller-minimal">
             <table className="excel-table">
@@ -1247,22 +1518,22 @@ export default function KassaPage() {
         defaultOpen={true}
       >
         {canManageCards && (
-          <form onSubmit={createCard} className="compact-toolbar mb-4">
+          <form onSubmit={createCard} className="compact-toolbar mb-4" aria-label={tr('Add card', 'Karta qo‘shish')}>
             <div>
               <label className="compact-label">{tr('Card owner', 'Karta egasi')}</label>
-              <input value={cardOwnerName} onChange={(e) => setCardOwnerName(e.target.value)} className="compact-control" required />
+              <input aria-label={tr('Card owner', 'Karta egasi')} value={cardOwnerName} onChange={(e) => setCardOwnerName(e.target.value)} className="compact-control" required />
             </div>
             <div>
               <label className="compact-label">{tr('Card number', 'Karta raqami')}</label>
-              <input value={cardNumber} onChange={(e) => setCardNumber(e.target.value)} className="compact-control" required />
+              <input aria-label={tr('Card number', 'Karta raqami')} value={cardNumber} onChange={(e) => setCardNumber(e.target.value)} className="compact-control" required />
             </div>
             <div>
               <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
-              <input value={cardCurrency} onChange={(e) => setCardCurrency(e.target.value.toUpperCase())} className="compact-control" placeholder="UZS" minLength={3} maxLength={3} pattern="[A-Za-z]{3}" required />
+              <input aria-label={tr('Currency', 'Valyuta')} value={cardCurrency} onChange={(e) => setCardCurrency(e.target.value.toUpperCase())} className="compact-control" placeholder="UZS" minLength={3} maxLength={3} pattern="[A-Za-z]{3}" required />
             </div>
             <div>
               <label className="compact-label">{tr('Opening balance', 'Boshlang\'ich qoldiq')}</label>
-              <input type="number" inputMode="decimal" min="0" step="0.01" value={cardOpeningBalance} onChange={(e) => setCardOpeningBalance(e.target.value)} className="compact-control" required />
+              <input aria-label={tr('Opening balance', 'Boshlang‘ich qoldiq')} type="number" inputMode="decimal" min="0" step="0.01" value={cardOpeningBalance} onChange={(e) => setCardOpeningBalance(e.target.value)} className="compact-control" required />
             </div>
             <ActionButtons
               cancelLabel={tr('Cancel', 'Bekor qilish')}
@@ -1366,6 +1637,135 @@ export default function KassaPage() {
           </table>
         </div>
       </CollapsibleCard>
+
+      {canManageKassa && !user.readOnlyAccess && (
+        <CollapsibleCard
+          tone="finance"
+          title={tr('Transfer / Exchange', 'Transfer / Ayirboshlash')}
+          description={tr('Cash to card, card to cash, kassa to kassa and VASH operations.', 'Naqd kartaga, karta naqdga, kassadan kassaga va VASH operatsiyalari.')}
+          storageKey="kassa-transfer-exchange-card"
+        >
+          <form onSubmit={submitTransfer} className={`space-y-4 ${!isEditable ? 'opacity-50' : ''}`} aria-label={tr('Transfer / Exchange', 'Transfer / Ayirboshlash')}>
+            <div className="compact-toolbar">
+              <div>
+                <label className="compact-label">{tr('Type', 'Turi')}</label>
+                <select value={transferDraft.operationType} onChange={(e) => {
+                  const operationType = e.target.value;
+                  setTransferDraft((draft) => ({ ...draft, operationType, destinationCurrency: operationType === 'CURRENCY_EXCHANGE' ? oppositeExchangeCurrency(draft.currency) : draft.currency, sourceCardId: '', destinationCardId: '', destinationCashDeskId: '', sourceAccountId: '', destinationAccountId: '' }));
+                }} className="compact-control">
+                  <option value="CASH_TO_CARD">CASH → CARD</option>
+                  <option value="CARD_TO_CASH">CARD → CASH</option>
+                  <option value="CASH_DESK_TO_CASH_DESK">K2K</option>
+                  <option value="CURRENCY_EXCHANGE">VASH</option>
+                </select>
+              </div>
+              <div>
+                <label className="compact-label">{tr('Amount', 'Summa')}</label>
+                <input type="number" min="0" step="0.01" value={transferDraft.amount} onChange={(e) => setTransferDraft((draft) => ({ ...draft, amount: e.target.value }))} className="compact-control" required />
+              </div>
+              <div>
+                <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
+                <select value={transferDraft.currency} onChange={(e) => {
+                  const currency = e.target.value;
+                  setTransferDraft((draft) => ({ ...draft, currency, destinationCurrency: draft.operationType === 'CURRENCY_EXCHANGE' ? oppositeExchangeCurrency(currency) : currency }));
+                }} className="compact-control">
+                  <option value="UZS">UZS</option>
+                  <option value="USD">USD</option>
+                </select>
+              </div>
+              <div>
+                <label className="compact-label">{tr('Received amount', 'Qabul summa')}</label>
+                <input type="number" min="0" step="0.01" value={transferDraft.destinationAmount} onChange={(e) => setTransferDraft((draft) => ({ ...draft, destinationAmount: e.target.value }))} placeholder={transferDraft.amount || '0'} className="compact-control" />
+              </div>
+              <div>
+                <label className="compact-label">{tr('Received currency', 'Qabul valyuta')}</label>
+                <select value={transferDraft.destinationCurrency} onChange={(e) => setTransferDraft((draft) => ({ ...draft, destinationCurrency: e.target.value }))} className="compact-control" disabled={transferDraft.operationType !== 'CURRENCY_EXCHANGE'}>
+                  <option value="UZS">UZS</option>
+                  <option value="USD">USD</option>
+                </select>
+              </div>
+            </div>
+            <div className="compact-toolbar">
+              {['CASH_TO_CARD', 'CASH_DESK_TO_CASH_DESK', 'CURRENCY_EXCHANGE'].includes(transferDraft.operationType) && (
+                <div>
+                  <label className="compact-label">{tr('Source kassa', 'Manba kassa')}</label>
+                  <select value={transferDraft.sourceCashDeskId || summaryKassaDeskId} onChange={(e) => setTransferDraft((draft) => ({ ...draft, sourceCashDeskId: e.target.value }))} className="compact-control min-w-[180px]">
+                    <option value="">{tr('Select kassa', 'Kassani tanlang')}</option>
+                    {deskOptions.map((desk) => <option key={desk.id} value={desk.id}>{desk.displayName || desk.name}</option>)}
+                  </select>
+                </div>
+              )}
+              {['CARD_TO_CASH', 'CASH_DESK_TO_CASH_DESK', 'CURRENCY_EXCHANGE'].includes(transferDraft.operationType) && (
+                <div>
+                  <label className="compact-label">{tr('Destination kassa', 'Qabul kassa')}</label>
+                  <select value={transferDraft.destinationCashDeskId} onChange={(e) => setTransferDraft((draft) => ({ ...draft, destinationCashDeskId: e.target.value }))} className="compact-control min-w-[180px]">
+                    <option value="">{tr('Select kassa', 'Kassani tanlang')}</option>
+                    {deskOptions.map((desk) => <option key={desk.id} value={desk.id}>{desk.displayName || desk.name}</option>)}
+                  </select>
+                </div>
+              )}
+              {['CARD_TO_CASH', 'CURRENCY_EXCHANGE'].includes(transferDraft.operationType) && (
+                <div>
+                  <label className="compact-label">{tr('Source card', 'Manba karta')}</label>
+                  <select value={transferDraft.sourceCardId} onChange={(e) => setTransferDraft((draft) => ({ ...draft, sourceCardId: e.target.value }))} className="compact-control min-w-[180px]">
+                    <option value="">{tr('Select card', 'Kartani tanlang')}</option>
+                    {paymentCards.map((card) => <option key={card.id} value={card.id}>{formatCardLabel(card)}</option>)}
+                  </select>
+                </div>
+              )}
+              {['CASH_TO_CARD', 'CURRENCY_EXCHANGE'].includes(transferDraft.operationType) && (
+                <div>
+                  <label className="compact-label">{tr('Destination card', 'Qabul karta')}</label>
+                  <select value={transferDraft.destinationCardId} onChange={(e) => setTransferDraft((draft) => ({ ...draft, destinationCardId: e.target.value }))} className="compact-control min-w-[180px]">
+                    <option value="">{tr('Select card', 'Kartani tanlang')}</option>
+                    {paymentCards.map((card) => <option key={card.id} value={card.id}>{formatCardLabel(card)}</option>)}
+                  </select>
+                </div>
+              )}
+              {transferDraft.operationType === 'CURRENCY_EXCHANGE' && (
+                <>
+                  <div>
+                    <label className="compact-label">{tr('Source bank account', 'Manba bank hisob')}</label>
+                    <select value={transferDraft.sourceAccountId} onChange={(e) => setTransferDraft((draft) => ({ ...draft, sourceAccountId: e.target.value }))} className="compact-control min-w-[180px]">
+                      <option value="">{tr('Optional', 'Ixtiyoriy')}</option>
+                      {financialAccounts.filter((account) => account.type === 'BANK' && account.currency === transferDraft.currency).map((account) => <option key={account.id} value={account.id}>{account.name} · {account.currency}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="compact-label">{tr('Destination bank account', 'Qabul bank hisob')}</label>
+                    <select value={transferDraft.destinationAccountId} onChange={(e) => setTransferDraft((draft) => ({ ...draft, destinationAccountId: e.target.value }))} className="compact-control min-w-[180px]">
+                      <option value="">{tr('Optional', 'Ixtiyoriy')}</option>
+                      {financialAccounts.filter((account) => account.type === 'BANK' && account.currency === transferDraft.destinationCurrency).map((account) => <option key={account.id} value={account.id}>{account.name} · {account.currency}</option>)}
+                    </select>
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="compact-toolbar">
+              <div>
+                <label className="compact-label">{tr('Fee', 'Komissiya')}</label>
+                <input type="number" min="0" step="0.01" value={transferDraft.feeAmount} onChange={(e) => setTransferDraft((draft) => ({ ...draft, feeAmount: e.target.value }))} className="compact-control" />
+              </div>
+              <div>
+                <label className="compact-label">{tr('Rate', 'Kurs')}</label>
+                <input type="number" min="0" step="0.000001" value={transferDraft.exchangeRate} onChange={(e) => setTransferDraft((draft) => ({ ...draft, exchangeRate: e.target.value }))} className="compact-control" />
+              </div>
+              <div className="min-w-[240px] flex-1">
+                <label className="compact-label">{tr('Note', 'Izoh')}</label>
+                <input value={transferDraft.note} onChange={(e) => setTransferDraft((draft) => ({ ...draft, note: e.target.value }))} className="compact-control" placeholder={tr('Kartaga inkassatsiya', 'Kartaga inkassatsiya')} />
+              </div>
+              <ActionButtons
+                cancelLabel={tr('Cancel', 'Bekor qilish')}
+                confirmLabel={tr('Record transfer', 'Transferni saqlash')}
+                busyLabel={tr('Saving...', 'Saqlanyapti...')}
+                busy={recordingTransfer}
+                canConfirm={Boolean(isEditable && transferDraft.amount && Number(transferDraft.amount) > 0 && (transferDraft.operationType !== 'CURRENCY_EXCHANGE' || transferDraft.currency !== transferDraft.destinationCurrency))}
+                onCancel={resetTransferDraft}
+              />
+            </div>
+          </form>
+        </CollapsibleCard>
+      )}
 
       {canRecordPayment && (
         <CollapsibleCard
@@ -1520,6 +1920,54 @@ export default function KassaPage() {
                 <option value="OUT">{tr('Expense', 'Chiqim')}</option>
               </select>
             </div>
+            {canChooseTransactionFirm && (
+              <div>
+                <label className="compact-label">{tr('Firm', 'Firma')}</label>
+                <select value={cashFirmId} onChange={(e) => { setCashFirmId(e.target.value); setCashExpenseCategoryId(''); setCashEmployeeId(''); setCashCategorySearch(''); }} className="compact-control" required>
+                  <option value="">{tr('Select firm first', 'Avval firmani tanlang')}</option>
+                  {firmOptions.map((firm) => <option key={firm.id} value={firm.id}>{firm.name}</option>)}
+                </select>
+              </div>
+            )}
+            {cashFlow === 'OUT' && <>
+              <div>
+                <label className="compact-label">{tr('Expense direction', 'Chiqim yo‘nalishi')}</label>
+                <select value={cashExpenseDirection} onChange={(e) => { setCashExpenseDirection(e.target.value); setCashExpenseCategoryId(''); setCashEmployeeId(''); setCashCategorySearch(''); }} className="compact-control" required>
+                  <option value="COMPANY_EXPENSE">Korxona xarajati</option>
+                  <option value="EMPLOYEE_PAYMENT">Ish haqi va xodim to‘lovlari</option>
+                  <option value="COUNTERPARTY_PAYMENT">Kontragentga to‘lov</option>
+                  <option value="TAX_PAYMENT">Soliq va majburiy to‘lov</option>
+                  <option value="ASSET_PURCHASE">Aktiv sotib olish</option>
+                  <option value="ADVANCE_PAID">Oldindan to‘lov / Avans</option>
+                  <option value="OWNER_WITHDRAWAL">Ta’sischiga mablag‘ berish</option>
+                  <option value="DIVIDEND">Dividend to‘lovi</option>
+                  <option value="INTERNAL_TRANSFER">Hisoblararo o‘tkazma</option>
+                  <option value="OTHER_EXPENSE">Boshqa chiqim</option>
+                </select>
+              </div>
+              {cashExpenseDirection === 'INTERNAL_TRANSFER' && <div className="form-preview">{tr('Use Transactions for account transfers.', 'Hisoblararo o‘tkazmani Tranzaksiyalar modulida kiriting.')}</div>}
+              {cashExpenseDirection === 'EMPLOYEE_PAYMENT' && <div>
+                <label className="compact-label">{tr('Employee', 'Xodim')}</label>
+                <select value={cashEmployeeId} onChange={(e) => setCashEmployeeId(e.target.value)} className="compact-control" required>
+                  <option value="">{tr('Select employee', 'Xodimni tanlang')}</option>
+                  {cashEmployeeOptions.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} · {employee.role}{Number(employee.salary || 0) > 0 ? ` · ${formatNumber(employee.salary)} ${employee.currency || ''}` : ''}</option>)}
+                </select>
+                {!cashEmployeeOptions.length && <p className="mt-1 text-xs text-amber-500">{tr('No active employees were found for this firm.', 'Bu firmada faol xodim topilmadi. Xodimlar bo‘limida xodim qo‘shing.')}</p>}
+              </div>}
+              {['COMPANY_EXPENSE', 'EMPLOYEE_PAYMENT', 'TAX_PAYMENT', 'BANK_FEE', 'OTHER_EXPENSE'].includes(cashExpenseDirection) && <div>
+                <label className="compact-label">{tr('Expense category', 'Xarajat kategoriyasi')}</label>
+                <input value={cashCategorySearch} onChange={(e) => setCashCategorySearch(e.target.value)} className="compact-control mb-1" placeholder={tr('Search category…', 'Kategoriya qidirish…')} />
+                <select value={cashExpenseCategoryId} onChange={(e) => setCashExpenseCategoryId(e.target.value)} className="compact-control" required={['COMPANY_EXPENSE', 'EMPLOYEE_PAYMENT'].includes(cashExpenseDirection)}>
+                  <option value="">{tr('Select category', 'Kategoriyani tanlang')}</option>
+                  {cashExpenseCategories.map((category) => <option key={category.id} value={category.id}>{category.parent?.name ? `${category.parent.name} → ` : ''}{category.name}</option>)}
+                </select>
+                {cashCategorySearch && !cashExpenseCategories.length && <p className="mt-1 text-xs text-amber-500">{tr('No matching category.', 'Mos kategoriya topilmadi.')}</p>}
+              </div>}
+              <div><label className="compact-label">{tr('Expense date', 'Xarajat sanasi')}</label><input type="date" value={cashExpenseDate} onChange={(e) => setCashExpenseDate(e.target.value)} className="compact-control" required /></div>
+              <div><label className="compact-label">{tr('Document date', 'Hujjat sanasi')}</label><input type="date" value={cashDocumentDate} onChange={(e) => setCashDocumentDate(e.target.value)} className="compact-control" /></div>
+              <div><label className="compact-label">{tr('Document number', 'Hujjat raqami')}</label><input value={cashDocumentNumber} onChange={(e) => setCashDocumentNumber(e.target.value)} className="compact-control" /></div>
+              <div><label className="compact-label">{tr('VAT amount', 'QQS summasi')}</label><input type="number" min="0" step="0.01" value={cashVatAmount} onChange={(e) => setCashVatAmount(e.target.value)} className="compact-control" /></div>
+            </>}
             <div>
               <label className="compact-label">{tr('Method', 'Usul')}</label>
               <select value={cashMethod} onChange={(e) => setCashMethod(e.target.value as 'cash' | 'card')} className="compact-control">
@@ -1553,17 +2001,6 @@ export default function KassaPage() {
                   <option value="">{tr('Select card', 'Kartani tanlang')}</option>
                   {paymentCards.map((card) => (
                     <option key={card.id} value={card.id}>{formatCardLabel(card)}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-            {canChooseTransactionFirm && (
-              <div>
-                <label className="compact-label">{tr('Firm', 'Firma')}</label>
-                <select value={cashFirmId} onChange={(e) => setCashFirmId(e.target.value)} className="compact-control" required>
-                  <option value="">{tr('Select firm', 'Firmani tanlang')}</option>
-                  {firmOptions.map((f) => (
-                    <option key={f.id} value={f.id}>{f.name}</option>
                   ))}
                 </select>
               </div>
@@ -1636,6 +2073,9 @@ export default function KassaPage() {
                 && (cashCurrencyCode === 'UZS' || Number(cashExchangeRate) > 0)
                 && (cashDeskOptions.length === 0 || cashKassaDeskId)
                 && (cashMethod !== 'card' || (cashCardId && (!selectedCashCard?.currency || selectedCashCard.currency === cashCurrencyCode)))
+                && (cashFlow !== 'OUT' || (cashExpenseDirection !== 'INTERNAL_TRANSFER' && Boolean(cashExpenseDate)))
+                && (cashFlow !== 'OUT' || !['COMPANY_EXPENSE', 'EMPLOYEE_PAYMENT'].includes(cashExpenseDirection) || Boolean(cashExpenseCategoryId))
+                && (cashFlow !== 'OUT' || cashExpenseDirection !== 'EMPLOYEE_PAYMENT' || Boolean(cashEmployeeId))
               )}
               onCancel={resetCashDraft}
             />
@@ -1664,6 +2104,9 @@ export default function KassaPage() {
                   <th>{tr('Flight', 'Reys')}</th>
                   <th>{tr('Kassa', 'Kassa')}</th>
                   <th>{tr('Method', 'Usul')}</th>
+                  <th>{tr('From / To', 'Kimdan / Kimga')}</th>
+                  <th>{tr('Card', 'Karta')}</th>
+                  <th>{tr('Note', 'Izoh')}</th>
                   <th>{tr('Created by', 'Kim kiritdi')}</th>
                   <th className="text-right">{tr('Amount', 'Summa')}</th>
                   <th>{tr('Action', 'Amal')}</th>
@@ -1672,22 +2115,31 @@ export default function KassaPage() {
               <tbody>
                 {summary.transactions.map((tx) => {
                   const canChangeDaily = canChangeDailyCash(tx);
+                  const isTransferRow = tx.sourceMode === 'KASSA_TRANSFER';
+                  const feeAmount = tx.metadata?.feeAmount || '0';
+                  const transferSource = tx.metadata?.source || tx.sourceAccountName || tx.cashDeskName || '—';
+                  const transferDestination = tx.metadata?.destination || tx.destinationAccountName || '—';
                   return (
                   <tr key={tx.id} className="border-b border-border/50">
                     <td className="font-medium">
-                      {tx.direction === 'KASSA_IN' ? tr('Income', 'Kirim') : tx.direction === 'KASSA_OUT' ? tr('Expense', 'Chiqim') : tx.type}
+                      {isTransferRow ? <><div>{tr('Transfer', 'Transfer')}</div><div className="text-xs font-normal text-muted">{tx.operationType}</div></> : tx.transactionType === 'INCOME' ? tr('Income', 'Kirim') : tx.transactionType === 'EXPENSE' ? tr('Expense', 'Chiqim') : tr('Transfer', 'O‘tkazma')}
                     </td>
-                    {canFilterFirm && <td>{tx.firm?.name || tx.firmId}</td>}
-                    <td>{tx.flight?.flightNumber || tx.flightId}</td>
-                    <td>{tx.kassaDesk?.name || tx.kassaDeskId || '—'}</td>
+                    {canFilterFirm && <td>{tx.firm?.name || '—'}</td>}
+                    <td>{tx.flightDisplayName || (tx.flight ? formatFlightDisplayName(tx.flight) : '—')}</td>
+                    <td>{tx.cashDeskName || tx.kassaDesk?.name || '—'}</td>
                     <td className="uppercase text-xs">{tx.paymentMethod || '—'}</td>
-                    <td>{tx.createdBy?.fullName || tx.createdBy?.email || '—'}</td>
-                    <td className="text-right font-mono">{tx.originalAmount} {tx.currency}</td>
+                    <td>{isTransferRow ? `${transferSource} → ${transferDestination}` : tx.directionLabel || '—'}</td>
+                    <td title={tx.cardDisplayName || tx.bankAccountDisplayName || ''}>{isTransferRow ? `Fee: ${formatNumber(feeAmount)} ${tx.currency}` : tx.cardDisplayName || tx.bankAccountDisplayName || '—'}</td>
+                    <td className="max-w-[240px] truncate" title={tx.note || ''}>{isTransferRow ? `${tx.note || '—'}${tx.destinationAmount ? ` · Qabul: ${formatNumber(tx.destinationAmount)} ${tx.destinationCurrency || tx.currency}` : ''}` : tx.note || '—'}</td>
+                    <td>{tx.createdByDisplayName || '—'}</td>
+                    <td className={`text-right font-mono ${tx.transactionType === 'EXPENSE' ? 'text-red-600' : 'text-emerald-600'}`}>
+                      {isTransferRow ? '' : tx.transactionType === 'EXPENSE' ? '−' : '+'}{formatNumber(tx.originalAmount)} {tx.currency}
+                    </td>
                     <td><div className="flex gap-1">
                       {canChangeDaily && <button type="button" onClick={() => editDailyCash(tx)} className="border border-border px-2 py-1 text-xs">{tr('Edit', 'Tahrir')}</button>}
-                      {canChangeDaily && <button type="button" onClick={() => deleteDailyCash(tx)} className="border border-red-500/30 px-2 py-1 text-xs text-red-600">{tr('Delete', "O'chirish")}</button>}
-                      {!canChangeDaily && canDeleteFirmRecords && isEditable && <button type="button" onClick={() => deleteTransaction(tx)} className="border border-red-500/30 px-2 py-1 text-xs text-red-600">{tr('Delete', "O'chirish")}</button>}
-                      {!isEditable && canDeleteFirmRecords && <span className="text-xs text-muted">{tr('Reopen the kassa day to delete', 'O‘chirish uchun kassa kunini qayta oching')}</span>}
+                      {canChangeDaily && <button type="button" onClick={() => deleteDailyCash(tx)} className="border border-red-500/30 px-2 py-1 text-xs text-red-600">{tr('Delete', "O‘chirish")}</button>}
+                      {!canChangeDaily && canDeleteFirmRecords && isEditable && <button type="button" onClick={() => deleteTransaction(tx)} className="border border-red-500/30 px-2 py-1 text-xs text-red-600">{tr('Delete', "O‘chirish")}</button>}
+                      {!isEditable && canDeleteFirmRecords && <span className="text-xs text-muted">{tr('Reopen the kassa day to cancel', 'Bekor qilish uchun kassa kunini qayta oching')}</span>}
                       {!canChangeDaily && !canDeleteFirmRecords && '—'}
                     </div></td>
                   </tr>
@@ -1770,6 +2222,137 @@ export default function KassaPage() {
             />
           </form>
         </CollapsibleCard>
+      )}
+
+      {editingDailyTransaction && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <form onSubmit={saveDailyCash} className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-xl border border-border bg-surface p-6 shadow-2xl">
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-xl font-bold">{tr('Edit transaction', 'Tranzaksiyani tahrirlash')}</h3>
+                <p className="mt-1 text-sm text-muted">{tr('The old balance effect is replaced atomically after validation.', 'Tekshiruvdan so‘ng eski balans ta’siri atomar tarzda yangisiga almashtiriladi.')}</p>
+              </div>
+              <button type="button" onClick={() => setEditingDailyTransaction(null)} className="text-muted hover:text-foreground" aria-label={tr('Close', 'Yopish')}><X size={20} /></button>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+              <div>
+                <label className="compact-label">{tr('Operation purpose', 'Operatsiya maqsadi')}</label>
+                <select value={dailyEditDraft.operationPurpose} onChange={(e) => setDailyEditDraft((draft) => ({ ...draft, operationPurpose: e.target.value, flightId: '', allocationId: '', tourPackageId: '' }))} className="compact-control">
+                  <option value="GENERAL">{tr('General payment', 'Umumiy to‘lov')}</option>
+                  <option value="FLIGHT">{tr('Flight payment', 'Reys uchun to‘lov')}</option>
+                  <option value="TICKET_ALLOCATION">{tr('Ticket allocation payment', 'Chipta ajratmasi uchun to‘lov')}</option>
+                  <option value="TOUR_PACKAGE">{tr('Tour package payment', 'Tur paketi uchun to‘lov')}</option>
+                </select>
+              </div>
+              <div>
+                <label className="compact-label">{tr('Type', 'Turi')}</label>
+                <select value={dailyEditDraft.flow} onChange={(e) => setDailyEditDraft((draft) => ({ ...draft, flow: e.target.value }))} className="compact-control">
+                  <option value="IN">{tr('Income', 'Kirim')}</option>
+                  <option value="OUT">{tr('Expense', 'Chiqim')}</option>
+                </select>
+              </div>
+              <div>
+                <label className="compact-label">{tr('Amount', 'Summa')}</label>
+                <input type="number" min="0.0001" step="any" value={dailyEditDraft.amount} onChange={(e) => setDailyEditDraft((draft) => ({ ...draft, amount: e.target.value }))} className="compact-control" required />
+              </div>
+              <div>
+                <label className="compact-label">{tr('Currency', 'Valyuta')}</label>
+                <input value={dailyEditDraft.currency} onChange={(e) => setDailyEditDraft((draft) => ({ ...draft, currency: e.target.value.toUpperCase().slice(0, 3), paymentCardId: '', bankAccountId: '' }))} minLength={3} maxLength={3} pattern="[A-Za-z]{3}" className="compact-control uppercase" required />
+              </div>
+              {dailyEditDraft.currency !== 'UZS' && (
+                <div>
+                  <label className="compact-label">{tr('Rate to UZS', 'UZS kursi')}</label>
+                  <input type="number" min="0.000001" step="any" value={dailyEditDraft.exchangeRate} onChange={(e) => setDailyEditDraft((draft) => ({ ...draft, exchangeRate: e.target.value }))} className="compact-control" required />
+                </div>
+              )}
+              <div>
+                <label className="compact-label">{tr('Method', 'Usul')}</label>
+                <select value={dailyEditDraft.method} onChange={(e) => setDailyEditDraft((draft) => ({ ...draft, method: e.target.value, paymentCardId: '', bankAccountId: '' }))} className="compact-control">
+                  <option value="cash">{tr('Cash', 'Naqd')}</option>
+                  <option value="card">{tr('Card', 'Karta')}</option>
+                  <option value="bank">{tr('Bank', 'Bank')}</option>
+                </select>
+              </div>
+              <div>
+                <label className="compact-label">{tr('Kassa', 'Kassa')}</label>
+                <select value={dailyEditDraft.kassaDeskId} onChange={(e) => setDailyEditDraft((draft) => ({ ...draft, kassaDeskId: e.target.value }))} className="compact-control" required>
+                  <option value="">{tr('Select kassa', 'Kassani tanlang')}</option>
+                  {deskOptions.filter((desk) => desk.firmId === editingDailyTransaction.firmId && desk.status === 'ACTIVE').map((desk) => <option key={desk.id} value={desk.id}>{desk.name}</option>)}
+                </select>
+              </div>
+              {dailyEditDraft.method === 'card' && (
+                <div>
+                  <label className="compact-label">{tr('Card', 'Karta')}</label>
+                  <select value={dailyEditDraft.paymentCardId} onChange={(e) => setDailyEditDraft((draft) => ({ ...draft, paymentCardId: e.target.value }))} className="compact-control" required>
+                    <option value="">{tr('Select card', 'Kartani tanlang')}</option>
+                    {paymentCards.filter((card) => card.firmId === editingDailyTransaction.firmId && card.currency === dailyEditDraft.currency && card.status !== 'INACTIVE').map((card) => <option key={card.id} value={card.id}>{formatCardLabel(card)}</option>)}
+                  </select>
+                </div>
+              )}
+              {dailyEditDraft.method === 'bank' && (
+                <div>
+                  <label className="compact-label">{tr('Bank account', 'Bank hisobi')}</label>
+                  <select value={dailyEditDraft.bankAccountId} onChange={(e) => setDailyEditDraft((draft) => ({ ...draft, bankAccountId: e.target.value }))} className="compact-control" required>
+                    <option value="">{tr('Select bank account', 'Bank hisobini tanlang')}</option>
+                    {financialAccounts.filter((account) => account.firmId === editingDailyTransaction.firmId && account.type === 'BANK' && account.currency === dailyEditDraft.currency).map((account) => <option key={account.id} value={account.id}>{account.name} · {account.currency}</option>)}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="compact-label">{dailyEditDraft.flow === 'IN' ? tr('From', 'Kimdan') : tr('To', 'Kimga')}</label>
+                <select value={dailyEditDraft.counterpartyFirmId} onChange={(e) => setDailyEditDraft((draft) => ({ ...draft, counterpartyFirmId: e.target.value, allocationId: '' }))} className="compact-control">
+                  <option value="">{tr('Not selected', 'Tanlanmagan')}</option>
+                  {firmOptions.filter((firm) => firm.id !== editingDailyTransaction.firmId).map((firm) => <option key={firm.id} value={firm.id}>{firm.name}</option>)}
+                </select>
+              </div>
+              {dailyEditDraft.operationPurpose !== 'GENERAL' && dailyEditDraft.operationPurpose !== 'TOUR_PACKAGE' && <div>
+                <label className="compact-label">{tr('Flight', 'Reys')}</label>
+                <select value={dailyEditDraft.flightId} onChange={(e) => setDailyEditDraft((draft) => ({ ...draft, flightId: e.target.value, allocationId: '' }))} className="compact-control" required>
+                  <option value="">{tr('Select flight', 'Reysni tanlang')}</option>
+                  {flightOptions.map((flight) => {
+                    const id = String(flight.id || flight.flight_id || '');
+                    return id ? <option key={id} value={id}>{formatFlightDisplayName({ ...flight, id })}</option> : null;
+                  })}
+                </select>
+              </div>}
+              {dailyEditDraft.operationPurpose === 'TICKET_ALLOCATION' && dailyEditDraft.flightId && (
+                <div>
+                  <label className="compact-label">{tr('Ticket allocation', 'Chipta ajratmasi')}</label>
+                  <select value={dailyEditDraft.allocationId} onChange={(e) => setDailyEditDraft((draft) => ({ ...draft, allocationId: e.target.value }))} className="compact-control" required>
+                    <option value="">{tr('Select allocation', 'Ajratmani tanlang')}</option>
+                    {allocationOptions.map((allocation) => <option key={allocation.id} value={allocation.id}>{allocation.fromFirm?.name || '—'} → {allocation.toFirm?.name || '—'} · {allocation.allocatedQuantity || 0} ta · {allocation.totalAmount || 0} {allocation.currency || ''}</option>)}
+                  </select>
+                </div>
+              )}
+              {dailyEditDraft.operationPurpose === 'TOUR_PACKAGE' && (
+                <div>
+                  <label className="compact-label">{tr('Tour package', 'Tur paketi')}</label>
+                  <select value={dailyEditDraft.tourPackageId} onChange={(e) => {
+                    const tour = tourOptions.find((row) => row.id === e.target.value);
+                    setDailyEditDraft((draft) => ({ ...draft, tourPackageId: e.target.value, flightId: String(tour?.flightId || '') }));
+                  }} className="compact-control" required>
+                    <option value="">{tr('Select tour package', 'Tur paketini tanlang')}</option>
+                    {tourOptions.map((tour) => <option key={tour.id} value={tour.id}>{tour.name}{tour.currency ? ` · ${tour.currency}` : ''}</option>)}
+                  </select>
+                </div>
+              )}
+              <div className="md:col-span-2">
+                <label className="compact-label">{tr('Note', 'Izoh')}</label>
+                <textarea value={dailyEditDraft.note} onChange={(e) => setDailyEditDraft((draft) => ({ ...draft, note: e.target.value.slice(0, 1000) }))} className="compact-control min-h-24" maxLength={1000} />
+              </div>
+              <div>
+                <label className="compact-label">{tr('Correction reason', 'Tuzatish sababi')} *</label>
+                <textarea value={dailyEditDraft.correctionReason} onChange={(e) => setDailyEditDraft((draft) => ({ ...draft, correctionReason: e.target.value.slice(0, 500) }))} className="compact-control min-h-24" minLength={5} maxLength={500} required />
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={() => setEditingDailyTransaction(null)} className="rounded-lg border border-border px-4 py-2 font-semibold">{tr('Cancel', 'Bekor qilish')}</button>
+              <button type="submit" disabled={savingDailyTransaction} className="rounded-lg bg-primary px-4 py-2 font-semibold text-white disabled:opacity-50">{savingDailyTransaction ? tr('Saving…', 'Saqlanmoqda…') : tr('Save changes', 'O‘zgarishlarni saqlash')}</button>
+            </div>
+          </form>
+        </div>
       )}
 
       {confirmAction && (

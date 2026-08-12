@@ -1,5 +1,5 @@
 export function requireCorrectionReason(value: unknown): string {
   const reason = String(value || '').trim().slice(0, 500);
-  if (!reason) throw new Error('Correction reason is required');
+  if (reason.length < 5) throw new Error('Correction reason must be at least 5 characters');
   return reason;
 }

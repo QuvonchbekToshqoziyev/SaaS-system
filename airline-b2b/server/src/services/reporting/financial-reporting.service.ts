@@ -4,6 +4,7 @@ import { canAccessFirm, getAccessibleFirmIds, normalizeRole, ScopedAuthUser } fr
 import { isPayableDebtType } from '../../utils/transaction-types';
 import { activeFlightWhere } from '../../domains/flights/flight-scope';
 import { visibleTransactionWhere } from '../../utils/transaction-visibility';
+import { isProfitAndLossExpense } from '../../domains/expenses/expense-classification';
 import {
   calcClosingCash,
   calcCurrentRatio,
@@ -177,8 +178,8 @@ async function loadCashBefore(scope: Awaited<ReturnType<typeof resolveScope>>, f
       { type: 'ADJUSTMENT', paymentMethod: { not: null } },
     ],
   };
-  const rows = await prisma.transaction.findMany({ where: visibleTransactionWhere(where), select: { type: true, direction: true, baseAmount: true } });
-  return rows.reduce((sum, tx) => sum + cashSignedAmount(tx as Pick<TxRow, 'type' | 'direction' | 'baseAmount'>), 0);
+  const rows = await prisma.transaction.findMany({ where: visibleTransactionWhere(where), select: { type: true, direction: true, baseAmount: true, sourceAccountId: true, destinationAccountId: true } });
+  return rows.reduce((sum, tx) => sum + cashSignedAmount(tx as Pick<TxRow, 'type' | 'direction' | 'baseAmount' | 'sourceAccountId' | 'destinationAccountId'>), 0);
 }
 
 async function loadPaymentAllocations(scope: Awaited<ReturnType<typeof resolveScope>>, period: { from: Date; to: Date }) {
@@ -196,8 +197,11 @@ function amount(tx: Pick<TxRow, 'baseAmount'>) {
   return toNumber(tx.baseAmount);
 }
 
-function cashSignedAmount(tx: Pick<TxRow, 'type' | 'direction' | 'baseAmount'>) {
+function cashSignedAmount(tx: Pick<TxRow, 'type' | 'direction' | 'baseAmount' | 'sourceAccountId' | 'destinationAccountId'>) {
   const value = amount(tx);
+  if (tx.sourceAccountId && !tx.destinationAccountId) return -value;
+  if (!tx.sourceAccountId && tx.destinationAccountId) return value;
+  if (tx.sourceAccountId && tx.destinationAccountId) return 0;
   if (tx.type === 'PAYMENT') return value;
   if (tx.direction === 'KASSA_IN') return value;
   if (tx.direction === 'KASSA_OUT') return -value;
@@ -217,25 +221,20 @@ function summarizeTransactions(transactions: TxRow[]) {
 
   for (const tx of transactions) {
     const value = amount(tx);
+    const meta = (tx.metadata || {}) as Record<string, unknown>;
+    const cashCategory = String(meta.cashFlowCategory || meta.cash_flow_category || 'OPERATING').toUpperCase();
+    const cashDelta = cashSignedAmount(tx);
     if (tx.type === 'SALE') revenue += value;
     if (isPayableDebtType(tx.type)) cogs += value;
-    if (tx.type === 'PAYMENT') {
-      payments += value;
-      operatingCashFlow += value;
-    }
-    if (tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_OUT') {
-      operatingExpenses += value;
-      operatingCashFlow -= value;
-    }
-    if (tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_IN') {
+    if (tx.type === 'PAYMENT') payments += value;
+    if (isProfitAndLossExpense(tx.accountingTreatment)) operatingExpenses += value;
+    if (tx.accountingTreatment === 'REVENUE' || (tx.accountingTreatment == null && tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_IN')) {
       otherIncome += value;
-      operatingCashFlow += value;
     }
-    const meta = (tx.metadata || {}) as Record<string, unknown>;
-    const cashCategory = String(meta.cashFlowCategory || meta.cash_flow_category || '').toUpperCase();
-    if (cashCategory === 'INVESTING') investingCashFlow += cashSignedAmount(tx);
-    if (cashCategory === 'FINANCING') financingCashFlow += cashSignedAmount(tx);
-    if (cashCategory === 'CAPEX') capitalExpenditure += Math.abs(cashSignedAmount(tx));
+    if (cashCategory === 'INVESTING' || cashCategory === 'CAPEX') investingCashFlow += cashDelta;
+    else if (cashCategory === 'FINANCING') financingCashFlow += cashDelta;
+    else if (!['NON_CASH', 'INTERNAL_TRANSFER'].includes(cashCategory)) operatingCashFlow += cashDelta;
+    if (cashCategory === 'CAPEX' || tx.accountingTreatment === 'ASSET') capitalExpenditure += Math.abs(cashDelta);
   }
 
   const grossProfit = calcGrossProfit(revenue, cogs);
@@ -382,7 +381,7 @@ async function buildFlightProfitability(transactions: TxRow[], scope: Awaited<Re
     txByFlight.set(tx.flightId, list);
   }
   const companyOverhead = transactions
-    .filter((tx) => !tx.flightId && tx.type === 'ADJUSTMENT' && tx.direction === 'KASSA_OUT')
+    .filter((tx) => !tx.flightId && tx.type === 'ADJUSTMENT' && isProfitAndLossExpense(tx.accountingTreatment))
     .reduce((sum, tx) => sum + amount(tx), 0);
   const revenueByFlight = flights.map((flight) => ({
     id: flight.id,

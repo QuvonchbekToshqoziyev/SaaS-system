@@ -1,13 +1,14 @@
 import { Request, Response } from 'express';
 import { Prisma, TicketLegDirection, TicketLegStatus, TicketProductType } from '@prisma/client';
 import { prisma } from '../db';
-import { canAccessFirm, getAccessibleFirmIds } from '../utils/access';
+import { canAccessFirm, getAccessibleFirmIds, getRelatedFirmIds } from '../utils/access';
 import { writeAuditLog } from '../utils/audit';
 import { canManageFirmWork } from '../utils/firm-user-roles';
 import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
 import { calculateTourCosts, conversionMultiplier, parseTourServices } from '../domains/tours/tour-cost';
 import { normalizeTicketDirection, normalizeTicketProductType, syncParentTickets } from '../domains/tickets/ticket-leg-inventory';
 import { activeFlightWhere, firmFlightParticipationWhere } from '../domains/flights/flight-scope';
+import { calculateTourSaleFinancials, canApproveFullTourDiscount, validateTourSaleNote } from '../domains/tours/tour-sale';
 
 type AuthUser = { userId?: string; role?: string; firmId?: string | null; firmRole?: string | null };
 const auth = (req: Request) => ((req as any).user || {}) as AuthUser;
@@ -19,7 +20,7 @@ const packageInclude = {
   ownerFirm: { select: { id: true, name: true } },
   flight: { select: { id: true, flightNumber: true, route: true, tripType: true, departure: true, arrival: true, returnDeparture: true, returnArrival: true, currency: true } },
   components: { include: { service: { include: { providerFirm: { select: { id: true, name: true } } } } }, orderBy: { createdAt: 'asc' as const } },
-  sales: { where: { status: 'CONFIRMED', deletedAt: null }, include: { buyerFirm: { select: { id: true, name: true } }, sellerFirm: { select: { id: true, name: true } }, transaction: true }, orderBy: { createdAt: 'desc' as const } },
+  sales: { where: { status: 'CONFIRMED', deletedAt: null }, include: { buyerFirm: { select: { id: true, name: true } }, sellerFirm: { select: { id: true, name: true } }, transaction: { include: { createdBy: { select: { id: true, fullName: true, email: true } }, kassaDesk: { select: { id: true, name: true, code: true } } } } }, orderBy: { createdAt: 'desc' as const } },
 };
 
 export const firmTourVisibilityWhere = (firmId: string): Prisma.TourPackageWhereInput => ({
@@ -436,6 +437,7 @@ export const sellTourPackage = async (req: Request, res: Response) => {
   const buyerFirmId = String(body.buyerFirmId || ''); const saleQuantity = integer(body.quantity);
   if (!buyerFirmId || saleQuantity <= 0) return res.status(400).json({ error: 'Xaridor firma va musbat miqdor kerak.' });
   try {
+    const saleNote = validateTourSaleNote(body.saleNote ?? body.notes);
     const result = await prisma.$transaction(async (tx) => {
       const pkg = await tx.tourPackage.findUnique({ where: { id: packageId }, include: { ownerFirm: { select: { id: true, name: true } }, flight: { select: { flightNumber: true, route: true } }, components: true } });
       if (!pkg || pkg.deletedAt || pkg.status !== 'ACTIVE') fail('Faol tur paketi topilmadi.', 404);
@@ -462,12 +464,18 @@ export const sellTourPackage = async (req: Request, res: Response) => {
       }
       const unitPrice = new Prisma.Decimal(String(body.unitPrice || pkg.unitPrice));
       if (!unitPrice.gt(0)) fail('Sotuv narxi musbat bo‘lishi kerak.');
-      const totalAmount = unitPrice.mul(saleQuantity).toDecimalPlaces(4);
       const exchangeRate = await resolveExchangeRateToUzs(user, { currency: pkg.currency, overrideRate: body.exchangeRate });
-      const transaction = await tx.transaction.create({ data: { firmId: pkg.ownerFirmId, flightId: pkg.flightId || undefined, payerFirmId: buyerFirmId, receiverFirmId: pkg.ownerFirmId, direction: 'FIRM_TO_FIRM', subjectType: 'TOUR_PACKAGE', subjectId: packageId, createdByUserId: user.userId, type: 'SALE', sourceMode: 'AUTO_TOUR_SALE', status: 'CONFIRMED', originalAmount: totalAmount, currency: pkg.currency, exchangeRate, baseAmount: totalAmount.mul(exchangeRate).toDecimalPlaces(4), metadata: { packageId, packageName: pkg.name, quantity: saleQuantity, unitCost: pkg.unitPrice.toString(), ticketProductType: pkg.ticketProductType, ticketDirection: pkg.ticketDirection, ticketIds: Array.from(new Set(soldLegs.map((leg) => leg.ticketId))), ticketLegIds: soldLegs.map((leg) => leg.id) } } });
-      const sale = await tx.tourPackageSale.create({ data: { packageId, sellerFirmId: pkg.ownerFirmId, buyerFirmId, quantity: saleQuantity, unitPrice, currency: pkg.currency, totalAmount, transactionId: transaction.id, notes: String(body.notes || '').trim() || undefined }, include: { package: true, sellerFirm: { select: { id: true, name: true } }, buyerFirm: { select: { id: true, name: true } }, transaction: true } });
+      const financials = calculateTourSaleFinancials({ quantity: saleQuantity, unitPrice, discountAmount: body.discountAmount ?? 0, exchangeRate, unitCost: pkg.unitPrice });
+      if (financials.fullDiscount && !canApproveFullTourDiscount(user)) fail('100% chegirma faqat firma admini yoki vakolatli manager tasdig‘i bilan mumkin.', 403);
+      if (financials.fullDiscount && body.confirmFullDiscount !== true) fail('100% chegirmali sotuv uchun qo‘shimcha tasdiq kerak.');
+      const transaction = await tx.transaction.create({ data: { firmId: pkg.ownerFirmId, flightId: pkg.flightId || undefined, payerFirmId: buyerFirmId, receiverFirmId: pkg.ownerFirmId, direction: 'FIRM_TO_FIRM', subjectType: 'TOUR_PACKAGE', subjectId: packageId, createdByUserId: user.userId, type: 'SALE', sourceMode: 'AUTO_TOUR_SALE', status: 'CONFIRMED', originalAmount: financials.netAmount, currency: pkg.currency, exchangeRate, baseAmount: financials.netAmountBaseCurrency, metadata: { packageId, packageName: pkg.name, quantity: saleQuantity, unitCost: pkg.unitPrice.toString(), grossAmount: financials.grossAmount.toString(), discountAmount: financials.discountAmount.toString(), netAmount: financials.netAmount.toString(), saleNote, ticketProductType: pkg.ticketProductType, ticketDirection: pkg.ticketDirection, ticketIds: Array.from(new Set(soldLegs.map((leg) => leg.ticketId))), ticketLegIds: soldLegs.map((leg) => leg.id) } } });
+      const sale = await tx.tourPackageSale.create({ data: { packageId, sellerFirmId: pkg.ownerFirmId, buyerFirmId, quantity: saleQuantity, unitPrice: financials.unitPrice, currency: pkg.currency, totalAmount: financials.netAmount, grossAmount: financials.grossAmount, discountAmount: financials.discountAmount, netAmount: financials.netAmount, discountPercent: financials.discountPercent, saleNote, exchangeRateSnapshot: financials.exchangeRate, grossAmountBaseCurrency: financials.grossAmountBaseCurrency, discountAmountBaseCurrency: financials.discountAmountBaseCurrency, netAmountBaseCurrency: financials.netAmountBaseCurrency, unitCostSnapshot: financials.unitCostSnapshot, costOfGoodsSold: financials.costOfGoodsSold, grossProfit: financials.grossProfit, transactionId: transaction.id, notes: saleNote }, include: { package: true, sellerFirm: { select: { id: true, name: true } }, buyerFirm: { select: { id: true, name: true } }, transaction: true } });
       await tx.tourPackage.update({ where: { id: packageId }, data: { availableQuantity: { decrement: saleQuantity }, soldQuantity: { increment: saleQuantity } } });
       await writeAuditLog(req, { action: 'TOUR_SOLD', entityType: 'tourPackageSale', entityId: sale.id, summary: `Tur paketi sotildi: ${pkg.name}`, after: sale, metadata: { ticketIds: Array.from(new Set(soldLegs.map((leg) => leg.ticketId))), ticketLegIds: soldLegs.map((leg) => leg.id), ticketProductType: pkg.ticketProductType, ticketDirection: pkg.ticketDirection, quantity: saleQuantity } }, tx);
+      await writeAuditLog(req, { action: 'TOUR_SALE_CREATED', entityType: 'tourPackageSale', entityId: sale.id, entityLabel: pkg.name, summary: `Tur sotuv yaratildi: ${financials.netAmount.toFixed(4)} ${pkg.currency}`, after: sale, metadata: { tourId: packageId, saleId: sale.id, amount: financials.netAmount.toString(), discountAmount: financials.discountAmount.toString(), currency: pkg.currency, note: saleNote } }, tx);
+      if (financials.discountAmount.gt(0)) await writeAuditLog(req, { action: 'TOUR_SALE_DISCOUNT_APPLIED', entityType: 'tourPackageSale', entityId: sale.id, entityLabel: pkg.name, summary: `Tur sotuviga ${financials.discountAmount.toFixed(4)} ${pkg.currency} chegirma qo‘llandi`, metadata: { tourId: packageId, saleId: sale.id, discountAmount: financials.discountAmount.toString(), discountPercent: financials.discountPercent.toString(), note: saleNote } }, tx);
+      if (financials.fullDiscount) await writeAuditLog(req, { action: 'TOUR_SALE_FULL_DISCOUNT', entityType: 'tourPackageSale', entityId: sale.id, entityLabel: pkg.name, summary: 'Tur 100% chegirma bilan sotildi', metadata: { tourId: packageId, saleId: sale.id, discountAmount: financials.discountAmount.toString(), note: saleNote } }, tx);
+      await writeAuditLog(req, { action: 'TOUR_SALE_NOTE_RECORDED', entityType: 'tourPackageSale', entityId: sale.id, entityLabel: pkg.name, summary: 'Tur sotuv izohi saqlandi', metadata: { tourId: packageId, saleId: sale.id, note: saleNote } }, tx);
       return sale;
     });
     return res.status(201).json(result);
@@ -495,6 +503,7 @@ export const updateTourPackageSale = async (req: Request, res: Response) => {
       const buyerFirmId = String(body.buyerFirmId || sale.buyerFirmId).trim();
       const saleQuantity = integer(body.quantity ?? sale.quantity);
       const unitPrice = new Prisma.Decimal(String(body.unitPrice ?? sale.unitPrice));
+      const saleNote = validateTourSaleNote(body.saleNote ?? body.notes ?? sale.saleNote ?? sale.notes);
       if (!buyerFirmId || buyerFirmId === sale.sellerFirmId) fail('Xaridor sotuvchidan boshqa firma bo‘lishi kerak.');
       if (saleQuantity <= 0 || !unitPrice.gt(0)) fail('Soni va bir dona narxi musbat bo‘lishi kerak.');
       const buyer = await tx.firm.findUnique({ where: { id: buyerFirmId }, select: { id: true, name: true } });
@@ -550,27 +559,32 @@ export const updateTourPackageSale = async (req: Request, res: Response) => {
         });
         await syncParentTickets(tx, [...currentLegs, ...nextLegs].map((leg) => leg.ticketId));
       }
-      const totalAmount = unitPrice.mul(saleQuantity).toDecimalPlaces(4);
       const exchangeRate = body.exchangeRate
         ? await resolveExchangeRateToUzs(auth(req), { currency: sale.currency, overrideRate: body.exchangeRate, rateFirmId: sale.sellerFirmId })
         : new Prisma.Decimal(sale.transaction.exchangeRate);
+      const financials = calculateTourSaleFinancials({ quantity: saleQuantity, unitPrice, discountAmount: body.discountAmount ?? sale.discountAmount, exchangeRate, unitCost: sale.unitCostSnapshot.gt(0) ? sale.unitCostSnapshot : sale.package.unitPrice });
+      if (financials.fullDiscount && !canApproveFullTourDiscount(auth(req))) fail('100% chegirma faqat firma admini yoki vakolatli manager tasdig‘i bilan mumkin.', 403);
+      if (financials.fullDiscount && body.confirmFullDiscount !== true) fail('100% chegirmali sotuv uchun qo‘shimcha tasdiq kerak.');
       const oldMetadata = sale.transaction.metadata && typeof sale.transaction.metadata === 'object' && !Array.isArray(sale.transaction.metadata)
         ? sale.transaction.metadata as Record<string, unknown>
         : {};
       const transaction = await tx.transaction.update({
         where: { id: sale.transactionId },
         data: {
-          payerFirmId: buyerFirmId, receiverFirmId: sale.sellerFirmId, originalAmount: totalAmount,
-          exchangeRate: exchangeRate.toDecimalPlaces(6), baseAmount: totalAmount.mul(exchangeRate).toDecimalPlaces(4),
-          metadata: { ...oldMetadata, quantity: saleQuantity, ticketIds: Array.from(new Set(nextLegs.map((leg) => leg.ticketId))), ticketLegIds: nextLegs.map((leg) => leg.id), correctionReason: reason } as Prisma.InputJsonValue,
+          payerFirmId: buyerFirmId, receiverFirmId: sale.sellerFirmId, originalAmount: financials.netAmount,
+          exchangeRate: exchangeRate.toDecimalPlaces(6), baseAmount: financials.netAmountBaseCurrency,
+          metadata: { ...oldMetadata, quantity: saleQuantity, grossAmount: financials.grossAmount.toString(), discountAmount: financials.discountAmount.toString(), netAmount: financials.netAmount.toString(), saleNote, ticketIds: Array.from(new Set(nextLegs.map((leg) => leg.ticketId))), ticketLegIds: nextLegs.map((leg) => leg.id), correctionReason: reason } as Prisma.InputJsonValue,
         },
       });
       const updated = await tx.tourPackageSale.update({
         where: { id: saleId },
-        data: { buyerFirmId, quantity: saleQuantity, unitPrice, totalAmount, notes: body.notes === undefined ? sale.notes : String(body.notes || '').trim() || null },
+        data: { buyerFirmId, quantity: saleQuantity, unitPrice: financials.unitPrice, totalAmount: financials.netAmount, grossAmount: financials.grossAmount, discountAmount: financials.discountAmount, netAmount: financials.netAmount, discountPercent: financials.discountPercent, saleNote, exchangeRateSnapshot: financials.exchangeRate, grossAmountBaseCurrency: financials.grossAmountBaseCurrency, discountAmountBaseCurrency: financials.discountAmountBaseCurrency, netAmountBaseCurrency: financials.netAmountBaseCurrency, unitCostSnapshot: financials.unitCostSnapshot, costOfGoodsSold: financials.costOfGoodsSold, grossProfit: financials.grossProfit, notes: saleNote },
         include: { package: { include: { flight: true } }, sellerFirm: { select: { id: true, name: true } }, buyerFirm: { select: { id: true, name: true } }, transaction: true },
       });
       await writeAuditLog(req, { action: 'TOUR_SALE_UPDATED', entityType: 'tourPackageSale', entityId: saleId, entityLabel: sale.package.name, summary: `Tur sotuv tahrirlandi: ${sale.package.name}`, before: sale, after: updated, metadata: { reason, previousTicketLegIds: currentLegIds, nextTicketLegIds: nextLegs.map((leg) => leg.id), transactionId: transaction.id } }, tx);
+      if (financials.discountAmount.gt(0)) await writeAuditLog(req, { action: 'TOUR_SALE_DISCOUNT_APPLIED', entityType: 'tourPackageSale', entityId: saleId, entityLabel: sale.package.name, summary: `Tur sotuviga ${financials.discountAmount.toFixed(4)} ${sale.currency} chegirma qo‘llandi`, before: { discountAmount: sale.discountAmount }, after: { discountAmount: financials.discountAmount }, metadata: { tourId: sale.packageId, saleId, discountAmount: financials.discountAmount.toString(), discountPercent: financials.discountPercent.toString(), note: saleNote, reason } }, tx);
+      if (financials.fullDiscount) await writeAuditLog(req, { action: 'TOUR_SALE_FULL_DISCOUNT', entityType: 'tourPackageSale', entityId: saleId, entityLabel: sale.package.name, summary: 'Tur sotuv 100% chegirmaga tahrirlandi', metadata: { tourId: sale.packageId, saleId, discountAmount: financials.discountAmount.toString(), note: saleNote, reason } }, tx);
+      await writeAuditLog(req, { action: 'TOUR_SALE_NOTE_RECORDED', entityType: 'tourPackageSale', entityId: saleId, entityLabel: sale.package.name, summary: 'Tur sotuv izohi yangilandi', metadata: { tourId: sale.packageId, saleId, note: saleNote, reason } }, tx);
       return updated;
     });
     return res.json(result);
@@ -619,11 +633,12 @@ export const listTourPackageSales = async (req: Request, res: Response) => {
   const user = auth(req); const where: Prisma.TourPackageSaleWhereInput = { status: 'CONFIRMED', deletedAt: null };
   if (role(req) === 'FIRM') where.OR = [{ sellerFirmId: user.firmId || '__missing__' }, { buyerFirmId: user.firmId || '__missing__' }];
   if (role(req) === 'ADMIN') { const ids = await getAccessibleFirmIds(user); where.OR = [{ sellerFirmId: { in: ids } }, { buyerFirmId: { in: ids } }]; }
-  return res.json(await prisma.tourPackageSale.findMany({ where, include: { package: { include: { flight: { select: { id: true, flightNumber: true, route: true, departure: true, arrival: true, currency: true } } } }, sellerFirm: { select: { id: true, name: true } }, buyerFirm: { select: { id: true, name: true } }, transaction: true }, orderBy: { createdAt: 'desc' } }));
+  return res.json(await prisma.tourPackageSale.findMany({ where, include: { package: { include: { flight: { select: { id: true, flightNumber: true, route: true, departure: true, arrival: true, currency: true } } } }, sellerFirm: { select: { id: true, name: true } }, buyerFirm: { select: { id: true, name: true } }, transaction: { include: { createdBy: { select: { id: true, fullName: true, email: true } }, kassaDesk: { select: { id: true, name: true, code: true } } } } }, orderBy: { createdAt: 'desc' } }));
 };
 
 export const listTourCounterpartyFirms = async (req: Request, res: Response) => {
   const user = auth(req); const where: Prisma.FirmWhereInput = { status: 'ACTIVE', deletedAt: null };
-  if (role(req) === 'ADMIN') where.id = { in: await getAccessibleFirmIds(user) };
+  const relatedFirmIds = await getRelatedFirmIds(user);
+  if (relatedFirmIds) where.id = { in: relatedFirmIds };
   return res.json(await prisma.firm.findMany({ where, select: { id: true, name: true, currency: true, kind: true }, orderBy: { name: 'asc' } }));
 };

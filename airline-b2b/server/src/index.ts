@@ -24,9 +24,13 @@ import serviceRoutes from './routes/services';
 import auditLogRoutes from './routes/audit-log';
 import airlineRoutes from './routes/airlines';
 import notificationRoutes from './routes/notifications';
+import inventoryRoutes from './routes/inventory';
 import accountRoutes from './routes/accounts';
+import expenseCategoryRoutes from './routes/expense-categories';
+import expenseBudgetRoutes from './routes/expense-budgets';
 import telegramRoutes from './routes/telegram';
 import { startTelegramBot } from './services/telegram.service';
+import { featureUsageMiddleware, flushFeatureUsage, startFeatureUsageFlush } from './services/feature-usage.service';
 
 const jwtSecret = process.env.JWT_SECRET;
 if (!jwtSecret || !jwtSecret.trim()) {
@@ -94,6 +98,7 @@ app.use(
 );
 
 app.use(express.json({ limit: '2mb' }));
+app.use(featureUsageMiddleware);
 
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -124,9 +129,12 @@ app.use('/site-content', siteContentRoutes);
 app.use('/chat', chatRoutes);
 app.use('/services', serviceRoutes);
 app.use('/accounts', accountRoutes);
+app.use('/expense-categories', expenseCategoryRoutes);
+app.use('/expense-budgets', expenseBudgetRoutes);
 app.use('/audit-log', auditLogRoutes);
 app.use('/airlines', airlineRoutes);
 app.use('/notifications', notificationRoutes);
+app.use('/inventory', inventoryRoutes);
 app.use('/telegram', telegramRoutes);
 
 app.use(errorHandler);
@@ -134,5 +142,10 @@ app.use(errorHandler);
 const PORT = parseInt(process.env.PORT || '5000', 10);
 app.listen(PORT, '0.0.0.0', () => {
   logger.info({ port: PORT }, 'Server running');
+  startFeatureUsageFlush();
   startTelegramBot();
+});
+
+process.on('SIGTERM', () => {
+  void flushFeatureUsage().finally(() => process.exit(0));
 });

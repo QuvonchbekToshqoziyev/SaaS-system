@@ -13,7 +13,7 @@ export interface User {
   phone?: string | null;
   role: NormalizedRole;
   readOnlyAccess: boolean;
-  firmRole: 'FIRM_ADMIN' | 'MANAGER' | 'KASSIR';
+  firmRole: 'FIRM_ADMIN' | 'MANAGER' | 'KASSIR' | 'OMBOR_MUDIRI';
   firmKind?: 'AGENCY' | 'AIRLINE' | 'CONTRACTOR' | null;
   firmId: string | null;
   subscriptionEndsAt?: string | null;
@@ -47,6 +47,7 @@ function normalizeRole(role: unknown): NormalizedRole {
 function normalizeFirmRole(role: unknown): User['firmRole'] {
   const r = String(role || '').toUpperCase();
   if (r === 'KASSIR' || r === 'KASSA' || r === 'KASSA_OPERATOR' || r === 'CASHIER') return 'KASSIR';
+  if (r === 'OMBOR_MUDIRI' || r === 'OMBORCHI') return 'OMBOR_MUDIRI';
   if (r === 'MANAGER') return 'MANAGER';
   if (r === 'FIRM_ADMIN') return 'FIRM_ADMIN';
   return 'MANAGER';
@@ -103,7 +104,10 @@ function clearActiveSession() {
 }
 
 function accountHome(user: User): string {
-  return user.role === 'firm' ? '/firm' : '/admin';
+  if (user.role !== 'firm') return '/admin';
+  if (user.firmRole === 'KASSIR') return '/kassa';
+  if (user.firmRole === 'OMBOR_MUDIRI') return '/inventory';
+  return '/firm';
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {

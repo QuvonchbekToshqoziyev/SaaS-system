@@ -68,6 +68,7 @@ export default function EmployeesPage() {
   const employeeRoleOptions = [
     { value: 'MANAGER', label: tr('Manager', 'Menejer') },
     { value: 'KASSIR', label: tr('Kassir', 'Kassir') },
+    { value: 'OMBOR_MUDIRI', label: tr('Warehouse manager', 'Ombor mudiri') },
     { value: 'MONITOR', label: tr('Monitor', 'Monitor') },
     { value: 'OTHER', label: tr('Other', 'Boshqa') },
   ];
@@ -80,6 +81,9 @@ export default function EmployeesPage() {
   const [resetDrafts, setResetDrafts] = useState<Record<string, string>>({});
   const [resettingUserId, setResettingUserId] = useState<string | null>(null);
   const [savingAccessId, setSavingAccessId] = useState<string | null>(null);
+  const [salaryHistory, setSalaryHistory] = useState<any | null>(null);
+  const [loadingSalaryEmployeeId, setLoadingSalaryEmployeeId] = useState<string | null>(null);
+  const [salaryFilters, setSalaryFilters] = useState({ from: '', to: '', month: '', year: '', method: '', account: '', currency: '', status: '' });
 
   const { data: firms = [] } = useQuery<FirmOption[]>({
     queryKey: ['firms', user?.id || user?.email || role],
@@ -100,6 +104,69 @@ export default function EmployeesPage() {
   });
 
   const admins = useMemo(() => users.filter((row) => String(row.role).toUpperCase() === 'ADMIN'), [users]);
+  const salaryRows = useMemo(() => {
+    const rows = Array.isArray(salaryHistory?.rows) ? salaryHistory.rows : [];
+    return rows.filter((row: any) => {
+      const date = String(row.date || '');
+      const month = String(row.salaryPeriod || date.slice(0, 7));
+      const account = String(row.kassaDesk?.id || row.paymentCard?.id || row.sourceAccount?.id || '');
+      return (!salaryFilters.from || date >= salaryFilters.from)
+        && (!salaryFilters.to || date <= salaryFilters.to)
+        && (!salaryFilters.month || month === salaryFilters.month)
+        && (!salaryFilters.year || date.startsWith(salaryFilters.year))
+        && (!salaryFilters.method || String(row.paymentMethod || '').toUpperCase() === salaryFilters.method)
+        && (!salaryFilters.account || account === salaryFilters.account)
+        && (!salaryFilters.currency || String(row.originalCurrency || '').toUpperCase() === salaryFilters.currency)
+        && (!salaryFilters.status || String(row.status || '').toUpperCase() === salaryFilters.status);
+    });
+  }, [salaryHistory, salaryFilters]);
+  const salaryAccountOptions = useMemo(() => {
+    const rows = Array.isArray(salaryHistory?.rows) ? salaryHistory.rows : [];
+    const map = new Map<string, string>();
+    for (const row of rows) {
+      const id = row.kassaDesk?.id || row.paymentCard?.id || row.sourceAccount?.id;
+      const label = row.kassaDesk?.name || row.paymentCard?.ownerName || row.sourceAccount?.name;
+      if (id && label) map.set(id, label);
+    }
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+  }, [salaryHistory]);
+  const salaryExportSheet = useMemo(() => ({
+    name: 'Ish haqi tarixi',
+    columns: [
+      { header: 'Sana', key: 'date', width: 14 },
+      { header: 'Vaqt', key: 'time', width: 20 },
+      { header: 'Ish haqi davri', key: 'salaryPeriod', width: 16 },
+      { header: 'Hisoblangan maosh', key: 'accruedSalary', width: 18 },
+      { header: 'To‘langan summa', key: 'paidAmount', width: 18 },
+      { header: 'Original valyuta', key: 'originalCurrency', width: 14 },
+      { header: 'UZS ekvivalenti', key: 'uzsEquivalent', width: 18 },
+      { header: 'Kurs', key: 'exchangeRate', width: 14 },
+      { header: 'To‘lov usuli', key: 'paymentMethod', width: 16 },
+      { header: 'Naqd / Karta / Bank', key: 'account', width: 24 },
+      { header: 'Kim to‘ladi', key: 'paidBy', width: 24 },
+      { header: 'Izoh', key: 'note', width: 28 },
+      { header: 'Hujjat', key: 'documentNumber', width: 18 },
+      { header: 'Status', key: 'status', width: 14 },
+      { header: 'Audit', key: 'audit', width: 18 },
+    ],
+    rows: salaryRows.map((row: any) => ({
+      date: row.date,
+      time: row.time ? new Date(row.time).toLocaleTimeString() : '',
+      salaryPeriod: row.salaryPeriod,
+      accruedSalary: Number(row.accruedSalary || 0),
+      paidAmount: Number(row.paidAmount || 0),
+      originalCurrency: row.originalCurrency,
+      uzsEquivalent: Number(row.uzsEquivalent || 0),
+      exchangeRate: Number(row.exchangeRate || 0),
+      paymentMethod: row.paymentMethod || '',
+      account: row.kassaDesk?.name || row.paymentCard?.ownerName || row.sourceAccount?.name || '',
+      paidBy: row.paidBy?.fullName || row.paidBy?.email || '',
+      note: row.note || '',
+      documentNumber: row.documentNumber || '',
+      status: row.status || '',
+      audit: row.audit?.operationType || row.audit?.sourceMode || '',
+    })),
+  }), [salaryRows]);
 
   if (!canAccess) {
     return (
@@ -127,7 +194,7 @@ export default function EmployeesPage() {
       toast.error(tr('Select a firm', 'Firmani tanlang'));
       return;
     }
-    const wantsLogin = canCreateEmployeeLogin && Boolean(draft.email.trim() || draft.password || draft.role === 'KASSIR');
+    const wantsLogin = canCreateEmployeeLogin && Boolean(draft.email.trim() || draft.password || ['KASSIR', 'OMBOR_MUDIRI'].includes(draft.role));
     if (wantsLogin && !draft.email.trim()) {
       toast.error(tr('Email is required for login access', 'Login uchun email kerak'));
       return;
@@ -269,10 +336,23 @@ export default function EmployeesPage() {
     }
   };
 
+  const loadSalaryHistory = async (employee: Employee) => {
+    try {
+      setLoadingSalaryEmployeeId(employee.id);
+      const response = await api.get(`/employees/${employee.id}/salary-history`);
+      setSalaryHistory(response.data);
+      setSalaryFilters({ from: '', to: '', month: '', year: '', method: '', account: '', currency: '', status: '' });
+    } catch (err: unknown) {
+      toast.error(apiErrorMessage(err) || tr('Failed to load salary history', 'Ish haqi tarixini yuklab bo‘lmadi'));
+    } finally {
+      setLoadingSalaryEmployeeId(null);
+    }
+  };
+
   const money = (value: unknown) => new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Number(value || 0));
   const roleLabel = (value: string) => employeeRoleOptions.find((option) => option.value === value)?.label || value;
   const newEmployeeRole = draft.role === 'OTHER' ? draft.customRole.trim() : draft.role.trim();
-  const newEmployeeWantsLogin = canCreateEmployeeLogin && Boolean(draft.email.trim() || draft.password || draft.role === 'KASSIR');
+  const newEmployeeWantsLogin = canCreateEmployeeLogin && Boolean(draft.email.trim() || draft.password || ['KASSIR', 'OMBOR_MUDIRI'].includes(draft.role));
   const newEmployeeDraftValid = Boolean(
     draft.name.trim()
     && newEmployeeRole
@@ -309,11 +389,11 @@ export default function EmployeesPage() {
           <>
             <div>
               <label className="compact-label">{tr('Login email', 'Login email')}</label>
-              <input type="email" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} className="compact-control" required={draft.role === 'KASSIR'} />
+              <input type="email" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} className="compact-control" required={['KASSIR', 'OMBOR_MUDIRI'].includes(draft.role)} />
             </div>
             <div>
               <label className="compact-label">{tr('Initial password', 'Boshlang\'ich parol')}</label>
-              <input type="password" minLength={6} value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} className="compact-control" required={draft.role === 'KASSIR'} />
+              <input type="password" minLength={6} value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} className="compact-control" required={['KASSIR', 'OMBOR_MUDIRI'].includes(draft.role)} />
             </div>
           </>
         )}
@@ -439,6 +519,9 @@ export default function EmployeesPage() {
                   <td>
                     {canManageEmployees ? (
                       <div className="flex gap-2">
+                        <button type="button" onClick={() => loadSalaryHistory(employee)} disabled={loadingSalaryEmployeeId === employee.id} className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50">
+                          {loadingSalaryEmployeeId === employee.id ? tr('Loading', 'Yuklanmoqda') : tr('Salary history', 'Ish haqi tarixi')}
+                        </button>
                         <button type="button" onClick={() => updateEmployee(employee)} disabled={savingEmployeeId === employee.id || !row.name.trim() || !row.role.trim() || !Number.isFinite(Number(row.salary)) || Number(row.salary) < 0 || !/^[A-Z]{3}$/.test(row.currency.trim().toUpperCase())} className="inline-flex items-center gap-1 border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50">
                           <Save size={14} />
                           {savingEmployeeId === employee.id ? tr('Saving', 'Saqlanmoqda') : tr('Confirm', 'Tasdiqlash')}
@@ -452,7 +535,9 @@ export default function EmployeesPage() {
                         </button>
                       </div>
                     ) : (
-                      <span className="text-xs text-muted">{tr('View only', 'Faqat ko\'rish')}</span>
+                      <button type="button" onClick={() => loadSalaryHistory(employee)} disabled={loadingSalaryEmployeeId === employee.id} className="border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50">
+                        {loadingSalaryEmployeeId === employee.id ? tr('Loading', 'Yuklanmoqda') : tr('Salary history', 'Ish haqi tarixi')}
+                      </button>
                     )}
                   </td>
                 </tr>
@@ -461,6 +546,50 @@ export default function EmployeesPage() {
           </tbody>
         </table>
       </div>
+
+      {salaryHistory && (
+        <div className="glass-panel p-4">
+          <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h3 className="text-lg font-semibold text-foreground">{salaryHistory.employee?.name} · {tr('Salary history', 'Ish haqi tarixi')}</h3>
+              <p className="text-sm text-muted">{salaryHistory.employee?.firm?.name || ''}</p>
+            </div>
+            <button type="button" onClick={() => setSalaryHistory(null)} className="border border-border bg-surface-2 px-3 py-2 text-xs font-semibold text-foreground hover:bg-surface">{tr('Close', 'Yopish')}</button>
+          </div>
+          <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {[
+              [tr('Current salary', 'Joriy maosh'), salaryHistory.summary?.currentSalary],
+              [tr('Current month accrued', 'Joriy oy hisoblandi'), salaryHistory.summary?.currentMonthAccrued],
+              [tr('Current month paid', 'Joriy oy to‘landi'), salaryHistory.summary?.currentMonthPaid],
+              [tr('Remaining', 'Qolgan'), salaryHistory.summary?.currentMonthRemaining],
+              [tr('YTD accrued', 'Yil boshidan hisoblandi'), salaryHistory.summary?.yearToDateAccrued],
+              [tr('YTD paid', 'Yil boshidan to‘landi'), salaryHistory.summary?.yearToDatePaid],
+              [tr('Advance', 'Avans'), salaryHistory.summary?.advance],
+              [tr('Debt', 'Qarzdorlik'), salaryHistory.summary?.debt],
+            ].map(([label, value]) => <div key={label} className="rounded-lg border border-border bg-surface p-3"><div className="text-xs font-bold uppercase text-muted">{label}</div><div className="mt-1 font-mono text-lg font-black">{money(value)} {salaryHistory.employee?.currency || 'UZS'}</div></div>)}
+          </div>
+          <div className="mb-4 grid gap-2 rounded-lg border border-border bg-surface p-3 md:grid-cols-4 xl:grid-cols-8">
+            <input type="date" value={salaryFilters.from} onChange={(event) => setSalaryFilters((current) => ({ ...current, from: event.target.value }))} className="compact-control" />
+            <input type="date" value={salaryFilters.to} onChange={(event) => setSalaryFilters((current) => ({ ...current, to: event.target.value }))} className="compact-control" />
+            <input type="month" value={salaryFilters.month} onChange={(event) => setSalaryFilters((current) => ({ ...current, month: event.target.value }))} className="compact-control" />
+            <input inputMode="numeric" maxLength={4} value={salaryFilters.year} onChange={(event) => setSalaryFilters((current) => ({ ...current, year: event.target.value.replace(/\D/g, '').slice(0, 4) }))} placeholder="Yil" className="compact-control" />
+            <select value={salaryFilters.method} onChange={(event) => setSalaryFilters((current) => ({ ...current, method: event.target.value }))} className="compact-control"><option value="">CASH / CARD / BANK</option><option value="CASH">CASH</option><option value="CARD">CARD</option><option value="BANK">BANK</option></select>
+            <select value={salaryFilters.account} onChange={(event) => setSalaryFilters((current) => ({ ...current, account: event.target.value }))} className="compact-control"><option value="">Kassa / karta / bank</option>{salaryAccountOptions.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select>
+            <select value={salaryFilters.currency} onChange={(event) => setSalaryFilters((current) => ({ ...current, currency: event.target.value }))} className="compact-control"><option value="">Valyuta</option><option value="UZS">UZS</option><option value="USD">USD</option><option value="EUR">EUR</option></select>
+            <select value={salaryFilters.status} onChange={(event) => setSalaryFilters((current) => ({ ...current, status: event.target.value }))} className="compact-control"><option value="">Status</option><option value="CONFIRMED">CONFIRMED</option><option value="APPLIED">APPLIED</option><option value="POSTED">POSTED</option><option value="CANCELLED">CANCELLED</option><option value="REVERSED">REVERSED</option></select>
+          </div>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-sm font-semibold text-muted">{salaryRows.length} ta yozuv</div>
+            <ExportActions filename={`ish-haqi-${salaryHistory.employee?.name || 'xodim'}`} sheet={salaryExportSheet} />
+          </div>
+          <div className="overflow-x-auto scroller-minimal">
+            <table className="excel-table">
+              <thead><tr><th>{tr('Date', 'Sana')}</th><th>{tr('Time', 'Vaqt')}</th><th>{tr('Period', 'Davr')}</th><th>{tr('Accrued', 'Hisoblangan')}</th><th>{tr('Paid amount', 'To‘langan summa')}</th><th>{tr('Original currency', 'Original valyuta')}</th><th>{tr('UZS equivalent', 'UZS ekvivalenti')}</th><th>{tr('Rate', 'Kurs')}</th><th>{tr('Method', 'Usul')}</th><th>{tr('Cash/Card/Bank', 'Naqd / Karta / Bank')}</th><th>{tr('Paid by', 'Kim to‘ladi')}</th><th>{tr('Note', 'Izoh')}</th><th>{tr('Document', 'Hujjat')}</th><th>{tr('Status', 'Status')}</th><th>{tr('Audit', 'Audit')}</th></tr></thead>
+              <tbody>{salaryRows.length ? salaryRows.map((row: any) => <tr key={row.id}><td>{row.date}</td><td>{row.time ? new Date(row.time).toLocaleTimeString() : '-'}</td><td>{row.salaryPeriod}</td><td className="font-mono">{money(row.accruedSalary)} {salaryHistory.employee?.currency}</td><td className="font-mono">{money(row.paidAmount)} {row.originalCurrency}</td><td>{row.originalCurrency}</td><td className="font-mono">{money(row.uzsEquivalent)}</td><td className="font-mono">{money(row.exchangeRate)}</td><td>{row.paymentMethod || '-'}</td><td>{row.kassaDesk?.name || row.paymentCard?.ownerName || row.sourceAccount?.name || '-'}</td><td>{row.paidBy?.fullName || row.paidBy?.email || '-'}</td><td>{row.note || '-'}</td><td>{row.documentNumber || '-'}</td><td>{row.status}</td><td>{row.audit?.operationType || row.audit?.sourceMode || '-'}</td></tr>) : <tr><td colSpan={15} className="text-center text-muted">{tr('No salary payments found.', 'Ish haqi to‘lovlari topilmadi.')}</td></tr>}</tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {isSuperAdmin && (
         <div className="glass-panel p-4">

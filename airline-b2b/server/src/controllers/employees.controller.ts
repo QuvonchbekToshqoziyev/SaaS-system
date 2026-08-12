@@ -4,6 +4,7 @@ import {
   AuthUser,
   ServiceError,
   createEmployeeService,
+  getEmployeeSalaryHistoryService,
   listEmployeesService,
   softDeleteEmployeeService,
   updateEmployeeService,
@@ -29,6 +30,15 @@ export const listEmployees = async (req: Request, res: Response) => {
   }
 };
 
+export const getEmployeeSalaryHistory = async (req: Request, res: Response) => {
+  try {
+    const result = await getEmployeeSalaryHistoryService(getAuthUser(req), String(req.params.id || ''));
+    return res.json(result);
+  } catch (err) {
+    return sendError(res, err, 'Failed to load salary history');
+  }
+};
+
 export const createEmployee = async (req: Request, res: Response) => {
   try {
     const employee = await createEmployeeService(getAuthUser(req), req.body || {});
@@ -40,6 +50,16 @@ export const createEmployee = async (req: Request, res: Response) => {
       summary: `Created employee ${employee.name}`,
       after: employee,
     });
+    if (employee.kassaDesk) {
+      await writeAuditLog(req, {
+        action: 'CREATE',
+        entityType: 'kassaDesk',
+        entityId: employee.kassaDesk.id,
+        entityLabel: employee.kassaDesk.name,
+        summary: `Created kassa desk ${employee.kassaDesk.name} for kassir ${employee.name}`,
+        after: employee.kassaDesk,
+      });
+    }
     return res.status(201).json(employee);
   } catch (err) {
     return sendError(res, err, 'Failed to create employee');

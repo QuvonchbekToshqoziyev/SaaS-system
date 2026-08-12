@@ -177,6 +177,45 @@ function confirmedPayments(transactions: InventoryTransaction[]) {
   );
 }
 
+export function buildAllocationFinancialDetails(
+  allocations: InventoryAllocation[],
+  transactions: InventoryTransaction[],
+) {
+  const payments = confirmedPayments(transactions);
+  const details = allocations.map((allocation) => {
+    const allocationPayments = payments.filter((row) => transactionAllocationId(row) === allocation.id);
+    const paidAmounts = amountRows(allocationPayments.map((row) => ({ currency: row.currency, total: number(row.originalAmount) })));
+    const charged = upper(allocation.status) === 'ACCEPTED' ? number(allocation.totalAmount) : 0;
+    const balance = debtAmounts(amountRows([{ currency: allocation.currency, total: charged }]), paidAmounts);
+    return {
+      id: allocation.id,
+      fromFirm: allocation.fromFirm,
+      toFirm: allocation.toFirm,
+      status: allocation.status,
+      productType: upper(allocation.productType) || 'ROUND_TRIP',
+      direction: allocation.direction || null,
+      quantity: allocationQuantity(allocation),
+      segmentCount: Number(allocation.segmentCount || allocation.legItems?.length || 0),
+      totalAmount: number(allocation.totalAmount),
+      currency: upper(allocation.currency) || 'UZS',
+      priceRows: (allocation.priceRows || []).map((row) => ({
+        quantity: row.quantity,
+        unitPrice: number(row.unitPrice),
+        totalAmount: number(row.totalAmount) || row.quantity * number(row.unitPrice),
+      })),
+      paidAmounts,
+      outstandingDebt: balance.debt,
+      overpayment: balance.overpayment,
+      createdAt: allocation.createdAt,
+      acceptedAt: allocation.acceptedAt,
+    };
+  });
+  const unallocatedPayments = amountRows(payments
+    .filter((row) => !transactionAllocationId(row))
+    .map((row) => ({ currency: row.currency, total: number(row.originalAmount) })));
+  return { details, unallocatedPayments };
+}
+
 function legacySummary(input: {
   tickets: InventoryTicket[];
   allocations: InventoryAllocation[];
@@ -286,8 +325,11 @@ export function buildTicketInventorySummary(input: {
   const remainingCost = amountRows(remainingCostRows);
   const soldOrAllocatedRows = [...acceptedRevenueRows, ...directSalesRows];
 
-  const receivedPayments = payments.filter((row) => row.receiverFirmId === sourceFirmId || (!row.receiverFirmId && row.firmId === sourceFirmId));
-  const madePayments = payments.filter((row) => row.payerFirmId === sourceFirmId);
+  const outgoingAllocationIds = new Set(outgoingAccepted.map((row) => row.id));
+  const incomingAllocationIds = new Set(incomingAccepted.map((row) => row.id));
+  const receivedPayments = payments.filter((row) => outgoingAllocationIds.has(transactionAllocationId(row))
+    && (row.receiverFirmId === sourceFirmId || (!row.receiverFirmId && row.firmId === sourceFirmId)));
+  const madePayments = payments.filter((row) => incomingAllocationIds.has(transactionAllocationId(row)) && row.payerFirmId === sourceFirmId);
   const receivedPaymentAmounts = amountRows(receivedPayments.map((row) => ({ currency: row.currency, total: number(row.originalAmount) })));
   const madePaymentAmounts = amountRows(madePayments.map((row) => ({ currency: row.currency, total: number(row.originalAmount) })));
   const receivable = debtAmounts(acceptedRevenue, receivedPaymentAmounts);
@@ -346,31 +388,13 @@ export function buildTicketInventorySummary(input: {
     grossProfit: subtractAmounts(directRevenue, directCost),
   };
 
-  const allocationDetails = allocations
-    .filter((row) => row.fromFirmId === sourceFirmId || row.toFirmId === sourceFirmId)
-    .map((allocation) => {
-      const allocationPayments = payments.filter((row) => transactionAllocationId(row) === allocation.id);
-      const paymentAmounts = amountRows(allocationPayments.map((row) => ({ currency: row.currency, total: number(row.originalAmount) })));
-      const allocationDebt = debtAmounts(amountRows([{ currency: allocation.currency, total: upper(allocation.status) === 'ACCEPTED' ? number(allocation.totalAmount) : 0 }]), paymentAmounts);
-      return {
-        id: allocation.id,
-        fromFirm: allocation.fromFirm,
-        toFirm: allocation.toFirm,
-        status: allocation.status,
-        productType: upper(allocation.productType) || 'ROUND_TRIP',
-        direction: allocation.direction || null,
-        quantity: allocationQuantity(allocation),
-        segmentCount: Number(allocation.segmentCount || allocation.legItems?.length || 0),
-        totalAmount: number(allocation.totalAmount),
-        currency: upper(allocation.currency) || 'UZS',
-        priceRows: (allocation.priceRows || []).map((row) => ({ quantity: row.quantity, unitPrice: number(row.unitPrice), totalAmount: number(row.totalAmount) || row.quantity * number(row.unitPrice) })),
-        paidAmounts: paymentAmounts,
-        outstandingDebt: allocationDebt.debt,
-        overpayment: allocationDebt.overpayment,
-        createdAt: allocation.createdAt,
-        acceptedAt: allocation.acceptedAt,
-      };
-    });
+  const visibleAllocations = allocations.filter((row) => row.fromFirmId === sourceFirmId || row.toFirmId === sourceFirmId);
+  const allocationFinance = buildAllocationFinancialDetails(visibleAllocations, input.transactions || []);
+  const allocationDetails = allocationFinance.details;
+  const unallocatedPaymentsByCurrency = amountRows(payments
+    .filter((row) => !transactionAllocationId(row)
+      && (row.payerFirmId === sourceFirmId || row.receiverFirmId === sourceFirmId || row.firmId === sourceFirmId))
+    .map((row) => ({ currency: row.currency, total: number(row.originalAmount) })));
 
   return {
     reportType: sourceOwnsOrigin ? 'OWNER' : 'AGENT',
@@ -396,6 +420,7 @@ export function buildTicketInventorySummary(input: {
     remainingAvailableTicketCount: parentWithAvailable,
     remainingInventoryCostByCurrency: remainingCost,
     paymentsByCurrency: sourceOwnsOrigin ? receivedPaymentAmounts : madePaymentAmounts,
+    unallocatedPaymentsByCurrency,
     outstandingDebtByCurrency: sourceOwnsOrigin ? receivable.debt : payable.debt,
     overpaymentByCurrency: sourceOwnsOrigin ? receivable.overpayment : payable.overpayment,
     receivableDebtByCurrency: receivable.debt,

@@ -5,10 +5,11 @@
 # Server : 206.189.130.168  (root)
 #
 # Usage:
-#   ./deploy.sh                      # full deploy (backend + frontend)
+#   ./deploy.sh --dev-verified      # full deploy (backend + frontend) from exact audited dev source
 #   ./deploy.sh --backend-only       # only backend (PM2)
 #   ./deploy.sh --frontend-only      # only frontend (Nginx static)
 #   ./deploy.sh --schema             # also run prisma db push
+#   ./deploy.sh --dev-verified       # require and reuse the exact audited dev source
 #   ./deploy.sh --skip-dev-sync      # emergency only: do not sync dev first
 #
 # Auth (pick one):
@@ -29,19 +30,22 @@ REMOTE_BACKEND_DIR="/root/apps/ado-b2b/airline-b2b/server"
 REMOTE_WEBROOT="/var/www/${DOMAIN}/html"
 PM2_APP_NAME="airline-b2b-server"
 NGINX_CONF_NAME="${DOMAIN}"
+DEV_RELEASE_STATE_DIR="/root/apps/ado-b2b-dev/.release-state"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_DIR="$REPO_ROOT/airline-b2b/server"
 CLIENT_DIR="$REPO_ROOT/airline-b2b/client"
 NGINX_CONF_SRC="$REPO_ROOT/nginx.conf.b2b.ado-finance.com"
+SOURCE_FINGERPRINT_SCRIPT="$REPO_ROOT/scripts/source-fingerprint.mjs"
 
 # ── Flags ────────────────────────────────────────────────────────────────────
-BACKEND_ONLY=0; FRONTEND_ONLY=0; RUN_SCHEMA=0; SKIP_DEV_SYNC="${SKIP_DEV_SYNC:-0}"; USE_SSH_KEY="${USE_SSH_KEY:-0}"
+BACKEND_ONLY=0; FRONTEND_ONLY=0; RUN_SCHEMA=0; DEV_VERIFIED=0; SKIP_DEV_SYNC="${SKIP_DEV_SYNC:-0}"; USE_SSH_KEY="${USE_SSH_KEY:-0}"
 for arg in "$@"; do
   case $arg in
     --backend-only)  BACKEND_ONLY=1 ;;
     --frontend-only) FRONTEND_ONLY=1 ;;
     --schema)        RUN_SCHEMA=1 ;;
+    --dev-verified)  DEV_VERIFIED=1 ;;
     --skip-dev-sync) SKIP_DEV_SYNC=1 ;;
     *)
       echo "Unknown argument: $arg" >&2
@@ -98,9 +102,49 @@ fi
 header "Pre-flight checks"
 command -v rsync &>/dev/null || { error "rsync not found"; exit 1; }
 command -v npm   &>/dev/null || { error "npm not found";   exit 1; }
+[[ -f "$SOURCE_FINGERPRINT_SCRIPT" ]] || { error "Missing source fingerprint script: $SOURCE_FINGERPRINT_SCRIPT"; exit 1; }
 
 info "Target: ${REMOTE_HOST}  domain: ${DOMAIN}"
 remote "echo 'SSH OK'" && success "SSH connection OK"
+
+install_remote_dependencies() {
+  local package_dir="$1" fingerprint
+  fingerprint=$(node "$SOURCE_FINGERPRINT_SCRIPT" dependencies "$package_dir/package-lock.json")
+  remote "cd '$REMOTE_BACKEND_DIR' && expected='$fingerprint'; current=\$(cat node_modules/.ado-dependencies.sha256 2>/dev/null || true); if [ -d node_modules ] && [ \"\$current\" = \"\$expected\" ]; then echo 'Dependencies unchanged - npm ci skipped'; else timeout 180s npm ci --prefer-offline --no-audit --no-fund; printf '%s\n' \"\$expected\" > node_modules/.ado-dependencies.sha256; fi"
+}
+
+install_local_dependencies() {
+  local package_dir="$1" fingerprint stamp current
+  fingerprint=$(node "$SOURCE_FINGERPRINT_SCRIPT" dependencies "$package_dir/package-lock.json")
+  stamp="$package_dir/node_modules/.ado-dependencies.sha256"
+  current=$(cat "$stamp" 2>/dev/null || true)
+  if [[ -d "$package_dir/node_modules" && "$current" == "$fingerprint" ]]; then
+    info "Client dependencies unchanged - npm ci skipped"
+    return
+  fi
+  timeout 180s npm --prefix "$package_dir" ci --prefer-offline --no-audit --no-fund
+  printf '%s\n' "$fingerprint" > "$stamp"
+}
+
+verified_dev_matches_source() {
+  node "$SOURCE_FINGERPRINT_SCRIPT" verify-dev >/dev/null 2>&1 || return 1
+
+  local expected actual
+  if [[ "$FRONTEND_ONLY" == "0" ]]; then
+    expected=$(node "$SOURCE_FINGERPRINT_SCRIPT" backend)
+    actual=$(remote "cat '$DEV_RELEASE_STATE_DIR/backend.sha256' 2>/dev/null || true")
+    [[ "$actual" == "$expected" ]] || return 1
+    if [[ "$RUN_SCHEMA" == "1" ]]; then
+      actual=$(remote "cat '$DEV_RELEASE_STATE_DIR/schema.sha256' 2>/dev/null || true")
+      [[ "$actual" == "$expected" ]] || return 1
+    fi
+  fi
+  if [[ "$BACKEND_ONLY" == "0" ]]; then
+    expected=$(node "$SOURCE_FINGERPRINT_SCRIPT" frontend)
+    actual=$(remote "cat '$DEV_RELEASE_STATE_DIR/frontend.sha256' 2>/dev/null || true")
+    [[ "$actual" == "$expected" ]] || return 1
+  fi
+}
 
 sync_dev_before_prod() {
   if [[ "$SKIP_DEV_SYNC" == "1" ]]; then
@@ -108,17 +152,12 @@ sync_dev_before_prod() {
     return 0
   fi
 
-  [[ -x "$REPO_ROOT/deploy-dev.sh" ]] || { error "Missing executable dev deploy script: $REPO_ROOT/deploy-dev.sh"; exit 1; }
-
-  local dev_args=()
-  if [[ "$BACKEND_ONLY" == "1" ]]; then dev_args+=(--backend-only); fi
-  if [[ "$FRONTEND_ONLY" == "1" ]]; then dev_args+=(--frontend-only); fi
-  if [[ "$RUN_SCHEMA" == "1" ]]; then dev_args+=(--schema); fi
-
-  header "Dev sync before production"
-  info "Production deploy policy: dev may be ahead of prod, but prod must not move ahead of dev."
-  "$REPO_ROOT/deploy-dev.sh" "${dev_args[@]}"
-  success "Dev is updated from this source tree; continuing production deploy"
+  if verified_dev_matches_source; then
+    success "Exact source already deployed and audited on dev - duplicate dev deploy skipped"
+    return 0
+  fi
+  error "Production promotion requires an exact audited dev source. Run ./deploy-dev.sh, node scripts/release-audit.mjs --live-only, then ./deploy.sh --dev-verified."
+  exit 1
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -181,7 +220,7 @@ REMOTE_ENV
   success "Remote .env updated"
 
   header "Backend — install deps & build"
-  remote "cd '$REMOTE_BACKEND_DIR' && npm ci"
+  install_remote_dependencies "$SERVER_DIR"
   remote "cd '$REMOTE_BACKEND_DIR' && npx prisma generate"
 
   if [[ "$RUN_SCHEMA" == "1" ]]; then
@@ -196,10 +235,13 @@ REMOTE_ENV
     remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260715_rt_ow_ticket_legs/migration.sql --schema prisma/schema.prisma"
     remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260715_unique_allocation_payable/migration.sql --schema prisma/schema.prisma"
     remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260717_remove_inventory_transactions/migration.sql --schema prisma/schema.prisma"
+    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260721_tour_sale_discount/migration.sql --schema prisma/schema.prisma"
+    remote "cd '$REMOTE_BACKEND_DIR' && npx prisma db execute --file prisma/migrations/20260721_transaction_history_fields/migration.sql --schema prisma/schema.prisma"
     success "Schema pushed without accepting destructive changes"
   fi
 
   remote "cd '$REMOTE_BACKEND_DIR' && npm run build"
+  remote "cd '$REMOTE_BACKEND_DIR' && npm run backfill:expense-categories"
   remote "cd '$REMOTE_BACKEND_DIR' && npm run audit:business-invariants"
   success "Build complete"
 
@@ -238,7 +280,7 @@ NEXT_PUBLIC_API_URL=/api
 CLIENTENV
 
   info "Building Next.js static export..."
-  npm --prefix "$CLIENT_DIR" install --silent
+  install_local_dependencies "$CLIENT_DIR"
   NEXT_PUBLIC_API_URL=/api npm --prefix "$CLIENT_DIR" run build
   success "Static export complete → airline-b2b/client/out/"
 

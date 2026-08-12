@@ -5,6 +5,7 @@ import { api } from '@/lib/api';
 import toast from 'react-hot-toast';
 import Link from 'next/link';
 import { useLanguage } from '@/contexts/LanguageContext';
+import { formatNumber } from '@/lib/format';
 import {
   addDays,
   addMonths,
@@ -320,8 +321,8 @@ export default function DashboardCalendar({
                           {t.type}
                         </Link>
                         <div className="text-xs text-muted">
-                          {format(new Date(t.createdAt), 'PPP p')} · {Number(t.originalAmount).toFixed(2)} {t.currency}
-                          {' '}({Number(t.baseAmount).toFixed(2)} UZS)
+                          {format(new Date(t.createdAt), 'PPP p')} · {formatNumber(t.originalAmount, 2)} {t.currency}
+                          {' '}({formatNumber(t.baseAmount, 2)} UZS)
                           {t.type === 'PAYMENT' && t.paymentMethod ? ` · ${t.paymentMethod}` : ''}
                         </div>
                       </div>
@@ -343,7 +344,7 @@ export default function DashboardCalendar({
                             : String(r.targetCurrency || '').toUpperCase() === 'UZS' && r.baseCurrency
                               ? `${r.baseCurrency}→${r.targetCurrency}`
                               : `${r.baseCurrency}→${r.targetCurrency}`
-                          )}: {Number(r.rate).toFixed(6)}
+                          )}: {formatNumber(r.rate, 6)}
                         </div>
                         <div className="text-xs text-muted">
                           {format(new Date(r.recordedAt), 'PPP')} · {r.source}

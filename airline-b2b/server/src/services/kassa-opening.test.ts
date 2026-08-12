@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { describe, expect, it } from 'vitest';
-import { calculateExpectedCashByCurrency, previousKassaRemainderQuery, resolveCarryForwardBalance, resolveKassaTransactionFlow, resolveOpeningBalance } from './kassa.service';
+import { assertTransferCurrencyPair, calculateExpectedCashByCurrency, calculateTransferBalance, previousKassaRemainderQuery, resolveCarryForwardBalance, resolveKassaTransactionFlow, resolveOpeningBalance } from './kassa.service';
 import { kassaSessionWhere } from '../utils/kassa';
 
 describe('kassa opening balance carry-forward', () => {
@@ -14,6 +14,19 @@ describe('kassa opening balance carry-forward', () => {
       { openingBalance: new Prisma.Decimal(100_000), openingBalanceUsd: new Prisma.Decimal(50) },
       { UZS: { cashTotal: 25_000 }, USD: { cashTotal: -10 } },
     )).toEqual({ UZS: 125_000, USD: 40 });
+  });
+
+  it('calculates transfer balances with source and destination currencies', () => {
+    const exchange = [{ sourceAccountId: 'cash-usd', destinationAccountId: 'cash-uzs', originalAmount: 1000, currency: 'USD', destinationAmount: 12_600_000, destinationCurrency: 'UZS' }];
+    expect(calculateTransferBalance({ id: 'cash-usd', currency: 'USD', openingBalance: 1500 }, exchange).toNumber()).toBe(500);
+    expect(calculateTransferBalance({ id: 'cash-uzs', currency: 'UZS', openingBalance: 0 }, exchange).toNumber()).toBe(12_600_000);
+  });
+
+  it('keeps VASH limited to USD and UZS exchange pairs', () => {
+    expect(() => assertTransferCurrencyPair('CURRENCY_EXCHANGE', 'USD', 'UZS')).not.toThrow();
+    expect(() => assertTransferCurrencyPair('CURRENCY_EXCHANGE', 'UZS', 'USD')).not.toThrow();
+    expect(() => assertTransferCurrencyPair('CURRENCY_EXCHANGE', 'USD', 'USD')).toThrow('USD');
+    expect(() => assertTransferCurrencyPair('CASH_TO_CARD', 'USD', 'UZS')).toThrow('VASH');
   });
 
   it('treats a payment from the kassa firm to an airline as cash out', () => {

@@ -4,21 +4,23 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import toast from 'react-hot-toast';
-import { Activity, ArrowRightLeft, BarChart3, Building2, PlaneTakeoff, RefreshCw, Wallet } from 'lucide-react';
+import { Activity, ArrowRightLeft, BarChart3, Building2, PlaneTakeoff, ReceiptText, RefreshCw, Wallet } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
+import { formatNumber } from '@/lib/format';
 
 type FlightOption = { id: string; flightNumber: string };
 type FirmOption = { id: string; name: string };
 type BranchOption = { id: string; name: string; code?: string | null; firmId?: string | null; firm?: { name?: string | null } | null };
 
-type TabKey = 'health' | 'profitability' | 'cash-flow' | 'debt' | 'agents' | 'flight-profitability';
+type TabKey = 'health' | 'profitability' | 'cash-flow' | 'expense-estimate' | 'debt' | 'agents' | 'flight-profitability';
 
 const tabs: Array<{ key: TabKey; icon: any; labelEn: string; labelUz: string }> = [
   { key: 'health', icon: Activity, labelEn: 'Financial health', labelUz: 'Moliyaviy holat' },
   { key: 'profitability', icon: BarChart3, labelEn: 'Profitability', labelUz: 'Foyda va rentabellik' },
   { key: 'cash-flow', icon: Wallet, labelEn: 'Cash flow', labelUz: 'Pul oqimi' },
+  { key: 'expense-estimate', icon: ReceiptText, labelEn: 'Expense estimate', labelUz: 'Xarajatlar smetasi' },
   { key: 'debt', icon: ArrowRightLeft, labelEn: 'Receivables / Payables', labelUz: 'Debitor / Kreditor' },
   { key: 'agents', icon: Building2, labelEn: 'Agent ledger', labelUz: 'Agentlar hisoboti' },
   { key: 'flight-profitability', icon: PlaneTakeoff, labelEn: 'Flight profitability', labelUz: 'Reys rentabelligi' },
@@ -32,13 +34,40 @@ function normalizeDateParam(value: string): string {
 }
 
 function fmt(value: unknown, suffix = ' UZS') {
-  const num = Number(value || 0);
-  return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Number.isFinite(num) ? num : 0)}${suffix}`;
+  return `${formatNumber(value as number)}${suffix}`;
 }
 
 function fmtAmounts(values: any[] | undefined) {
   if (!Array.isArray(values) || values.length === 0) return '0';
-  return values.map((row) => `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(Number(row.total || 0))} ${row.currency || 'UZS'}`).join(' · ');
+  return values.map((row) => `${formatNumber(row.total || 0, 2)} ${row.currency || 'UZS'}`).join(' · ');
+}
+
+function amountText(amount: unknown, currency = 'UZS') {
+  return `${formatNumber(amount as number, 2)} ${currency || 'UZS'}`;
+}
+
+function buildAgentTimeline(agent: any) {
+  if (!agent) return [];
+  const rows: Array<{ id: string; date: string; operation: string; debit: string; credit: string; settlement: string; balance: string }> = [];
+  const push = (row: any) => rows.push(row);
+  for (const row of [...(agent.flightPurchases || []), ...(agent.ticketPurchases || []), ...(agent.tourPurchases || []), ...(agent.servicePurchases || [])]) {
+    const amount = row.totalAmount ?? row.total ?? Number(row.quantity || 0) * Number(row.unitPrice || 0);
+    push({ id: `purchase-${row.id}`, date: row.createdAt, operation: row.flightNumber ? `Biz undan oldik: ${row.flightNumber}` : `Biz undan oldik: ${row.packageName || row.name || 'xizmat'}`, debit: 'Xarid / Inventory', credit: 'Kreditorlik', settlement: '—', balance: amountText(amount, row.currency) });
+  }
+  for (const row of [...(agent.serviceSales || [])]) {
+    const amount = row.totalAmount ?? Number(row.quantity || 0) * Number(row.unitPrice || 0);
+    push({ id: `sale-${row.id}`, date: row.createdAt, operation: `Biz unga sotdik: ${row.name || row.serviceType || 'xizmat'}`, debit: 'Debitorlik', credit: 'Revenue', settlement: '—', balance: amountText(amount, row.currency) });
+  }
+  for (const row of [...(agent.paymentsReceived || [])]) {
+    push({ id: `received-${row.id}`, date: row.createdAt, operation: 'Pul to‘lovi olindi', debit: row.sourceMode || row.paymentMethod || 'Kassa/Bank', credit: 'Debitorlik', settlement: amountText(row.amount, row.currency), balance: amountText(row.amount, row.currency) });
+  }
+  for (const row of [...(agent.paymentsMade || [])]) {
+    push({ id: `made-${row.id}`, date: row.createdAt, operation: 'Pul to‘lovi qilindi', debit: 'Kreditorlik', credit: row.sourceMode || row.paymentMethod || 'Kassa/Bank', settlement: amountText(row.amount, row.currency), balance: amountText(row.amount, row.currency) });
+  }
+  for (const row of [...(agent.settlements || [])]) {
+    push({ id: `settlement-${row.id}`, date: row.createdAt, operation: row.operationType || 'SETTLEMENT', debit: 'Kreditorlik', credit: 'Debitorlik', settlement: amountText(row.amount, row.currency), balance: amountText(row.amount, row.currency) });
+  }
+  return rows.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
 }
 
 function pct(value: unknown) {
@@ -48,7 +77,7 @@ function pct(value: unknown) {
 
 function ratioValue(value: unknown) {
   if (value == null || !Number.isFinite(Number(value))) return 'Ma’lumot yo‘q';
-  return Number(value).toFixed(2);
+  return formatNumber(value as number, 2);
 }
 
 function delta(current: unknown, previous: unknown) {
@@ -191,6 +220,9 @@ export default function ReportsPage() {
   const [dateTo, setDateTo] = useState(normalizeDateParam(searchParams.get('dateTo') || ''));
   const [currency, setCurrency] = useState(searchParams.get('currency') || '');
   const [report, setReport] = useState<any>(null);
+  const [expenseEstimate, setExpenseEstimate] = useState<any>(null);
+  const [expenseDetail, setExpenseDetail] = useState<any>(null);
+  const [loadingExpenseDetail, setLoadingExpenseDetail] = useState(false);
   const [agentLedger, setAgentLedger] = useState<any>(null);
   const [selectedAgentId, setSelectedAgentId] = useState('');
   const [flightInventory, setFlightInventory] = useState<any>(null);
@@ -241,12 +273,14 @@ export default function ReportsPage() {
       const flightParams = new URLSearchParams();
       if (flightId) flightParams.set('flight_id', flightId);
       if (isAdmin && companyId) flightParams.set('firm_id', companyId);
-      const [res, flightRes, agentRes] = await Promise.all([
+      const [res, flightRes, agentRes, expenseRes] = await Promise.all([
         api.get(`/reports/analytics?${queryString}`),
         flightId ? api.get(`/reports/flight?${flightParams.toString()}`) : Promise.resolve({ data: null }),
         (!isAdmin || companyId) ? api.get('/reports/agents', { params: companyId ? { companyId } : undefined }) : Promise.resolve({ data: null }),
+        api.get(`/reports/expense-estimate?${queryString}`),
       ]);
       setReport(res.data);
+      setExpenseEstimate(expenseRes.data);
       setAgentLedger(agentRes.data || null);
       setFlightReport(flightRes.data || null);
       setFlightInventory(flightRes.data?.inventorySummary || null);
@@ -276,6 +310,20 @@ export default function ReportsPage() {
     }
   }, [canReconcile, companyId, flightId, isAdmin, tr]);
 
+  const openExpenseDetail = useCallback(async (row: any) => {
+    const categoryId = row?.categoryId || 'UNCLASSIFIED';
+    try {
+      setLoadingExpenseDetail(true);
+      const detailQuery = new URLSearchParams(queryString);
+      const response = await api.get(`/reports/expense-estimate/categories/${encodeURIComponent(categoryId)}/details?${detailQuery.toString()}`);
+      setExpenseDetail({ category: row, ...response.data });
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || tr('Failed to load expense details', 'Xarajat tafsilotlarini yuklab bo‘lmadi'));
+    } finally {
+      setLoadingExpenseDetail(false);
+    }
+  }, [queryString, tr]);
+
   useEffect(() => {
     if (!loadingMeta) loadReport();
   }, [loadReport, loadingMeta]);
@@ -291,6 +339,7 @@ export default function ReportsPage() {
   const flightsRows = report?.flightProfitability || [];
   const agents = agentLedger?.agents || [];
   const selectedAgent = agents.find((agent: any) => agent.id === selectedAgentId) || null;
+  const selectedAgentTimeline = useMemo(() => buildAgentTimeline(selectedAgent), [selectedAgent]);
 
   if (!canAccess) {
     return (
@@ -368,6 +417,33 @@ export default function ReportsPage() {
     </div>
   );
 
+  const renderExpenseEstimate = () => {
+    const estimate = expenseEstimate || {};
+    const kpi = estimate.kpis || {};
+    return <div className="space-y-6">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Jami rejalashtirilgan xarajat" value={fmt(kpi.budgetAmount)} />
+        <KpiCard label="Jami haqiqiy xarajat" value={fmt(kpi.actualExpense)} />
+        <KpiCard label="Farq" value={fmt(kpi.variance)} status={Number(kpi.variance) > 0 ? 'warn' : 'good'} />
+        <KpiCard label="Budjetdan foydalanish" value={pct(kpi.budgetUsagePercent)} status={Number(kpi.budgetUsagePercent) > 100 ? 'bad' : 'neutral'} />
+        <KpiCard label="Xarajat operatsiyalari" value={String(kpi.transactionCount || 0)} />
+        <KpiCard label="O‘rtacha kunlik xarajat" value={fmt(kpi.averageDailyExpense)} />
+        <KpiCard label="Eng katta kategoriya" value={kpi.largestCategory?.name || '—'} detail={fmt(kpi.largestCategory?.amount)} />
+        <KpiCard label="Eski tasniflanmagan chiqim" value={fmt(kpi.unclassifiedOutflow)} detail="P&Lga avtomatik qo‘shilmadi" status={Number(kpi.unclassifiedOutflow) > 0 ? 'warn' : 'neutral'} />
+      </div>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
+        <div className="overflow-x-auto rounded-lg border border-border bg-surface"><table className="excel-table"><thead><tr><th>Kategoriya</th><th className="text-right">Amaldagi</th><th className="text-right">Budjet</th><th className="text-right">Farq</th><th className="text-right">Foydalanish</th><th className="text-right">Soni</th></tr></thead><tbody>{(estimate.categories || []).map((row: any) => <tr key={row.categoryId || row.code} onClick={() => openExpenseDetail(row)} className="cursor-pointer hover:bg-surface-2"><td><div className="font-semibold">{row.name}</div><div className="font-mono text-xs text-muted">{row.code}</div></td><td className="text-right font-mono">{fmt(row.amount)}</td><td className="text-right font-mono">{fmt(row.budget)}</td><td className={`text-right font-mono ${Number(row.variance) > 0 ? 'text-red-500' : 'text-emerald-500'}`}>{fmt(row.variance)}</td><td className="text-right">{pct(row.budgetUsagePercent)}</td><td className="text-right">{row.count}</td></tr>)}{!(estimate.categories || []).length && <tr><td colSpan={6} className="text-center text-muted">Tanlangan davr uchun tasniflangan xarajat yo‘q</td></tr>}</tbody></table></div>
+        <div className="space-y-4">
+          <div className="rounded-lg border border-border bg-surface p-4"><h3 className="text-sm font-bold">Original valyutalar</h3><div className="mt-3 space-y-2">{(estimate.byCurrency || []).map((row: any) => <div key={row.currency} className="flex justify-between border-b border-border/60 pb-2"><span>{row.currency}</span><strong>{Number(row.amount || 0).toLocaleString()}</strong></div>)}</div></div>
+          <div className="rounded-lg border border-border bg-surface p-4"><h3 className="text-sm font-bold">Chiqim yo‘nalishlari</h3><div className="mt-3 space-y-2">{(estimate.byDirection || []).map((row: any) => <div key={row.direction} className="flex justify-between gap-3 border-b border-border/60 pb-2 text-sm"><span>{row.direction}</span><strong>{fmt(row.amount)}</strong></div>)}</div></div>
+        </div>
+      </div>
+      <div className="rounded-lg border border-border bg-surface p-3 text-sm text-muted">{estimate.note}</div>
+      {loadingExpenseDetail && <div className="rounded-lg border border-border bg-surface p-4 text-sm text-muted">Tafsilotlar yuklanmoqda...</div>}
+      {expenseDetail && <ExpenseDetailPanel detail={expenseDetail} onClose={() => setExpenseDetail(null)} />}
+    </div>;
+  };
+
   const renderDebt = () => (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -392,10 +468,10 @@ export default function ReportsPage() {
       {isAdmin && !companyId ? <div className="rounded-lg border border-border bg-surface p-8 text-center text-muted">Agentlar hisoboti uchun kompaniyani tanlang.</div> : <>
         <div className="overflow-x-auto rounded-lg border border-border bg-surface">
           <table className="excel-table">
-            <thead><tr><th>Agent / firma</th><th>Eski qoldiq</th><th className="text-right">Sotilgan bilet</th><th className="text-right">Olgan biletimiz</th><th className="text-right">Jami tur</th><th>Jami sotuv</th><th>Jami xarid</th><th>Bizga to‘lagan</th><th>Biz to‘lagan</th><th>Real qoldiq</th></tr></thead>
+            <thead><tr><th>Agent / firma</th><th>Eski qoldiq</th><th className="text-right">Sotilgan bilet</th><th className="text-right">Olgan biletimiz</th><th className="text-right">Jami tur</th><th>Jami sotuv</th><th>Jami xarid</th><th>O‘zaro hisobga olindi</th><th>Bilet bilan yopildi</th><th>Tur bilan yopildi</th><th>Xizmat bilan yopildi</th><th>Kompensatsiya</th><th>Pul bilan yopildi</th><th>Joriy debitorlik</th><th>Joriy kreditorlik</th><th>Net pozitsiya</th></tr></thead>
             <tbody>{agents.length ? agents.map((agent: any) => <tr key={agent.id} onClick={() => setSelectedAgentId(agent.id)} className={`cursor-pointer ${selectedAgentId === agent.id ? 'bg-primary/10' : ''}`}>
-              <td className="font-semibold">{agent.name}</td><td className="font-mono">{fmtAmounts(agent.oldBalance)}</td><td className="text-right font-mono">{agent.ticketCount}</td><td className="text-right font-mono">{agent.purchasedTicketCount || 0}</td><td className="text-right font-mono">{agent.tourCount}</td><td className="font-mono">{fmtAmounts(agent.totalSales)}</td><td className="font-mono">{fmtAmounts(agent.totalPurchases)}</td><td className="font-mono">{fmtAmounts(agent.totalPaid)}</td><td className="font-mono">{fmtAmounts(agent.totalPaidByUs)}</td><td className="font-mono font-bold">{fmtAmounts(agent.currentBalance)}</td>
-            </tr>) : <tr><td colSpan={10} className="text-center text-muted">Hozircha agent hisob-kitobi mavjud emas</td></tr>}</tbody>
+              <td className="font-semibold">{agent.name}</td><td className="font-mono">{fmtAmounts(agent.oldBalance)}</td><td className="text-right font-mono">{agent.ticketCount}</td><td className="text-right font-mono">{agent.purchasedTicketCount || 0}</td><td className="text-right font-mono">{agent.tourCount}</td><td className="font-mono">{fmtAmounts(agent.totalSales)}</td><td className="font-mono">{fmtAmounts(agent.totalPurchases)}</td><td className="font-mono">{fmtAmounts(agent.mutualOffset)}</td><td className="font-mono">{fmtAmounts(agent.ticketOffset)}</td><td className="font-mono">{fmtAmounts(agent.tourOffset)}</td><td className="font-mono">{fmtAmounts(agent.serviceOffset)}</td><td className="font-mono">{fmtAmounts(agent.compensation)}</td><td className="font-mono">{fmtAmounts(agent.cashSettled)}</td><td className="font-mono">{fmtAmounts(agent.receivable)}</td><td className="font-mono">{fmtAmounts(agent.payable)}</td><td className="font-mono font-bold">{fmtAmounts(agent.currentBalance)}</td>
+            </tr>) : <tr><td colSpan={16} className="text-center text-muted">Hozircha agent hisob-kitobi mavjud emas</td></tr>}</tbody>
           </table>
         </div>
         {selectedAgent && <div className="space-y-4 rounded-lg border border-border bg-surface p-4">
@@ -409,6 +485,18 @@ export default function ReportsPage() {
           <AgentFlightPurchases rows={selectedAgent.flightPurchases || []} />
           <AgentServices purchases={selectedAgent.servicePurchases || []} sales={selectedAgent.serviceSales || []} />
           <AgentPayments received={selectedAgent.paymentsReceived || []} made={selectedAgent.paymentsMade || []} />
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-lg border border-border bg-surface-2 p-4"><div className="text-xs uppercase text-muted">Pul to‘lovlari</div><div className="mt-1 font-mono font-bold">{fmtAmounts(selectedAgent.cashSettled)}</div></div>
+            <div className="rounded-lg border border-border bg-surface-2 p-4"><div className="text-xs uppercase text-muted">Bilet/tur/xizmat settlementlari</div><div className="mt-1 font-mono font-bold">{fmtAmounts([...(selectedAgent.ticketOffset || []), ...(selectedAgent.tourOffset || []), ...(selectedAgent.serviceOffset || [])])}</div></div>
+            <div className="rounded-lg border border-border bg-surface-2 p-4"><div className="text-xs uppercase text-muted">O‘zaro hisobga olishlar</div><div className="mt-1 font-mono font-bold">{fmtAmounts(selectedAgent.mutualOffset)}</div></div>
+            <div className="rounded-lg border border-border bg-surface-2 p-4"><div className="text-xs uppercase text-muted">Avanslar / kompensatsiya</div><div className="mt-1 font-mono font-bold">{fmtAmounts(selectedAgent.compensation)}</div></div>
+          </div>
+          <div className="overflow-x-auto"><h4 className="mb-2 font-bold">Settlementlar</h4><table className="excel-table"><thead><tr><th>Sana</th><th>Operatsiya</th><th className="text-right">Summa</th></tr></thead><tbody>{selectedAgent.settlements?.length ? selectedAgent.settlements.map((row: any) => <tr key={row.id}><td>{new Date(row.createdAt).toLocaleDateString('uz-UZ')}</td><td>{row.operationType}</td><td className="text-right font-mono">{amountText(row.amount, row.currency)}</td></tr>) : <tr><td colSpan={3} className="text-center text-muted">Settlement yo‘q</td></tr>}</tbody></table></div>
+          <div className="overflow-x-auto"><h4 className="mb-2 font-bold">Timeline</h4><table className="excel-table"><thead><tr><th>Sana</th><th>Operatsiya</th><th>Debit</th><th>Credit</th><th>Settlement</th><th>Qoldiq</th></tr></thead><tbody>{selectedAgentTimeline.length ? selectedAgentTimeline.map((row) => <tr key={row.id}><td>{row.date ? new Date(row.date).toLocaleString('uz-UZ') : '—'}</td><td>{row.operation}</td><td>{row.debit}</td><td>{row.credit}</td><td className="font-mono">{row.settlement}</td><td className="font-mono">{row.balance}</td></tr>) : <tr><td colSpan={6} className="text-center text-muted">Timeline yozuvlari yo‘q</td></tr>}</tbody></table></div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-lg border border-border bg-surface-2 p-4"><h4 className="mb-2 font-bold">Hujjatlar</h4><div className="font-mono text-lg font-bold">{selectedAgentTimeline.length}</div></div>
+            <div className="rounded-lg border border-border bg-surface-2 p-4"><h4 className="mb-2 font-bold">Audit tarixi</h4><div className="font-mono text-lg font-bold">{selectedAgent.settlements?.length || 0}</div></div>
+          </div>
         </div>}
       </>}
     </div>
@@ -574,6 +662,7 @@ export default function ReportsPage() {
           {activeTab === 'health' && renderHealth()}
           {activeTab === 'profitability' && renderProfitability()}
           {activeTab === 'cash-flow' && renderCashFlow()}
+          {activeTab === 'expense-estimate' && renderExpenseEstimate()}
           {activeTab === 'debt' && renderDebt()}
           {activeTab === 'agents' && renderAgents()}
           {activeTab === 'flight-profitability' && renderFlightProfitability()}
@@ -672,6 +761,96 @@ function AgentPayments({ received, made }: { received: any[]; made: any[] }) {
           <td>{row.paymentMethod || String(row.sourceMode || '').replace('MANUAL_', '') || '-'}</td><td className="font-mono font-semibold">{Number(row.amount || 0).toLocaleString()} {row.currency}</td>
         </tr>) : <tr><td colSpan={5} className="text-center text-muted">Nomlangan to‘lov yo‘q</td></tr>}</tbody>
       </table>
+    </div>
+  );
+}
+
+function ExpenseDetailPanel({ detail, onClose }: { detail: any; onClose: () => void }) {
+  const [filters, setFilters] = useState({ from: '', to: '', kassa: '', card: '', bank: '', currency: '', counterparty: '', employee: '', flight: '', status: '', createdBy: '' });
+  const sourceRows = detail?.rows || [];
+  const rows = sourceRows.filter((row: any) => {
+    const createdBy = row.createdBy?.id || row.createdBy?.email || row.createdBy?.fullName || '';
+    return (!filters.from || row.date >= filters.from)
+      && (!filters.to || row.date <= filters.to)
+      && (!filters.kassa || row.kassaDesk?.id === filters.kassa)
+      && (!filters.card || row.paymentCard?.id === filters.card)
+      && (!filters.bank || row.sourceAccount?.id === filters.bank || row.destinationAccount?.id === filters.bank)
+      && (!filters.currency || row.originalCurrency === filters.currency)
+      && (!filters.counterparty || String(row.counterparty || '').toLowerCase().includes(filters.counterparty.toLowerCase()))
+      && (!filters.employee || String(row.employeeId || '').toLowerCase().includes(filters.employee.toLowerCase()))
+      && (!filters.flight || row.flight?.id === filters.flight)
+      && (!filters.status || row.status === filters.status)
+      && (!filters.createdBy || String(createdBy).toLowerCase().includes(filters.createdBy.toLowerCase()));
+  });
+  const unique = (key: (row: any) => string | undefined, label: (row: any) => string | undefined) => Array.from((sourceRows as any[]).reduce((map: Map<string, string>, row: any) => {
+    const id = key(row);
+    const name = label(row);
+    if (id && name) map.set(id, name);
+    return map;
+  }, new Map<string, string>()), ([id, name]) => ({ id, name }));
+  const detailTotal = rows.reduce((sum: number, row: any) => sum + Number(row.uzsEquivalent || 0), 0);
+  return (
+    <div className="rounded-lg border border-border bg-surface p-4 shadow-sm">
+      <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h3 className="text-lg font-bold text-foreground">{detail?.category?.name || 'Xarajat tafsilotlari'}</h3>
+          <p className="text-sm text-muted">Kategoriya jami: {fmt(detail?.category?.amount)} · Tafsilot jami: {fmt(detailTotal)} · {rows.length} operatsiya</p>
+        </div>
+        <button type="button" onClick={onClose} className="rounded-md border border-border px-3 py-2 text-sm font-semibold hover:bg-surface-2">Yopish</button>
+      </div>
+      <div className="mb-4 grid gap-2 md:grid-cols-4 xl:grid-cols-6">
+        <input type="date" className="compact-control" value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })} />
+        <input type="date" className="compact-control" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })} />
+        <select className="compact-control" value={filters.kassa} onChange={(e) => setFilters({ ...filters, kassa: e.target.value })}><option value="">Kassa</option>{unique((row) => row.kassaDesk?.id, (row) => row.kassaDesk?.name).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select>
+        <select className="compact-control" value={filters.card} onChange={(e) => setFilters({ ...filters, card: e.target.value })}><option value="">Karta</option>{unique((row) => row.paymentCard?.id, (row) => row.paymentCard?.cardName || row.paymentCard?.maskedNumber).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select>
+        <select className="compact-control" value={filters.bank} onChange={(e) => setFilters({ ...filters, bank: e.target.value })}><option value="">Bank</option>{unique((row) => row.sourceAccount?.id, (row) => row.sourceAccount?.name).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select>
+        <select className="compact-control" value={filters.currency} onChange={(e) => setFilters({ ...filters, currency: e.target.value })}><option value="">Valyuta</option>{Array.from(new Set(sourceRows.map((row: any) => row.originalCurrency).filter(Boolean))).map((currency: any) => <option key={currency} value={currency}>{currency}</option>)}</select>
+        <input className="compact-control" value={filters.counterparty} onChange={(e) => setFilters({ ...filters, counterparty: e.target.value })} placeholder="Kimga / kontragent" />
+        <input className="compact-control" value={filters.employee} onChange={(e) => setFilters({ ...filters, employee: e.target.value })} placeholder="Xodim" />
+        <select className="compact-control" value={filters.flight} onChange={(e) => setFilters({ ...filters, flight: e.target.value })}><option value="">Reys</option>{unique((row) => row.flight?.id, (row) => row.flight?.flightNumber).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select>
+        <input className="compact-control" value={filters.createdBy} onChange={(e) => setFilters({ ...filters, createdBy: e.target.value })} placeholder="Kim kiritdi" />
+        <select className="compact-control" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}><option value="">Status</option>{Array.from(new Set(sourceRows.map((row: any) => row.status).filter(Boolean))).map((status: any) => <option key={status} value={status}>{status}</option>)}</select>
+        <button type="button" className="rounded-md border border-border px-3 py-2 text-sm font-semibold" onClick={() => setFilters({ from: '', to: '', kassa: '', card: '', bank: '', currency: '', counterparty: '', employee: '', flight: '', status: '', createdBy: '' })}>Tozalash</button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="excel-table">
+          <thead>
+            <tr>
+              <th>Sana</th><th>Vaqt</th><th>Xarajat kategoriyasi</th><th>Subkategoriya</th><th>Chiqim yo‘nalishi</th><th>Summa</th><th>Original valyuta</th><th>UZS ekvivalenti</th><th>Kurs snapshot</th><th>Qaysi kassadan</th><th>Qaysi kartadan</th><th>Qaysi bank hisobidan</th><th>To‘lov usuli</th><th>Kimga</th><th>Kontragent</th><th>Xodim</th><th>Reys</th><th>Cost center</th><th>To‘lov izohi</th><th>Hujjat №</th><th>Kim kiritdi</th><th>Status</th><th>Audit</th><th>Amal</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map((row: any) => (
+              <tr key={row.id}>
+                <td>{row.date}</td>
+                <td>{row.time ? new Date(row.time).toLocaleTimeString() : '-'}</td>
+                <td>{row.expenseCategory?.name || 'Tasniflanmagan'}</td>
+                <td>{row.subcategory?.name || '-'}</td>
+                <td>{row.expenseDirection || '-'}</td>
+                <td className="font-mono">{Number(row.amount || 0).toLocaleString()}</td>
+                <td>{row.originalCurrency}</td>
+                <td className="font-mono">{fmt(row.uzsEquivalent)}</td>
+                <td className="font-mono">{Number(row.exchangeRateSnapshot || 0).toLocaleString()}</td>
+                <td>{row.kassaDesk?.name || '-'}</td>
+                <td>{row.paymentCard?.cardName || row.paymentCard?.maskedNumber || '-'}</td>
+                <td>{row.sourceAccount?.type?.includes('BANK') ? row.sourceAccount.name : '-'}</td>
+                <td>{row.paymentMethod || '-'}</td>
+                <td>{row.counterparty || '-'}</td>
+                <td>{row.counterparty || '-'}</td>
+                <td>{row.employeeId || '-'}</td>
+                <td>{row.flight?.flightNumber || '-'}</td>
+                <td>{row.costCenter?.name || '-'}</td>
+                <td>{row.note || '-'}</td>
+                <td>{row.documentNumber || '-'}</td>
+                <td>{row.createdBy?.fullName || row.createdBy?.email || '-'}</td>
+                <td>{row.status}</td>
+                <td>{row.audit?.operationType || row.audit?.sourceMode || '-'}</td>
+                <td><a className="font-semibold text-primary hover:underline" href={`/transactions?id=${row.id}`}>Tafsilotlar</a></td>
+              </tr>
+            )) : <tr><td colSpan={24} className="text-center text-muted">Bu kategoriya uchun operatsiya topilmadi</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

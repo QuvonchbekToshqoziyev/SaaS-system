@@ -18,6 +18,8 @@ export type LoginPageContent = {
   submitLabel: LocalizedText;
   submittingLabel: LocalizedText;
   footerNote: LocalizedText;
+  websiteLabel: LocalizedText;
+  websiteUrl: string;
 };
 
 export const defaultLoginPageContent: LoginPageContent = {
@@ -41,6 +43,8 @@ export const defaultLoginPageContent: LoginPageContent = {
     en: 'ADO System - trusted technology, secure future.',
     uz: 'ADO System - ishonchli texnologiya, xavfsiz kelajak.',
   },
+  websiteLabel: { en: 'ADO-FINANCE', uz: 'ADO-FINANCE' },
+  websiteUrl: 'https://ado-finance.com',
 };
 
 export function resolveLocalizedText(text: LocalizedText, language: 'en' | 'uz') {
@@ -62,6 +66,17 @@ function normalizeTextField(value: unknown, fallback: string) {
   return trimmed || fallback;
 }
 
+function normalizeWebsiteUrl(value: unknown, fallback: string) {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? trimmed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export function normalizeLoginPageContent(value: unknown): LoginPageContent {
   const candidate = (value && typeof value === 'object' ? value : {}) as Partial<LoginPageContent>;
 
@@ -80,5 +95,7 @@ export function normalizeLoginPageContent(value: unknown): LoginPageContent {
     submitLabel: normalizeLocalizedText(candidate.submitLabel, defaultLoginPageContent.submitLabel),
     submittingLabel: normalizeLocalizedText(candidate.submittingLabel, defaultLoginPageContent.submittingLabel),
     footerNote: normalizeLocalizedText(candidate.footerNote, defaultLoginPageContent.footerNote),
+    websiteLabel: normalizeLocalizedText(candidate.websiteLabel, defaultLoginPageContent.websiteLabel),
+    websiteUrl: normalizeWebsiteUrl(candidate.websiteUrl, defaultLoginPageContent.websiteUrl),
   };
 }

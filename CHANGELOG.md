@@ -8,6 +8,191 @@ All releases use [Semantic Versioning](https://semver.org/):
 
 Every update must have a version, a changelog entry, and a passing release audit before deployment.
 
+## [1.8.0] - 2026-08-06
+
+### Added
+
+- Xizmatlar sahifasiga mavjud firmalararo xizmatni sotish/ajratish amali qo‘shildi.
+
+### Fixed
+
+- Tur sotuvchisining pudratchi firmalari faqat shu firma bilan bog‘liq counterparty doirasida ko‘rsatiladi.
+- Manfiy chegirma summasi narx ustamasi sifatida qabul qilinadi.
+- Kassa yopish formasi kutilgan UZS va USD qoldiqlarini avtomatik to‘ldiradi.
+
+## [1.7.2] - 2026-08-01
+
+### Fixed
+
+- Kassa chiqimida `ISH HAQI` kabi katta harf bilan qidirilgan xarajat kategoriyasi endi yashirinib qolmaydi; kategoriya tanlanib, to‘lovni qayd etish mumkin.
+
+### Added
+
+- Ombor → Sozlamalar sahifasida firma doirasidagi o‘lchov birligini qo‘shish, tahrirlash va ishlatilmayotgan birlikni nofaol qilish boshqaruvi qo‘shildi.
+- O‘lchov birligi amallari backend ruxsati, tenant tekshiruvi va audit yozuvi bilan himoyalandi.
+
+### Verification
+
+- Playwright katta harfli kategoriya qidiruvini va firma admini nomidan o‘lchov birligi yaratilib ko‘rinishini, keyin test ma’lumoti tozalanishini tekshiradi.
+
+## [1.7.1] - 2026-08-01
+
+### Fixed
+
+- Birinchi kassa hali yaratilmagan firmada “Asosiy kassa” va `K-01` endi placeholder emas, tayyor qiymat sifatida chiqadi; firma admini kassani darhol yaratib, tanlab ochishi mumkin.
+- Loginli `KASSIR` xodim yaratilganda unga shu firma doirasida shaxsiy kassa atomar yaratiladi va login foydalanuvchisiga biriktiriladi; login ma’lumotsiz kassir yaratish backendda rad etiladi.
+- Bo‘sh kassa holatida keyingi amallar aniq ko‘rsatildi, kassa va karta formalari browser-level tekshiruv uchun accessible nomlar bilan belgilandi.
+
+### Verification
+
+- Playwright firm admin nomidan kassa yaratish, uni ochish, karta qo‘shish, natijani jadvalda ko‘rish va test ma’lumotini tozalash oqimini tekshiradi.
+
+## [1.7.0] - 2026-07-30
+
+### Added
+
+- Platform loginiga ega xodimlar uchun `OMBOR_MUDIRI` firm roli qo‘shildi.
+- Ombor mudiri faqat Ombor sahifasi, qoldiq nazorati, hisobotlar va ombor operatsiyalariga kira oladi; boshqa modullar backendda `403` bilan bloklanadi.
+- Hodim yaratish formasiga “Ombor mudiri” tanlovi va shu rol uchun majburiy login email/parol oqimi qo‘shildi.
+
+### Verification
+
+- Targeted RBAC testlari employee-to-login mapping, role normalization, ruxsat etilgan Ombor yo‘llari va taqiqlangan Employees/Kassa/Transactions yo‘llarini tekshiradi.
+
+## [1.6.2] - 2026-07-29
+
+### Changed
+
+- Login sahifasidagi Telegram yordam havolasi `https://t.me/ADO_FINANCE` manziliga yangilandi.
+
+## [1.6.1] - 2026-07-28
+
+### Fixed
+
+- Ombor kirim/chiqim qatorlarida “Mahsulot nomi”, “Soni”, “1 dona narxi” va hisoblangan “Jami summasi” aniq ko‘rsatildi; kategoriya tanlovi mahsulot ro‘yxatini filtrlaydi.
+- Mahsulotlar va kategoriyalar uchun tahrirlash hamda tarixiy harakatlarni saqlaydigan nofaol qilish amallari qo‘shildi.
+- Pudratchilar tenant-safe tarzda mavjud “Firmalar” katalogidan tanlanadi; mahalliy yetkazib beruvchilar bilan eski oqim ham saqlandi.
+- “Omborchi hisoboti” davr bo‘yicha kirim/chiqim, operator, qoldiq qiymati va firmaga ta’sir qilgan Inventory, Revenue hamda COGS ledger yozuvlarini ko‘rsatadi.
+- Qoldiq nazoratida minimal qoldiq, kam qolgan va tugagan holatlar alohida ko‘rinadi.
+
+### Verification
+
+- Dev release audit Omborchi hisobotidagi mahsulot harakati va muvozanatli INVENTORY/ACCOUNTS_PAYABLE ta’sirini tekshiradi.
+
+## [1.6.0] - 2026-07-28
+
+### Added
+
+- Mavjud firmalarga alohida biznes turi yaratmasdan, mahsulotlar, omborlar, partiyalar, kirim, chiqim, sotuv, qoldiq, rezerv, yetkazib beruvchi va mijozlarni boshqaradigan `Ombor` moduli qo‘shildi.
+- Xarid, sotuv, ichki foydalanish, write-off, transfer va qaytarishlar mavjud `Transaction`, `JournalEntry` va `LedgerEntry` registrlariga atomar bog‘landi; sotuv daromadi va COGS alohida yoziladi.
+- Moving weighted average tannarx, FEFO/FIFO tanlash, yaroqlilik nazorati, valyuta kursi snapshoti va database darajasida manfiy qoldiq himoyasi qo‘shildi.
+- Firma bosh sahifasiga inventory aktivi, oylik xarid/sotuv, COGS, yalpi foyda va muddati o‘tgan partiyalar KPIlari qo‘shildi.
+
+### Security and verification
+
+- Har bir Ombor query va mutation backendda autentifikatsiya qilingan firmaning tenant scope’i bilan tekshiriladi; frontend yuborgan boshqa firma obyektlari rad etiladi.
+- Dev fixture 10 dona, 100 000 UZS tannarxli mahsulot qoldig‘i va muvozanatli INVENTORY/ACCOUNTS_PAYABLE ledger yozuvini idempotent yaratadi.
+- Prisma schema, server/client TypeScript, inventory matematikasi, API contract, release fixture va dev live audit release gate orqali tekshiriladi.
+
+## [1.5.2] - 2026-07-27
+
+### Fixed
+
+- Kassa xarajat kategoriyalari faqat tanlangan firmadan olinadi; firma tanlanmaganda boshqa firmalarning standart kategoriyalari aralashib, bir necha marta takrorlanmaydi.
+- SUPERADMIN Kassa formasida firma tanlovi chiqim yo‘nalishi va kategoriyadan oldinga ko‘chirildi.
+- Eski firmalar uchun 20 ta standart xarajat kategoriyasini idempotent yaratadigan backfill dev va production deploy oqimiga qo‘shildi.
+- Sozlamalarda tanlangan firmaning “Hozirgi xarajat turlari” ro‘yxati forma tepasiga chiqarildi, jami soni ko‘rsatildi va jadvaldagi inglizcha texnik sarlavhalar o‘zbekchalashtirildi.
+
+### Verification
+
+- Live release audit har bir ko‘rinadigan firmada kamida 20 ta va kodlari takrorlanmagan kategoriya borligini tekshiradi.
+- Regression guard Kassa firma scope’i, Sozlamalar ro‘yxati va har ikki deploy skriptidagi kategoriya backfill’ni himoya qiladi.
+
+## [1.5.1] - 2026-07-26
+
+### Fixed
+
+- Kassa chiqimida “Ish haqi va xodim to‘lovlari” tanlanganda tanlangan firmaga tegishli faol xodimlar ko‘rsatiladi; xodim va ish haqi kategoriyasi majburiy, backend esa boshqa firma yoki nofaol xodimni rad etadi.
+- Xarajat kategoriyasi uzun ro‘yxatiga qidiruv qo‘shildi va ish haqi yo‘nalishida `SALARY` kategoriyasi avtomatik tanlanadi.
+- Reys moliyaviy kartalarida bilet soni uch marta takrorlanishi olib tashlandi: umumiy son bir marta, valyuta summalari alohida ko‘rsatiladi.
+- Moliyaviy sozlamalardagi texnik qiymatlar o‘zbekcha biznes nomlariga almashtirildi; murakkab buxgalteriya mappinglari alohida “Qo‘shimcha sozlamalar” ichiga yig‘ildi va izohlar qo‘shildi.
+
+### Verification
+
+- Ish haqi chiqimi uchun kategoriya va xodim majburiyligi unit testi hamda firma doirasidagi faol QA xodimi live release fixture tekshiruvi qo‘shildi.
+
+## [1.5.0] - 2026-07-26
+
+### Added
+
+- Mavjud kassa va tranzaksiya oqimlarini almashtirmasdan, tenantga bog‘langan xarajat kategoriyalari, subkategoriyalar, xarajat budjetlari va moliyaviy siyosat sozlamalari qo‘shildi.
+- Bank hisoblari, valyutalararo o‘tkazma, bank komissiyasi, qarz to‘lovi, o‘zaro hisob-kitob va kompensatsiya uchun preview, posting va reversal APIlari qo‘shildi.
+- Moliyaviy operatsiyalar uchun jurnal provodkalari va ledger yozuvlari atomar saqlanadi; qarz to‘lovi va ichki o‘tkazmalar foyda-zarar hisobotida xarajat sifatida takroran hisoblanmaydi.
+- Kassadan chiqimda biznes yo‘nalishi, xarajat kategoriyasi, hujjat/sana/VAT rekvizitlari va budjet limiti nazorati qo‘shildi.
+- Sozlamalarda xarajat kategoriyalari, budjetlar va hisob siyosati; hisobotlarda xarajatlar smetasi; bosh sahifada davr xarajati, budjet sarfi va tasdiq kutilayotgan operatsiyalar ko‘rsatkichlari qo‘shildi.
+
+### Security and accounting
+
+- Xarajat, budjet, bank hisoblari va qarz hujjatlari backendda firma bo‘yicha tekshiriladi; to‘liq bank hisob raqami saqlanmaydi, faqat maskalangan oxirgi to‘rt raqam qoladi.
+- `APPLIED` moliyaviy operatsiya o‘chirilmaydi: noto‘g‘ri yozuv qarama-qarshi jurnal yozuvi yaratuvchi reversal orqali bekor qilinadi.
+- Hisobotlar faqat `accountingTreatment=EXPENSE` bo‘lgan yozuvlarni P&L xarajatiga qo‘shadi; legacy tasniflanmagan kassa chiqimlari alohida ko‘rsatiladi.
+
+### Verification
+
+- Default kategoriya seed’i, double-entry ta’siri, valyutalararo hisob balansi, xarajat tasnifi, smeta matematikasi va API surface regressiya tekshiruvlari qo‘shildi.
+- Prisma validate/generate, server va client typecheck, maqsadli Vitest testlari hamda lokal release audit orqali tekshiriladi.
+
+## [1.4.0] - 2026-07-21
+
+### Added
+
+- SUPERADMIN kirish sahifasi editorida ikki tilli veb-sayt havolasi matni va xavfsiz `http/https` manzilini sozlay oladi; havola editor previewi va ommaviy login sahifasida ko‘rinadi.
+- Chipta ajratmalari uchun nomlangan reys/firma, RT/OW, aralash narx, jami, faqat ajratmaga bog‘langan tasdiqlangan to‘lov, qarz, avans va to‘liq tarixli 9 ustunli moliyaviy jadval qo‘shildi.
+- Ajratmani hard delete qilmasdan qisman yoki to‘liq biznes bekor qilish, sotilgan/turga band chipta himoyasi, portalga ega agent tasdig‘i, portalsiz avtomatik tasdiq, qarz qayta hisoblash, bildirishnoma va audit oqimi qo‘shildi.
+- Tur sotuviga majburiy izoh, 0–100% chegirma, brutto/net/base snapshotlari, COGS va yalpi foyda hisoblari, 100% chegirma permission/tasdig‘i hamda kengaytirilgan sotuv jurnali qo‘shildi.
+- Kassa kun tranzaksiyalari DTOsi va jadvaliga Kimdan/Kimga, maskalangan karta/bank, izoh va kiritgan xodim display maydonlari qo‘shildi.
+- Kassa tranzaksiyasini kirim/chiqim, summa, valyuta/kurs, kassa, karta/bank, kontragent, reys, ajratma yoki tur paketi bo‘yicha atomar tahrirlash modali qo‘shildi.
+
+### Fixed
+
+- Firma reys yaratishda kiritgan tashqi aviakompaniya endi `AIRLINE` firma profiliga bog‘lanadi va kassa `Kimga` tanlovida ko‘rinadi; oldingi tashqi aviakompaniyalar ham reys egalariga xavfsiz bog‘lanadi.
+- Bir xil tarixiy kassa importi qayta yuborilganda eski yozuvning `sourceMode` maydoni `HISTORICAL_IMPORT`ga idempotent tarzda tiklanadi.
+- Reys bo‘yicha umumiy to‘lov endi ajratma qarziga tasodifan taqsimlanmaydi; faqat tasdiqlangan va aynan ajratmaga bog‘langan to‘lov qarzni kamaytiradi.
+- Tranzaksiya tahriri va soft delete eski kassa/karta/bank hamda ajratma to‘lov ta’sirini takrorlamasdan qayta hisoblaydi; optimistic lock, tenant tekshiruvi, majburiy sabab va audit saqlanadi.
+- Reys UUIDlari operator jadval va modallarida chiqarilmaydi, karta raqamlari transaction response’da faqat maskalangan ko‘rinishda qaytariladi.
+
+### Verification
+
+- Tashqi aviakompaniya uchun `AIRLINE` firma yaratish va barcha reys egasi firmalar bilan takrorsiz bog‘lash regressiya testi qo‘shildi.
+- Ajratma moliyasi, mixed narx, partial cancel, sotilgan/turga band himoyasi, payment reassignment, tur chegirmasi/COGS/permission, karta masking va kassa balans correction regressiya testlari qo‘shildi.
+- Prisma validate/generate, server test/build, frontend typecheck/build, dev release audit va production smoke release gate orqali tekshiriladi.
+
+## [1.3.5] - 2026-07-21
+
+### Fixed
+
+- SUPERADMIN uchun to‘liq erkin chipta ajratmalarida `O‘chirish` amali ko‘rsatiladi va qarshi firma tasdig‘isiz auditli ravishda bajariladi.
+- Eski RT migratsiyasida bir segment qabul qiluvchida, ikkinchi segment esa yuboruvchiga allaqachon qaytgan bo‘lsa, ajratma endi `0 ta erkin` deb noto‘g‘ri hisoblanmaydi.
+- O‘chirilgan ajratma `CANCELLED` tarixiy holatda saqlanadi, ammo operatsion “Chipta ajratmalari” jadvalidan yo‘qoladi; sotilgan, turga band yoki boshqa ajratmaga o‘tgan segmentlar o‘chirilmaydi.
+
+### Verification
+
+- Unit regressiya testi xavfsiz legacy RT holatini o‘chirish mumkinligini va boshqa ajratmadagi segmentni o‘chirish bloklanishini tekshiradi.
+- Dev release fixture SUPERADMIN capability, avtomatik tasdiq, jadvaldan yo‘qolish va ikkala segmentning yuboruvchiga qaytishini live API orqali tekshiradi.
+
+## [1.3.4] - 2026-07-20
+
+### Fixed
+
+- Eski migratsiyadan qolgan aralash RT segment holatida ajratmani rad etish endi `Allocation segment state is inconsistent` xatosi bilan to‘xtamaydi.
+- Rad etish faqat aynan shu ajratmada `PENDING_ALLOCATION` bo‘lib turgan segmentlarni yuboruvchi firmaga qaytaradi; boshqa firma egaligiga o‘tgan segmentlarni o‘zgartirmaydi.
+- Ajratmaning eskirgan aktiv segment yozuvlari rad etilgan deb yopiladi va ota bilet holati amaldagi segmentlardan qayta hisoblanadi.
+
+### Verification
+
+- Unit regressiya testi aralash OUTBOUND/RETURN holatida faqat tegishli segment tiklanishini tekshiradi.
+- Dev release fixture 2 ta RT biletli nomuvofiq ajratmani API orqali rad etib, OUTBOUND qaytganini va boshqa egadagi RETURN saqlanganini tekshiradi.
+
 ## [1.3.3] - 2026-07-18
 
 ### Fixed

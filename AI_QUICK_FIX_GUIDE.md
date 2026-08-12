@@ -1,6 +1,6 @@
 # AI Quick Fix Guide
 
-Current release identity is stored in `VERSION`. Every fix must update `VERSION`, both client/server package versions and lockfiles, and `CHANGELOG.md` according to SemVer. Before dev or production deployment run `node scripts/release-audit.mjs`; after dev deployment run `node scripts/release-audit.mjs --dev`. Consult `memories/repo/mistakes.md` before changing roles, visibility, schema, flights, tickets, kassa, transactions, reports, tours, services, firms, or employees.
+Current release identity is stored in `VERSION`. During implementation, do not bump versions, rewrite the release fixture, build everything, or deploy after each edit. Use targeted tests/typechecks or `node scripts/quick-check.mjs <changed files>`. Once the requested batch is code-complete and a deployment is required, update `VERSION`, package versions/lockfiles, `CHANGELOG.md`, and any release fixture justified by the changed risk. Run the release sequence once. Consult `memories/repo/mistakes.md` before changing roles, visibility, schema, flights, tickets, kassa, transactions, reports, tours, services, firms, or employees.
 
 Use this file first when asking any AI model for a quick website fix. It keeps the model focused and avoids wasting tokens.
 
@@ -95,6 +95,16 @@ airline-b2b/shared
 
 ## Minimal Check Commands
 
+During the edit loop, pass the files you changed:
+
+```bash
+node scripts/quick-check.mjs path/to/changed-file.ts path/to/changed-page.tsx
+```
+
+This intentionally skips production builds, dependency audits, live endpoint sweeps, and deployment. Those belong to the single final release gate.
+
+For a final release, use the consolidated flow in `FINAL_RELEASE_PLAN.md`. The commands below are individual fallbacks, not a checklist to repeat after every edit.
+
 Backend:
 
 ```bash
@@ -113,11 +123,17 @@ npx tsc --noEmit
 npm run build
 ```
 
-Deploy only after the checks pass:
+Fast, safe release sequence:
 
 ```bash
-./deploy.sh --schema
+node scripts/release-audit.mjs
+./deploy-dev.sh --schema
+node scripts/release-audit.mjs --live-only
+./deploy.sh --schema --dev-verified
+./scripts/prod-smoke.sh
 ```
+
+Omit `--schema` when the Prisma schema did not change. `--live-only` reuses the exact-source local audit instead of rebuilding and retesting it. Production verifies the local audit and dev source fingerprints, then skips the duplicate dev deployment.
 
 ## Useful Search Commands
 

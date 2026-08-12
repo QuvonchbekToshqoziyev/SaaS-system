@@ -1,5 +1,6 @@
 import { prisma } from '../../db';
 import { visibleTransactionWhere } from '../../utils/transaction-visibility';
+import { listMonthlyFeatureUsage } from '../../services/feature-usage.service';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -36,9 +37,10 @@ export async function buildProductMetrics(now = new Date()) {
   const today = startOfUtcDay(now);
   const weekStart = new Date(today.getTime() - 6 * DAY);
   const monthStart = new Date(today.getTime() - 29 * DAY);
+  const featureUsageMonthStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
   const historyStart = new Date(today.getTime() - 180 * DAY);
 
-  const [firms, activity, firstTransactions, kassaDays, supportQuestions, corrections, transfers, renewalLogs] = await Promise.all([
+  const [firms, activity, firstTransactions, kassaDays, supportQuestions, corrections, transfers, renewalLogs, featureUsage] = await Promise.all([
     prisma.firm.findMany({
       where: { deletedAt: null, status: { not: 'DELETED' } },
       select: { id: true, name: true, createdAt: true, subscriptionEndsAt: true },
@@ -64,6 +66,7 @@ export async function buildProductMetrics(now = new Date()) {
       where: { entityType: 'firm', action: 'UPDATE', createdAt: { gte: historyStart, lte: now } },
       select: { entityId: true, before: true, after: true },
     }),
+    listMonthlyFeatureUsage(now),
   ]);
 
   const deskIds = [...new Set(kassaDays.map((row) => row.cashDeskId).filter((id): id is string => Boolean(id)))];
@@ -136,11 +139,18 @@ export async function buildProductMetrics(now = new Date()) {
       day90: rollingRetention(activity, now, 90),
       paidRenewal: { renewed: renewedFirmIds.size, eligible: renewalEligible, rate: percent(renewedFirmIds.size, renewalEligible), paymentVerified: false },
     },
+    featureUsage: {
+      month: dateKey(featureUsageMonthStart),
+      rows: featureUsage,
+      removalCandidates: featureUsage.filter((row) => row.uniqueFirms <= 1 && row.totalActions <= 3),
+      note: 'Feature usage is buffered in memory and flushed to monthly counters, so user requests do not wait for telemetry database writes.',
+    },
     definitions: {
       activeFirm: 'A firm with at least one transaction in the period.',
       kassaClosing: 'Active firm-days with a matching closed kassa day.',
       retention: 'Firms active in the previous rolling period that were also active in the current period.',
       renewal: 'A firm subscription end date extended through an audited update; payment is not yet independently verified.',
+      featureUsage: 'Successful authenticated API requests grouped by feature, month, firm and user.',
     },
   };
 }
