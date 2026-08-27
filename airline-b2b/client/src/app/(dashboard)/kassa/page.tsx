@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { format } from 'date-fns';
 import { useRouter } from 'next/navigation';
 import { Lock, Unlock, Wallet, CreditCard, AlertCircle, RefreshCw, X } from 'lucide-react';
@@ -186,6 +186,7 @@ export default function KassaPage() {
   const [deskOptions, setDeskOptions] = useState<KassaDesk[]>([]);
   const [flightOptions, setFlightOptions] = useState<FlightOption[]>([]);
   const [paymentCards, setPaymentCards] = useState<PaymentCard[]>([]);
+  const summaryRequestId = useRef(0);
   const [financialAccounts, setFinancialAccounts] = useState<FinancialAccount[]>([]);
   const [expenseCategories, setExpenseCategories] = useState<any[]>([]);
   const [employeeOptions, setEmployeeOptions] = useState<EmployeeOption[]>([]);
@@ -457,18 +458,22 @@ export default function KassaPage() {
 
   const loadSummary = useCallback(async () => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) return;
+    const requestId = ++summaryRequestId.current;
     try {
       setLoading(true);
       const query = new URLSearchParams({ date: selectedDate });
       if (summaryKassaDeskId) query.set('kassaDeskId', summaryKassaDeskId);
       if (canFilterFirm && monitorFirmId) query.set('firmId', monitorFirmId);
       const res = await api.get(`/kassa?${query.toString()}`);
+      if (requestId !== summaryRequestId.current) return;
       setSummary(res.data);
       setPaymentCards(Array.isArray(res.data?.paymentCards) ? res.data.paymentCards : []);
     } catch (err: any) {
-      toast.error(err?.response?.data?.error || tr('Failed to load kassa', 'Kassani yuklab bo\'lmadi'));
+      if (requestId === summaryRequestId.current) {
+        toast.error(err?.response?.data?.error || tr('Failed to load kassa', 'Kassani yuklab bo\'lmadi'));
+      }
     } finally {
-      setLoading(false);
+      if (requestId === summaryRequestId.current) setLoading(false);
     }
   }, [selectedDate, summaryKassaDeskId, canFilterFirm, monitorFirmId, tr]);
 

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
+import { currentQaMfaCode } from './qa-mfa.mjs';
+
 const base = String(process.env.DEV_BASE_URL || 'https://dev.b2b.booking.ado-finance.com').replace(/\/$/, '');
-const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!';
+const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!Secure';
 const timeoutMs = Number(process.env.DEV_AUDIT_TIMEOUT_MS || 30_000);
 const fakeId = '00000000-0000-4000-8000-000000000000';
 
@@ -44,8 +46,15 @@ add('/airlines', ALL, [
 ]);
 add('/audit-log', SA, [['GET', '']]);
 add('/auth', ALL, [
-  ['POST', '/login', { authenticated: false, expected: [401], safeAllowedProbe: true, body: { email: 'invalid@example.com', password: 'invalid' } }],
+  ['POST', '/login', { authenticated: false, expected: [401, 429], safeAllowedProbe: true, body: { email: 'invalid@example.com', password: 'invalid' } }],
+  ['GET', '/session'],
+  ['POST', '/logout', { safeAllowedProbe: true }],
   ['POST', '/change-password', { safeAllowedProbe: true }],
+  ['POST', '/mfa/setup', { roles: SA_ADMIN, safeAllowedProbe: false }],
+  ['POST', '/mfa/confirm', { roles: SA_ADMIN, safeAllowedProbe: false }],
+  ['POST', '/mfa/verify', { authenticated: false, expected: [401], safeAllowedProbe: true, body: { mfaTicket: 'invalid', code: '000000' } }],
+  ['POST', '/mfa/recovery', { authenticated: false, expected: [401], safeAllowedProbe: true, body: { mfaTicket: 'invalid', recoveryCode: 'invalid' } }],
+  ['POST', '/mfa/disable', { roles: SA_ADMIN, safeAllowedProbe: false }],
   ['GET', '/users', { roles: SA_ADMIN }],
   ['PATCH', `/users/${fakeId}`, { roles: SA, safeAllowedProbe: true }],
   ['DELETE', `/users/${fakeId}`, { roles: SA, safeAllowedProbe: true }],
@@ -245,9 +254,18 @@ for (const [actorName, actor] of Object.entries(actors)) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: actor.email, password }),
     });
-    const data = await response.json();
+    let data = await response.json();
+    let status = response.status;
+    if (status === 200 && data.mfaRequired && data.mfaTicket) {
+      const mfaResponse = await fetchWithTransportRetry('/auth/mfa/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mfaTicket: data.mfaTicket, code: currentQaMfaCode(), sessionTransport: 'token' }),
+      });
+      data = await mfaResponse.json();
+      status = mfaResponse.status;
+    }
     tokens[actorName] = data.token;
-    results.push({ method: 'POST', path: '/auth/login', actor: actorName, reason: 'qa-login', expected: [200], status: response.status, ok: response.status === 200 && Boolean(data.token), detail: data.error || '' });
+    results.push({ method: 'POST', path: '/auth/login', actor: actorName, reason: 'qa-login', expected: [200], status, ok: status === 200 && Boolean(data.token), detail: data.error || '' });
   } catch (error) {
     results.push({ method: 'POST', path: '/auth/login', actor: actorName, reason: 'qa-login', expected: [200], status: 0, ok: false, detail: String(error) });
   }

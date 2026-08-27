@@ -157,6 +157,7 @@ Users can then connect their own Telegram chat from Settings. The token stays se
 Use these files as the current documentation set:
 
 - `AI_QUICK_FIX_GUIDE.md`: first-read guide for agents and quick fixes.
+- `ADO_SYSTEM_EXPANSION.md`: ERP expansion gap matrix, tenant compatibility ADR, and next vertical slices.
 - `FINAL_RELEASE_PLAN.md`: production release gate and rollback plan.
 - `DEV_PROD_SPLIT.md`: production vs dev/staging deployment split.
 - `WORKFLOW_DOCUMENTATION.md`: current end-to-end product workflows, role access, API surfaces, financial effects, audit behavior, and smoke checklist.

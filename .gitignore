@@ -41,6 +41,7 @@ scratch/
 !.env.template
 server_credentials.md
 server-pass.md
+.private-backups/
 
 # Credentials
 *.pem

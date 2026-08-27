@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
+import { currentQaMfaCode } from './qa-mfa.mjs';
+
 const base = String(process.env.DEV_BASE_URL || 'https://dev.b2b.booking.ado-finance.com').replace(/\/$/, '');
-const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!';
+const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!Secure';
 const qaUsers = {
   admin: 'qa.admin@ado.test',
   firmadmin: 'qa.firmadmin@ado.test',
@@ -14,8 +16,17 @@ async function login(email) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
-  const data = await response.json();
-  if (response.status !== 200 || !data.token || !data.user) throw new Error(`${email} login failed with ${response.status}`);
+  let data = await response.json();
+  let status = response.status;
+  if (status === 200 && data.mfaRequired && data.mfaTicket) {
+    const mfaResponse = await fetch(`${base}/api/auth/mfa/verify`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mfaTicket: data.mfaTicket, code: currentQaMfaCode(), sessionTransport: 'token' }),
+    });
+    data = await mfaResponse.json();
+    status = mfaResponse.status;
+  }
+  if (status !== 200 || !data.token || !data.user) throw new Error(`${email} login failed with ${status}`);
   return data;
 }
 

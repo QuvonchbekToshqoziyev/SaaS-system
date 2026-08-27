@@ -12,19 +12,19 @@
 #   ./deploy.sh --dev-verified       # require and reuse the exact audited dev source
 #   ./deploy.sh --skip-dev-sync      # emergency only: do not sync dev first
 #
-# Auth (pick one):
+# Auth defaults to ~/.ssh/id_ed25519. Password mode is an explicit fallback:
 #   1. File   → create server-pass.md or server_credentials.md at repo root (git-ignored):
 #                  - IP: 206.189.130.168
 #                  - Username: root
 #                  - Password: <your_password>
 #   2. Env    → export SSHPASS=<password>
-#   3. SSH key → set USE_SSH_KEY=1 (no password needed)
+#   3. SSH key → set SSH_IDENTITY_FILE if the key is not ~/.ssh/id_ed25519
 # =============================================================================
 set -euo pipefail
 
 # ── Config ───────────────────────────────────────────────────────────────────
 DOMAIN="b2b.booking.ado-finance.com"
-REMOTE_SERVER_IP="206.189.130.168"
+REMOTE_SERVER_IP="${REMOTE_SERVER_IP:-206.189.130.168}"
 REMOTE_USER="root"
 REMOTE_BACKEND_DIR="/root/apps/ado-b2b/airline-b2b/server"
 REMOTE_WEBROOT="/var/www/${DOMAIN}/html"
@@ -39,7 +39,8 @@ NGINX_CONF_SRC="$REPO_ROOT/nginx.conf.b2b.ado-finance.com"
 SOURCE_FINGERPRINT_SCRIPT="$REPO_ROOT/scripts/source-fingerprint.mjs"
 
 # ── Flags ────────────────────────────────────────────────────────────────────
-BACKEND_ONLY=0; FRONTEND_ONLY=0; RUN_SCHEMA=0; DEV_VERIFIED=0; SKIP_DEV_SYNC="${SKIP_DEV_SYNC:-0}"; USE_SSH_KEY="${USE_SSH_KEY:-0}"
+BACKEND_ONLY=0; FRONTEND_ONLY=0; RUN_SCHEMA=0; DEV_VERIFIED=0; SKIP_DEV_SYNC="${SKIP_DEV_SYNC:-0}"; USE_SSH_KEY="${USE_SSH_KEY:-1}"
+SSH_IDENTITY_FILE="${SSH_IDENTITY_FILE:-$HOME/.ssh/id_ed25519}"
 for arg in "$@"; do
   case $arg in
     --backend-only)  BACKEND_ONLY=1 ;;
@@ -78,7 +79,7 @@ if [[ -f "$CREDS_FILE" ]]; then
   file_ip=$(awk -F':[[:space:]]*' 'tolower($1) ~ /(^|- )[[:space:]]*ip$|server/ {print $2; exit}' "$CREDS_FILE" || true)
   [[ -n "${file_user:-}" ]] && REMOTE_USER="$file_user"
   [[ -n "${file_ip:-}" ]] && REMOTE_SERVER_IP="$file_ip"
-  if [[ -z "${SSHPASS:-}" ]]; then
+  if [[ "$USE_SSH_KEY" != "1" && -z "${SSHPASS:-}" ]]; then
     SSHPASS=$(awk -F':[[:space:]]*' 'tolower($1) ~ /password|pass/ {print $2; exit}' "$CREDS_FILE" || true)
     export SSHPASS
   fi
@@ -88,8 +89,10 @@ REMOTE_HOST="${REMOTE_USER}@${REMOTE_SERVER_IP}"
 
 # ── SSH helper ───────────────────────────────────────────────────────────────
 if [[ "$USE_SSH_KEY" == "1" ]]; then
-  remote() { ssh -o StrictHostKeyChecking=no "$REMOTE_HOST" "$@"; }
-  rsync_cmd() { rsync "$@"; }
+  [[ -f "$SSH_IDENTITY_FILE" ]] || { error "SSH key not found: $SSH_IDENTITY_FILE"; exit 1; }
+  SSH_KEY_OPTS=(-i "$SSH_IDENTITY_FILE" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new)
+  remote() { ssh "${SSH_KEY_OPTS[@]}" "$REMOTE_HOST" "$@"; }
+  rsync_cmd() { rsync -e "ssh -i $SSH_IDENTITY_FILE -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" "$@"; }
 else
   command -v sshpass &>/dev/null || { error "sshpass not found — install it or set USE_SSH_KEY=1"; exit 1; }
   [[ -z "${SSHPASS:-}" ]] && { error "No password: set SSHPASS env var or create server-pass.md"; exit 1; }
@@ -209,6 +212,14 @@ if ! grep -q '^JWT_SECRET=' "\$ENV_FILE"; then
   echo "JWT_SECRET created"
 else
   echo "JWT_SECRET present"
+fi
+
+if ! grep -q '^CHAT_ENCRYPTION_KEY=' "\$ENV_FILE"; then
+  secret=\$(openssl rand -hex 32)
+  echo "CHAT_ENCRYPTION_KEY=\$secret" >> "\$ENV_FILE"
+  echo "CHAT_ENCRYPTION_KEY created"
+else
+  echo "CHAT_ENCRYPTION_KEY present"
 fi
 
 write_var "NODE_ENV"          "production"

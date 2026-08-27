@@ -1,8 +1,9 @@
 import bcrypt from 'bcrypt';
-import { FirmUserRole, Prisma, Role } from '@prisma/client';
+import { FirmStatus, FirmUserRole, Prisma, Role } from '@prisma/client';
 import { prisma } from '../db';
 import { canAccessFirm, getAccessibleFirmIds, isSuperAdmin, normalizeRole } from '../utils/access';
 import { isFirmAdminLike } from '../utils/firm-user-roles';
+import { PASSWORD_LENGTH_ERROR, passwordMeetsPolicy } from '../utils/password-policy';
 
 export type AuthUser = {
   userId?: string;
@@ -46,6 +47,12 @@ export function loginRoleForEmployee(employeeRole: unknown): FirmUserRole {
 
 export function shouldProvisionKassaForEmployee(employeeRole: unknown, wantsLogin: boolean): boolean {
   return wantsLogin && loginRoleForEmployee(employeeRole) === FirmUserRole.KASSIR;
+}
+
+export function loginStatusForEmployeeStatus(status: FirmStatus): 'ACTIVE' | 'SUSPENDED' | 'DELETED' {
+  if (status === FirmStatus.ACTIVE) return 'ACTIVE';
+  if (status === FirmStatus.SUSPENDED) return 'SUSPENDED';
+  return 'DELETED';
 }
 
 function assertFirmEmployeeScope(authUser: AuthUser, firmId: string | null) {
@@ -162,6 +169,9 @@ export async function createEmployeeService(authUser: AuthUser, input: Record<st
   const password = typeof input.password === 'string' ? input.password : '';
   const wantsLogin = Boolean(email || password);
   const provisionKassa = shouldProvisionKassaForEmployee(employeeRole, wantsLogin);
+  const initialStatus = String(input.status || 'ACTIVE').toUpperCase() === FirmStatus.SUSPENDED
+    ? FirmStatus.SUSPENDED
+    : FirmStatus.ACTIVE;
 
   if (!name) throw new ServiceError('Employee name is required');
   if (!employeeRole) throw new ServiceError('Employee role is required');
@@ -170,7 +180,7 @@ export async function createEmployeeService(authUser: AuthUser, input: Record<st
   if (firmId && !(await canAccessFirm(authUser, firmId))) throw new ServiceError('Forbidden', 403);
   if (!firmId && !isSuperAdmin(authUser)) throw new ServiceError('Firm is required');
   if (wantsLogin && (!email || !password)) throw new ServiceError('Email and password are both required for login access');
-  if (wantsLogin && password.length < 6) throw new ServiceError('Password must be at least 6 characters');
+  if (wantsLogin && !passwordMeetsPolicy(password)) throw new ServiceError(PASSWORD_LENGTH_ERROR);
   if (loginRoleForEmployee(employeeRole) === FirmUserRole.KASSIR && !wantsLogin) throw new ServiceError('Kassir login email and password are required');
   if (wantsLogin && !firmId) throw new ServiceError('Firm is required for login access');
   if (wantsLogin && actorRole !== 'SUPERADMIN' && !(actorRole === 'FIRM' && isFirmAdminLike(authUser))) {
@@ -183,6 +193,19 @@ export async function createEmployeeService(authUser: AuthUser, input: Record<st
 
   const hashedPassword = wantsLogin ? await bcrypt.hash(password, 10) : null;
   return prisma.$transaction(async (tx) => {
+    const loginUser = wantsLogin
+      ? await tx.user.create({
+          data: {
+            email,
+            password: hashedPassword!,
+            fullName: name,
+            role: Role.FIRM,
+            firmRole: loginRoleForEmployee(employeeRole),
+            firmId: firmId!,
+            status: loginStatusForEmployeeStatus(initialStatus),
+          },
+        })
+      : null;
     const employee = await tx.employee.create({
       data: {
         name,
@@ -190,22 +213,13 @@ export async function createEmployeeService(authUser: AuthUser, input: Record<st
         salary: parseSalary(input.salary),
         currency: normalizeCurrency(input.currency),
         firmId,
-        status: String(input.status || 'ACTIVE').toUpperCase() === 'SUSPENDED' ? 'SUSPENDED' : 'ACTIVE',
+        loginUserId: loginUser?.id,
+        status: initialStatus,
       },
       include: employeeInclude(),
     });
     let kassaDesk = null;
-    if (wantsLogin) {
-      const loginUser = await tx.user.create({
-        data: {
-          email,
-          password: hashedPassword!,
-          fullName: name,
-          role: Role.FIRM,
-          firmRole: loginRoleForEmployee(employeeRole),
-          firmId: firmId!,
-        },
-      });
+    if (loginUser) {
       if (provisionKassa) {
         kassaDesk = await tx.kassaDesk.create({
           data: {
@@ -241,13 +255,18 @@ export async function updateEmployeeService(authUser: AuthUser, id: string, inpu
   }
 
   const data: Prisma.EmployeeUpdateInput = {};
+  let nextEmployeeStatus: FirmStatus | undefined;
+  let nextEmployeeFirmId: string | null | undefined;
   if (typeof input.name === 'string' && input.name.trim()) data.name = input.name.trim();
   if (typeof input.role === 'string' && input.role.trim()) data.role = input.role.trim();
   if (input.salary !== undefined) data.salary = parseSalary(input.salary);
   if (input.currency !== undefined) data.currency = normalizeCurrency(input.currency);
   if (typeof input.status === 'string') {
     const status = input.status.toUpperCase();
-    if (status === 'ACTIVE' || status === 'SUSPENDED') data.status = status;
+    if (status === FirmStatus.ACTIVE || status === FirmStatus.SUSPENDED) {
+      nextEmployeeStatus = status;
+      data.status = status;
+    }
   }
   if (input.firmId !== undefined) {
     const nextFirmId = actorRole === 'FIRM'
@@ -258,13 +277,31 @@ export async function updateEmployeeService(authUser: AuthUser, id: string, inpu
     assertFirmEmployeeScope(authUser, nextFirmId);
     if (nextFirmId && !(await canAccessFirm(authUser, nextFirmId))) throw new ServiceError('Forbidden', 403);
     if (!nextFirmId && !isSuperAdmin(authUser)) throw new ServiceError('Firm is required');
+    if (!nextFirmId && existing.loginUserId) throw new ServiceError('A login-enabled employee must belong to a firm');
+    nextEmployeeFirmId = nextFirmId;
     data.firm = nextFirmId ? { connect: { id: nextFirmId } } : { disconnect: true };
   }
 
-  const updated = await prisma.employee.update({
-    where: { id },
-    data,
-    include: employeeInclude(),
+  const updated = await prisma.$transaction(async (tx) => {
+    const employee = await tx.employee.update({ where: { id }, data, include: employeeInclude() });
+    if (existing.loginUserId) {
+      const loginData: Prisma.UserUpdateInput = {};
+      if (nextEmployeeStatus) {
+        loginData.status = loginStatusForEmployeeStatus(nextEmployeeStatus);
+        loginData.deletedAt = null;
+      }
+      if (typeof input.role === 'string' && input.role.trim()) loginData.firmRole = loginRoleForEmployee(input.role);
+      if (typeof input.name === 'string' && input.name.trim()) loginData.fullName = input.name.trim();
+      if (nextEmployeeFirmId) loginData.firm = { connect: { id: nextEmployeeFirmId } };
+      if (Object.keys(loginData).length) {
+        loginData.sessionVersion = { increment: 1 };
+        await tx.user.update({
+          where: { id: existing.loginUserId },
+          data: loginData,
+        });
+      }
+    }
+    return employee;
   });
 
   return { before: existing, after: updated, fields: Object.keys(data) };
@@ -284,15 +321,22 @@ export async function softDeleteEmployeeService(authUser: AuthUser, id: string, 
     throw new ServiceError('Forbidden', 403);
   }
 
-  const deleted = await prisma.employee.update({
-    where: { id },
-    data: {
-      status: 'DELETED',
-      deletedAt: new Date(),
-      deletedByUserId: authUser.userId ? String(authUser.userId) : null,
-      deleteReason: typeof input.reason === 'string' ? input.reason.trim() || null : null,
-    },
-    include: employeeInclude(),
+  const deletedAt = new Date();
+  const deletedByUserId = authUser.userId ? String(authUser.userId) : null;
+  const deleteReason = typeof input.reason === 'string' ? input.reason.trim() || null : null;
+  const deleted = await prisma.$transaction(async (tx) => {
+    const employee = await tx.employee.update({
+      where: { id },
+      data: { status: 'DELETED', deletedAt, deletedByUserId, deleteReason },
+      include: employeeInclude(),
+    });
+    if (existing.loginUserId) {
+      await tx.user.update({
+        where: { id: existing.loginUserId },
+        data: { status: 'DELETED', deletedAt, deletedByUserId, deleteReason, sessionVersion: { increment: 1 } },
+      });
+    }
+    return employee;
   });
 
   return { before: existing, after: deleted };

@@ -20,6 +20,9 @@ function apiErrorMessage(err: unknown): string | undefined {
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [mfaTicket, setMfaTicket] = useState('');
+  const [mfaCode, setMfaCode] = useState('');
+  const [useRecoveryCode, setUseRecoveryCode] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [content, setContent] = useState<LoginPageContent>(defaultLoginPageContent);
@@ -59,9 +62,26 @@ export default function LoginPage() {
     e.preventDefault();
     setLoading(true);
     try {
-      const res = await api.post('/auth/login', { email, password });
-      const { token, user } = res.data;
-      login(token, user);
+      const res = mfaTicket
+        ? await api.post(useRecoveryCode ? '/auth/mfa/recovery' : '/auth/mfa/verify', {
+          mfaTicket,
+          code: useRecoveryCode ? undefined : mfaCode,
+          recoveryCode: useRecoveryCode ? mfaCode : undefined,
+          sessionTransport: 'cookie',
+        })
+        : await api.post('/auth/login', { email, password, sessionTransport: 'cookie' });
+      if (res.data?.mfaRequired && res.data?.mfaTicket) {
+        setMfaTicket(res.data.mfaTicket);
+        setMfaCode('');
+        toast.success(tr('Enter your verification code', 'Tasdiqlash kodini kiriting'));
+        return;
+      }
+      const { user } = res.data;
+      login(user);
+      if (res.data?.mfaSetupRequired) {
+        router.push('/security/mfa-setup');
+        return;
+      }
       toast.success(tr('Logged in successfully', 'Muvaffaqiyatli kirdik'));
       goToUserHome(user);
     } catch (err: unknown) {
@@ -185,6 +205,27 @@ export default function LoginPage() {
                   </div>
                 </div>
 
+                {mfaTicket && (
+                  <div>
+                    <label className="sr-only" htmlFor="mfa-code">{useRecoveryCode ? tr('Recovery code', 'Tiklash kodi') : tr('MFA code', 'MFA kodi')}</label>
+                    <div className="flex min-h-12 items-center gap-3 rounded-lg border border-[#273142] bg-[#111622]/78 px-4 text-[#a4abb8] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition focus-within:border-[#ff2337] sm:min-h-[72px] sm:gap-4 sm:px-5">
+                      <ShieldCheck size={22} />
+                      <input
+                        id="mfa-code"
+                        name="mfa-code"
+                        required
+                        className="min-w-0 flex-1 bg-transparent text-base text-white outline-none placeholder:text-[#a4abb8]"
+                        placeholder={useRecoveryCode ? tr('Recovery code', 'Tiklash kodi') : tr('6-digit code', '6 xonali kod')}
+                        value={mfaCode}
+                        onChange={(e) => setMfaCode(e.target.value)}
+                      />
+                    </div>
+                    <button type="button" onClick={() => setUseRecoveryCode((value) => !value)} className="mt-3 text-sm text-[#aeb4c0] transition hover:text-white">
+                      {useRecoveryCode ? tr('Use authenticator code', 'Authenticator kodidan foydalanish') : tr('Use recovery code', 'Tiklash kodidan foydalanish')}
+                    </button>
+                  </div>
+                )}
+
                 <div className="flex flex-col gap-3 text-sm text-[#aeb4c0] sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                   <label className="inline-flex items-center gap-3">
                     <input type="checkbox" className="h-5 w-5 rounded border-[#303a4f] bg-[#101520] accent-[#ff2337]" />
@@ -201,7 +242,7 @@ export default function LoginPage() {
                   className="mt-6 flex min-h-12 w-full items-center justify-center gap-3 rounded-lg bg-gradient-to-r from-[#ff142c] to-[#b60919] px-4 text-base font-extrabold text-white shadow-[0_18px_48px_rgba(239,35,60,0.3)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70 sm:mt-8 sm:min-h-[66px]"
                 >
                   <Lock size={22} />
-                  {loading ? resolveLocalizedText(content.submittingLabel, language) : resolveLocalizedText(content.submitLabel, language)}
+                  {loading ? resolveLocalizedText(content.submittingLabel, language) : mfaTicket ? tr('Verify', 'Tasdiqlash') : resolveLocalizedText(content.submitLabel, language)}
                 </button>
               </form>
 

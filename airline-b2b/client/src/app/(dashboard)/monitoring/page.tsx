@@ -104,7 +104,7 @@ export default function MonitoringPage() {
                 <th className="whitespace-nowrap px-3 py-2">{tr('Actions', 'Amallar')}</th>
                 <th className="whitespace-nowrap px-3 py-2">{tr('Firms', 'Firmalar')}</th>
                 <th className="whitespace-nowrap px-3 py-2">{tr('Users', 'Userlar')}</th>
-                <th className="whitespace-nowrap px-3 py-2">{tr('Read / write', 'O‘qish / yozish')}</th>
+                <th className="whitespace-nowrap px-3 py-2">{tr('Business actions', 'Biznes amallari')}</th>
                 <th className="whitespace-nowrap px-3 py-2">{tr('Previous month', 'Oldingi oy')}</th>
                 <th className="whitespace-nowrap px-3 py-2">{tr('Last used', 'Oxirgi ishlatilgan')}</th>
               </tr>
@@ -116,7 +116,7 @@ export default function MonitoringPage() {
                   <td className="whitespace-nowrap px-3 py-2 text-foreground">{row.totalActions}</td>
                   <td className="whitespace-nowrap px-3 py-2 text-muted">{row.uniqueFirms}</td>
                   <td className="whitespace-nowrap px-3 py-2 text-muted">{row.uniqueUsers}</td>
-                  <td className="whitespace-nowrap px-3 py-2 text-muted">{row.readActions} / {row.writeActions}</td>
+                  <td className="whitespace-nowrap px-3 py-2 text-muted">{row.totalActions}</td>
                   <td className="whitespace-nowrap px-3 py-2 text-muted">{row.previousMonthActions}</td>
                   <td className="whitespace-nowrap px-3 py-2 text-muted">{row.lastUsedAt ? new Date(row.lastUsedAt).toLocaleDateString('uz-UZ') : '—'}</td>
                 </tr>

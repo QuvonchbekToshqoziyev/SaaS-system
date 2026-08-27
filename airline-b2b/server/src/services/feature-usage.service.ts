@@ -29,54 +29,33 @@ const counters = new Map<string, Counter>();
 let flushTimer: NodeJS.Timeout | null = null;
 let flushing = false;
 
-const FEATURE_LABELS: Record<string, string> = {
-  accounts: 'Hisoblar',
-  airlines: 'Aviakompaniyalar',
-  auditLog: 'Audit log',
-  chat: 'Chat',
-  employees: 'Hodimlar',
-  expenseBudgets: 'Xarajat budjetlari',
-  expenseCategories: 'Xarajat kategoriyalari',
-  firms: 'Firmalar',
-  flights: 'Reyslar',
-  inventory: 'Ombor',
-  kassa: 'Kassa',
-  notifications: 'Bildirishnomalar',
-  reports: 'Hisobotlar',
-  services: 'Xizmatlar',
-  siteContent: 'Login sahifa sozlamalari',
-  telegram: 'Telegram',
-  tickets: 'Biletlar',
-  tourPackages: 'Turlar',
-  transactions: 'Tranzaksiyalar',
-};
-
 function monthStart(value: Date) {
   return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1));
 }
 
-function featureFromPath(path: string) {
-  const cleanPath = path.split('?')[0] || '/';
-  if (cleanPath === '/reports/product-metrics') return null;
-  const [segment, child] = cleanPath.split('/').filter(Boolean);
-  if (!segment) return null;
-  if (segment === 'audit-log') return 'auditLog';
-  if (segment === 'expense-budgets') return 'expenseBudgets';
-  if (segment === 'expense-categories') return 'expenseCategories';
-  if (segment === 'site-content') return 'siteContent';
-  if (segment === 'tour-packages') return 'tourPackages';
-  if (segment === 'reports' && child) return 'reports';
-  if (FEATURE_LABELS[segment]) return segment;
-  return null;
+function singular(value: string) {
+  const irregular: Record<string, string> = { people: 'person', services: 'service', companies: 'company' };
+  if (irregular[value]) return irregular[value];
+  return value.endsWith('ies') ? `${value.slice(0, -3)}y` : value.endsWith('s') ? value.slice(0, -1) : value;
 }
 
-function actionFromMethod(method: string) {
-  const normalized = method.toUpperCase();
-  if (normalized === 'GET') return 'READ';
-  if (normalized === 'POST') return 'CREATE';
-  if (normalized === 'PUT' || normalized === 'PATCH') return 'UPDATE';
-  if (normalized === 'DELETE') return 'DELETE';
-  return normalized;
+function labelFromKey(key: string) {
+  return key.split('.').map((part) => part.replace(/[-_]/g, ' ')).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
+}
+
+export function featureFromRequest(req: Request): { featureKey: string; featureLabel: string } | null {
+  const method = req.method.toUpperCase();
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return null;
+  const routePath = `${req.baseUrl || ''}${req.route?.path || ''}`.replace(/\\+/g, '/');
+  const parts = routePath.split('/').filter((part) => part && !part.startsWith(':'));
+  if (!parts.length || (parts[0] === 'reports' && parts[1] === 'product-metrics')) return null;
+  const semantic = parts.map(singular);
+  const actionWords = new Set(['open', 'close', 'reopen', 'assign', 'read', 'transfer', 'reconcile', 'cancel', 'release', 'link', 'preferences', 'change-password']);
+  const keyParts = method === 'POST'
+    ? semantic.length === 1 ? [semantic[0], 'create'] : actionWords.has(semantic[semantic.length - 1]) ? semantic : [...semantic, 'create']
+    : semantic.length === 1 ? [semantic[0], method === 'DELETE' ? 'delete' : 'update'] : [...semantic, method === 'DELETE' ? 'delete' : 'update'];
+  const featureKey = keyParts.join('.');
+  return { featureKey, featureLabel: labelFromKey(featureKey) };
 }
 
 function counterKey(counter: Omit<Counter, 'count' | 'firstUsedAt' | 'lastUsedAt'>) {
@@ -91,15 +70,16 @@ function counterKey(counter: Omit<Counter, 'count' | 'firstUsedAt' | 'lastUsedAt
 }
 
 export function recordFeatureUsage(req: Request) {
-  const featureKey = featureFromPath(req.path || req.originalUrl || '');
-  if (!featureKey) return;
+  const feature = featureFromRequest(req);
+  if (!feature) return;
   const actor = (((req as any).user || {}) as AuthUser);
+  if (!actor.userId) return;
   const now = new Date();
   const base = {
     month: monthStart(now),
-    featureKey,
-    featureLabel: FEATURE_LABELS[featureKey] || featureKey,
-    action: actionFromMethod(req.method),
+    featureKey: feature.featureKey,
+    featureLabel: feature.featureLabel,
+    action: 'USE',
     firmId: actor.firmId ? String(actor.firmId) : '',
     actorUserId: actor.userId ? String(actor.userId) : '',
     actorRole: actor.role ? String(actor.role).toUpperCase() : '',
@@ -131,7 +111,7 @@ export async function flushFeatureUsage() {
   try {
     for (const item of batch) {
       await prisma.$executeRaw(Prisma.sql`
-      INSERT INTO "FeatureUsageMonthly" (
+      INSERT INTO "FeatureEventMonthly" (
         "id", "month", "featureKey", "featureLabel", "action", "firmId", "actorUserId", "actorRole",
         "count", "firstUsedAt", "lastUsedAt", "createdAt", "updatedAt"
       )
@@ -141,8 +121,8 @@ export async function flushFeatureUsage() {
       )
       ON CONFLICT ("month", "featureKey", "action", "firmId", "actorUserId", "actorRole")
       DO UPDATE SET
-        "count" = "FeatureUsageMonthly"."count" + EXCLUDED."count",
-        "lastUsedAt" = GREATEST("FeatureUsageMonthly"."lastUsedAt", EXCLUDED."lastUsedAt"),
+        "count" = "FeatureEventMonthly"."count" + EXCLUDED."count",
+        "lastUsedAt" = GREATEST("FeatureEventMonthly"."lastUsedAt", EXCLUDED."lastUsedAt"),
         "updatedAt" = now()
       `);
     }
@@ -169,7 +149,7 @@ export async function listMonthlyFeatureUsage(now = new Date()) {
   const previousMonth = new Date(Date.UTC(currentMonth.getUTCFullYear(), currentMonth.getUTCMonth() - 1, 1));
   const rows = await prisma.$queryRaw<Array<{ month: Date; featureKey: string; featureLabel: string; action: string; firmId: string; actorUserId: string; count: number; lastUsedAt: Date }>>(Prisma.sql`
     SELECT "month", "featureKey", "featureLabel", "action", "firmId", "actorUserId", "count", "lastUsedAt"
-    FROM "FeatureUsageMonthly"
+    FROM "FeatureEventMonthly"
     WHERE "month" IN (${currentMonth}, ${previousMonth})
   `);
   const previous = new Map<string, number>();
@@ -185,8 +165,7 @@ export async function listMonthlyFeatureUsage(now = new Date()) {
     item.totalActions += count;
     if (row.firmId) item.firmIds.add(row.firmId);
     if (row.actorUserId) item.userIds.add(row.actorUserId);
-    if (row.action === 'READ') item.readActions += count;
-    else item.writeActions += count;
+    item.writeActions += count;
     if (!item.lastUsedAt || row.lastUsedAt > item.lastUsedAt) item.lastUsedAt = row.lastUsedAt;
     current.set(row.featureKey, item);
   }

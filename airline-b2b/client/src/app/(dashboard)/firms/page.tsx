@@ -11,6 +11,7 @@ import Link from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import ExportActions from '@/components/ui/ExportActions';
 import ActionButtons from '@/components/ui/ActionButtons';
+import { MIN_PASSWORD_LENGTH, passwordLengthMessage } from '@/lib/password-policy';
 
 type ApiErrorResponse = {
   error?: string;
@@ -161,8 +162,8 @@ export default function FirmsPage() {
       toast.error(tr('Firm email is required', 'Firma emaili kerak'));
       return;
     }
-    if (isSuperAdmin && initialPassword.length < 6) {
-      toast.error(tr('Password must be at least 6 characters', 'Parol kamida 6 ta belgidan iborat bo\'lishi kerak'));
+    if (isSuperAdmin && initialPassword.length < MIN_PASSWORD_LENGTH) {
+      toast.error(tr(passwordLengthMessage.en, passwordLengthMessage.uz));
       return;
     }
     if (!contactFullName.trim()) {

@@ -1,10 +1,34 @@
 "use client";
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { useRouter, usePathname } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
+import { api } from '@/lib/api';
 
 export type NormalizedRole = 'superadmin' | 'admin' | 'firm';
+
+const APP_CAPABILITIES = [
+  'dashboard.view',
+  'platform.admins.manage',
+  'audit.view',
+  'monitoring.view',
+  'airlines.view',
+  'organizations.view',
+  'flights.view',
+  'tours.view',
+  'services.view',
+  'inventory.view',
+  'finance.transactions.view',
+  'finance.kassa.view',
+  'employees.view',
+  'chat.view',
+  'reports.view',
+  'settings.view',
+] as const;
+
+export type AppCapability = typeof APP_CAPABILITIES[number];
+
+const APP_CAPABILITY_SET = new Set<string>(APP_CAPABILITIES);
 
 export interface User {
   id: string;
@@ -17,18 +41,18 @@ export interface User {
   firmKind?: 'AGENCY' | 'AIRLINE' | 'CONTRACTOR' | null;
   firmId: string | null;
   subscriptionEndsAt?: string | null;
+  mfaConfirmedAt?: string | null;
+  capabilities: AppCapability[];
 }
 
 export type SavedAccount = User & {
-  token: string;
   lastUsedAt: string;
 };
 
 interface AuthContextType {
   user: User | null;
-  token: string | null;
-  login: (token: string, user: unknown) => void;
-  logout: () => void;
+  login: (user: unknown) => void;
+  logout: () => Promise<void>;
   savedAccounts: SavedAccount[];
   switchAccount: (accountId: string) => void;
   forgetAccount: (accountId: string) => void;
@@ -53,6 +77,21 @@ function normalizeFirmRole(role: unknown): User['firmRole'] {
   return 'MANAGER';
 }
 
+function legacyCapabilities(role: NormalizedRole, firmRole: User['firmRole']): AppCapability[] {
+  const common: AppCapability[] = [
+    'dashboard.view', 'flights.view', 'tours.view', 'services.view', 'inventory.view',
+    'finance.transactions.view', 'finance.kassa.view', 'chat.view', 'reports.view', 'settings.view',
+  ];
+  if (role === 'superadmin') return [
+    ...common, 'platform.admins.manage', 'audit.view', 'monitoring.view', 'airlines.view',
+    'organizations.view', 'employees.view',
+  ];
+  if (role === 'admin' || firmRole === 'FIRM_ADMIN') return [...common, 'organizations.view', 'employees.view'];
+  if (firmRole === 'KASSIR') return ['finance.kassa.view', 'chat.view', 'settings.view'];
+  if (firmRole === 'OMBOR_MUDIRI') return ['inventory.view'];
+  return common;
+}
+
 function normalizeUser(raw: unknown): User | null {
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as any;
@@ -63,26 +102,28 @@ function normalizeUser(raw: unknown): User | null {
   const firmIdRaw = obj.firmId ?? obj.firm_id ?? null;
   const firmId = typeof firmIdRaw === 'string' ? firmIdRaw : firmIdRaw ? String(firmIdRaw) : null;
 
+  const role = normalizeRole(obj.role);
+  const firmRole = normalizeFirmRole(obj.firmRole ?? obj.firm_role);
+  const capabilities = Array.isArray(obj.capabilities)
+    ? obj.capabilities.filter((value: unknown): value is AppCapability => typeof value === 'string' && APP_CAPABILITY_SET.has(value))
+    : legacyCapabilities(role, firmRole);
+
   return {
     id: typeof idVal === 'string' ? idVal : idVal ? String(idVal) : '',
     email: emailVal,
     fullName: typeof obj.fullName === 'string' ? obj.fullName : null,
     phone: typeof obj.phone === 'string' ? obj.phone : null,
-    role: normalizeRole(obj.role),
+    role,
     readOnlyAccess: obj.readOnlyAccess === true,
-    firmRole: normalizeFirmRole(obj.firmRole ?? obj.firm_role),
+    firmRole,
     firmKind: typeof (obj.firmKind ?? obj.firm_kind) === 'string'
       ? String(obj.firmKind ?? obj.firm_kind).toUpperCase() as User['firmKind']
       : null,
     firmId,
     subscriptionEndsAt: typeof obj.subscriptionEndsAt === 'string' ? obj.subscriptionEndsAt : null,
+    mfaConfirmedAt: typeof obj.mfaConfirmedAt === 'string' ? obj.mfaConfirmedAt : null,
+    capabilities,
   };
-}
-
-function readSavedAccounts(): SavedAccount[] {
-  if (typeof window === 'undefined') return [];
-  localStorage.removeItem(SAVED_ACCOUNTS_KEY);
-  return [];
 }
 
 function writeSavedAccounts(accounts: SavedAccount[]) {
@@ -93,14 +134,10 @@ function writeSavedAccounts(accounts: SavedAccount[]) {
   localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(accounts));
 }
 
-function persistActiveSession(nextToken: string, nextUser: User) {
-  localStorage.setItem('token', nextToken);
-  localStorage.setItem('user', JSON.stringify(nextUser));
-}
-
-function clearActiveSession() {
+function clearLegacySession() {
   localStorage.removeItem('token');
   localStorage.removeItem('user');
+  localStorage.removeItem(SAVED_ACCOUNTS_KEY);
 }
 
 function accountHome(user: User): string {
@@ -112,52 +149,42 @@ function accountHome(user: User): string {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(null);
   const [savedAccounts, setSavedAccounts] = useState<SavedAccount[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
-  const pathname = usePathname();
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    setSavedAccounts(readSavedAccounts());
-    const storedToken = localStorage.getItem('token');
-    const storedUser = localStorage.getItem('user');
-    if (storedToken && storedUser) {
-      try {
-        const parsed = JSON.parse(storedUser);
-        const normalized = normalizeUser(parsed);
-        if (normalized) {
-          setToken(storedToken);
-          setUser(normalized);
-          persistActiveSession(storedToken, normalized);
-        } else {
-          clearActiveSession();
-        }
-      } catch {
-        clearActiveSession();
-      }
-    }
-    setIsLoading(false);
+    let cancelled = false;
+    clearLegacySession();
+    api.get('/auth/session')
+      .then((response) => {
+        if (!cancelled) setUser(normalizeUser(response.data?.user));
+      })
+      .catch(() => {
+        if (!cancelled) setUser(null);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => { cancelled = true; };
   }, []);
 
-  const login = (newToken: string, newUser: unknown) => {
+  const login = (newUser: unknown) => {
     const normalized = normalizeUser(newUser);
     if (!normalized) return;
     queryClient.clear();
     writeSavedAccounts([]);
     setSavedAccounts([]);
-    persistActiveSession(newToken, normalized);
-    setToken(newToken);
     setUser(normalized);
   };
 
-  const logout = () => {
+  const logout = async () => {
+    await api.post('/auth/logout');
     queryClient.clear();
     writeSavedAccounts([]);
     setSavedAccounts([]);
-    clearActiveSession();
-    setToken(null);
+    clearLegacySession();
     setUser(null);
     router.push('/login');
   };
@@ -166,15 +193,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const account = savedAccounts.find((item) => item.id === accountId || item.email === accountId);
     if (!account) return;
     queryClient.clear();
-    const { token: accountToken, lastUsedAt: _lastUsedAt, ...nextUser } = account;
+    const { lastUsedAt: _lastUsedAt, ...nextUser } = account;
     const nextAccounts = [
       { ...account, lastUsedAt: new Date().toISOString() },
       ...savedAccounts.filter((item) => item.id !== account.id),
     ];
     writeSavedAccounts(nextAccounts);
     setSavedAccounts(nextAccounts);
-    persistActiveSession(accountToken, nextUser);
-    setToken(accountToken);
     setUser(nextUser);
     router.push(accountHome(nextUser));
   };
@@ -185,24 +210,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSavedAccounts(nextAccounts);
     if (user && (user.id === accountId || user.email === accountId)) {
       queryClient.clear();
-      const nextAccount = nextAccounts[0];
-      if (nextAccount) {
-        const { token: nextToken, lastUsedAt: _lastUsedAt, ...nextUser } = nextAccount;
-        persistActiveSession(nextToken, nextUser);
-        setToken(nextToken);
-        setUser(nextUser);
-        router.push(accountHome(nextUser));
-      } else {
-        clearActiveSession();
-        setToken(null);
-        setUser(null);
-        router.push('/login');
-      }
+      clearLegacySession();
+      setUser(null);
+      void api.post('/auth/logout');
+      router.push('/login');
     }
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, login, logout, savedAccounts, switchAccount, forgetAccount, isLoading }}>
+    <AuthContext.Provider value={{ user, login, logout, savedAccounts, switchAccount, forgetAccount, isLoading }}>
       {children}
     </AuthContext.Provider>
   );

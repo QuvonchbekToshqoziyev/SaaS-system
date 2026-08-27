@@ -8,9 +8,10 @@ import type { AxiosError } from 'axios';
 import { useAuth } from '@/contexts/AuthContext';
 import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
 import ActionButtons from '@/components/ui/ActionButtons';
+import { MIN_PASSWORD_LENGTH } from '@/lib/password-policy';
 
 type ApiErrorResponse = { error?: string; };
-type AcceptInviteResponse = { success?: boolean; message?: string; token?: string; user?: { role?: string; [key: string]: unknown }; };
+type AcceptInviteResponse = { success?: boolean; message?: string; user?: { role?: string; [key: string]: unknown }; };
 
 function getApiErrorMessage(error: unknown): string | undefined {
   const axiosError = error as AxiosError<ApiErrorResponse>;
@@ -22,7 +23,7 @@ function InviteContent() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
-  const { token: currentToken, login } = useAuth();
+  const { user: currentUser, login } = useAuth();
   const searchParams = useSearchParams();
   const token = searchParams.get('token') || '';
   const id = searchParams.get('id') || '';
@@ -42,12 +43,11 @@ function InviteContent() {
 
     setLoading(true);
     try {
-      const res = await api.post<AcceptInviteResponse>('/invites/accept', { id, token, password });
-      const apiToken = res.data?.token;
+      const res = await api.post<AcceptInviteResponse>('/invites/accept', { id, token, password, sessionTransport: currentUser ? 'token' : 'cookie' });
       const apiUser = res.data?.user;
 
-      if (!currentToken && apiToken && apiUser) {
-        login(apiToken, apiUser);
+      if (!currentUser && apiUser) {
+        login(apiUser);
         toast.success('Hisob faollashtirildi. Tizimga kirdingiz.');
         const role = String(apiUser.role || '').toLowerCase();
         router.push(role === 'firm' ? '/firm' : '/admin');
@@ -150,7 +150,7 @@ function InviteContent() {
               confirmLabel="Tasdiqlash"
               busyLabel="Tasdiqlanmoqda..."
               busy={loading}
-              canConfirm={Boolean(token && id && password.length >= 6 && password === confirmPassword)}
+              canConfirm={Boolean(token && id && password.length >= MIN_PASSWORD_LENGTH && password === confirmPassword)}
               onCancel={() => { setPassword(''); setConfirmPassword(''); router.push('/login'); }}
             />
           </form>

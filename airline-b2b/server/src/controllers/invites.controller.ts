@@ -3,10 +3,12 @@ import { prisma } from '../db';
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
 import { FirmUserRole, Prisma, Role } from '@prisma/client';
-import jwt from 'jsonwebtoken';
 import { canAccessFirm } from '../utils/access';
 import { isFirmAdminLike, normalizeFirmUserRole } from '../utils/firm-user-roles';
 import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
+import { signSessionToken } from '../utils/session-token';
+import { PASSWORD_LENGTH_ERROR, passwordMeetsPolicy } from '../utils/password-policy';
+import { setSessionCookie } from '../utils/session-cookie';
 
 const ALLOWED_ROLES = new Set(Object.values(Role));
 
@@ -108,8 +110,8 @@ export const createInvite = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Email is required' });
   }
   const initialPasswordValue = typeof initialPassword === 'string' ? initialPassword : '';
-  if (initialPasswordValue && initialPasswordValue.length < 6) {
-    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  if (initialPasswordValue && !passwordMeetsPolicy(initialPasswordValue)) {
+    return res.status(400).json({ error: PASSWORD_LENGTH_ERROR });
   }
 
   const upperRole = typeof role === 'string' ? role.toUpperCase() : '';
@@ -325,8 +327,8 @@ export const acceptInvite = async (req: Request, res: Response) => {
   if (!password || typeof password !== 'string') {
     return res.status(400).json({ error: 'Password is required' });
   }
-  if (password.length < 6) {
-    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  if (!passwordMeetsPolicy(password)) {
+    return res.status(400).json({ error: PASSWORD_LENGTH_ERROR });
   }
 
   const invite = await prisma.invitation.findUnique({ where: { id } });
@@ -385,16 +387,14 @@ export const acceptInvite = async (req: Request, res: Response) => {
       return { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, role: user.role, firmRole: user.firmRole, firmId: user.firmId, firmKind: firm?.kind || null };
     });
 
-    const jwtToken = jwt.sign(
-      { userId: createdUser.id, role: createdUser.role, firmRole: createdUser.firmRole, firmId: createdUser.firmId, firmKind: createdUser.firmKind },
-      jwtSecret,
-      { expiresIn: '1d' },
-    );
+    const jwtToken = signSessionToken({ userId: createdUser.id, sessionVersion: 0 }, jwtSecret);
+    const cookieSession = req.body?.sessionTransport === 'cookie';
+    if (cookieSession) setSessionCookie(res, jwtToken);
 
     return res.json({
       success: true,
       message: 'Account created',
-      token: jwtToken,
+      ...(cookieSession ? {} : { token: jwtToken }),
       user: createdUser,
     });
   } catch (error: any) {

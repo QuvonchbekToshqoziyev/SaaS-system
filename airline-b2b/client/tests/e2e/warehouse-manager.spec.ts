@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!';
+const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!Secure';
 
 async function login(page: Page, email: string) {
   await page.goto('/login/');
@@ -25,8 +25,7 @@ test('Ombor mudiri is confined to warehouse control and operations', async ({ pa
   await expect(page.locator('a[href^="/employees"], a[href^="/kassa"], a[href^="/transactions"], a[href^="/flights"]')).toHaveCount(0);
 
   const statuses = await page.evaluate(async () => {
-    const token = localStorage.getItem('token');
-    const request = (path: string) => fetch(`/api${path}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.status);
+    const request = (path: string) => fetch(`/api${path}`).then((response) => response.status);
     return { inventory: await request('/inventory/bootstrap'), employees: await request('/employees'), kassa: await request('/kassa'), transactions: await request('/transactions') };
   });
   expect(statuses.inventory).toBe(200);

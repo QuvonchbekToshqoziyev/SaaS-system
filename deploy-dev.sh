@@ -37,7 +37,8 @@ SOURCE_FINGERPRINT_SCRIPT="$REPO_ROOT/scripts/source-fingerprint.mjs"
 BACKEND_ONLY=0
 FRONTEND_ONLY=0
 RUN_SCHEMA=0
-USE_SSH_KEY="${USE_SSH_KEY:-0}"
+USE_SSH_KEY="${USE_SSH_KEY:-1}"
+SSH_IDENTITY_FILE="${SSH_IDENTITY_FILE:-$HOME/.ssh/id_ed25519}"
 
 for arg in "$@"; do
   case $arg in
@@ -77,7 +78,7 @@ if [[ -f "$CREDS_FILE" ]]; then
   file_ip=$(awk -F':[[:space:]]*' 'tolower($1) ~ /(^|- )[[:space:]]*ip$|server/ {print $2; exit}' "$CREDS_FILE" || true)
   [[ -n "${file_user:-}" ]] && REMOTE_USER="$file_user"
   [[ -n "${file_ip:-}" ]] && REMOTE_SERVER_IP="$file_ip"
-  if [[ -z "${SSHPASS:-}" ]]; then
+  if [[ "$USE_SSH_KEY" != "1" && -z "${SSHPASS:-}" ]]; then
     SSHPASS=$(awk -F':[[:space:]]*' 'tolower($1) ~ /password|pass/ {print $2; exit}' "$CREDS_FILE" || true)
     export SSHPASS
   fi
@@ -86,8 +87,10 @@ fi
 REMOTE_HOST="${REMOTE_USER}@${REMOTE_SERVER_IP}"
 
 if [[ "$USE_SSH_KEY" == "1" ]]; then
-  remote() { ssh -o StrictHostKeyChecking=no "$REMOTE_HOST" "$@"; }
-  rsync_cmd() { rsync "$@"; }
+  [[ -f "$SSH_IDENTITY_FILE" ]] || { error "SSH key not found: $SSH_IDENTITY_FILE"; exit 1; }
+  SSH_KEY_OPTS=(-i "$SSH_IDENTITY_FILE" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new)
+  remote() { ssh "${SSH_KEY_OPTS[@]}" "$REMOTE_HOST" "$@"; }
+  rsync_cmd() { rsync -e "ssh -i $SSH_IDENTITY_FILE -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" "$@"; }
 else
   command -v sshpass >/dev/null 2>&1 || { error "sshpass not found. Install it or set USE_SSH_KEY=1."; exit 1; }
   [[ -z "${SSHPASS:-}" ]] && { error "No password: set SSHPASS env var or create server-pass.md"; exit 1; }
@@ -167,6 +170,14 @@ if ! grep -q '^JWT_SECRET=' "\$ENV_FILE"; then
   echo "JWT_SECRET created"
 else
   echo "JWT_SECRET present"
+fi
+
+if ! grep -q '^CHAT_ENCRYPTION_KEY=' "\$ENV_FILE"; then
+  secret=\$(openssl rand -hex 32)
+  echo "CHAT_ENCRYPTION_KEY=\$secret" >> "\$ENV_FILE"
+  echo "CHAT_ENCRYPTION_KEY created"
+else
+  echo "CHAT_ENCRYPTION_KEY present"
 fi
 
 write_var "NODE_ENV" "production"
@@ -273,7 +284,8 @@ HTTPONLY
     -e "s|__BACKEND_PORT__|${BACKEND_PORT}|g" \
     "$NGINX_DEST"
   ln -sf "$NGINX_DEST" "$NGINX_LINK"
-  nginx -t && systemctl reload nginx
+  nginx -t
+  systemctl reload nginx
   echo "HTTP bootstrap config enabled"
 
   echo "SSL cert missing - attempting certbot..."
@@ -302,7 +314,8 @@ NGINX_BOOTSTRAP
 set -euo pipefail
 ln -sf "$NGINX_DEST" "$NGINX_LINK"
 
-nginx -t && systemctl reload nginx
+nginx -t
+systemctl reload nginx
 echo "Nginx reloaded"
 NGINX_SETUP
   success "Nginx configured and reloaded"

@@ -322,7 +322,7 @@ export const getTransactions = async (req: Request, res: Response) => {
   if (conditions.length) where.AND = conditions;
 
   const pageNum = Math.max(1, parseInt(String(page)) || 1);
-  const limitNum = Math.max(1, parseInt(String(limit)) || 10);
+  const limitNum = Math.min(500, Math.max(1, parseInt(String(limit)) || 10));
   const skip = (pageNum - 1) * limitNum;
   const visibleWhere = visibleTransactionWhere(where);
 

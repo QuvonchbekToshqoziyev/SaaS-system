@@ -9,6 +9,7 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import ActionButtons from '@/components/ui/ActionButtons';
+import { MIN_PASSWORD_LENGTH, passwordLengthMessage } from '@/lib/password-policy';
 
 type ApiErrorResponse = { error?: string };
 
@@ -125,8 +126,8 @@ export default function AdminsPage() {
       toast.error(tr('Email is required', 'Email kerak'));
       return;
     }
-    if (newAdmin.password.length < 6) {
-      toast.error(tr('Password must be at least 6 characters', 'Parol kamida 6 ta belgidan iborat bo\'lishi kerak'));
+    if (newAdmin.password.length < MIN_PASSWORD_LENGTH) {
+      toast.error(tr(passwordLengthMessage.en, passwordLengthMessage.uz));
       return;
     }
 
@@ -364,7 +365,7 @@ export default function AdminsPage() {
                         <button
                           type="button"
                           onClick={() => saveAdmin(admin)}
-                          disabled={savingId === admin.id || !draft.email.trim() || (draft.password.length > 0 && draft.password.length < 6)}
+                          disabled={savingId === admin.id || !draft.email.trim() || (draft.password.length > 0 && draft.password.length < MIN_PASSWORD_LENGTH)}
                           className="inline-flex items-center gap-1 border border-border bg-surface-2 px-2 py-1 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50"
                         >
                           <Save size={14} />

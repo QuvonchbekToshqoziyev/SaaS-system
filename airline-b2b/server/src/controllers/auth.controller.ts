@@ -1,10 +1,16 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db';
 import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
 import { FirmUserRole, Prisma, Role } from '@prisma/client';
 import { writeAuditLog } from '../utils/audit';
 import { normalizeFirmUserRole } from '../utils/firm-user-roles';
+import { signSessionToken } from '../utils/session-token';
+import { PASSWORD_LENGTH_ERROR, passwordMeetsPolicy } from '../utils/password-policy';
+import { clearSessionCookie, setSessionCookie } from '../utils/session-cookie';
+import { buildTotpUri, generateRecoveryCodes, generateTotpSecret, signMfaTicket, verifyMfaTicket, verifyTotp } from '../utils/mfa';
+import { decryptChatString, encryptChatString } from '../utils/chat-crypto';
+import { clearLoginFailure, isLoginLocked, recordLoginFailure } from '../utils/login-protection';
+import { resolveAppCapabilities } from '../utils/app-capabilities';
 
 const adminUserSelect = {
   id: true,
@@ -13,6 +19,7 @@ const adminUserSelect = {
   readOnlyAccess: true,
   firmRole: true,
   status: true,
+  mfaConfirmedAt: true,
   fullName: true,
   phone: true,
   firmId: true,
@@ -36,6 +43,8 @@ const adminUserSelect = {
   updatedAt: true,
   deletedAt: true,
 } satisfies Prisma.UserSelect;
+
+const INVALID_CREDENTIALS = 'Invalid credentials';
 
 function normalizeAdminRole(value: unknown): Role {
   const role = String(value || Role.ADMIN).trim().toUpperCase();
@@ -63,7 +72,7 @@ async function hasOtherWritableSuperadmin(userId: string) {
       id: { not: userId },
       role: Role.SUPERADMIN,
       readOnlyAccess: false,
-      status: { not: 'DELETED' },
+      status: 'ACTIVE',
       deletedAt: null,
     },
   })) > 0;
@@ -88,6 +97,56 @@ async function replaceAdminFirmAccess(userId: string, firmIds: string[]) {
   }
 }
 
+function isPlatformAdmin(role: unknown) {
+  const normalized = String(role || '').toUpperCase();
+  return normalized === Role.SUPERADMIN || normalized === Role.ADMIN;
+}
+
+function loginKey(req: Request, email: string) {
+  return `${email.toLowerCase()}|${req.ip || req.socket.remoteAddress || ''}`;
+}
+
+function sessionUser(user: any) {
+  return {
+    id: user.id,
+    email: user.email,
+    fullName: user.fullName,
+    phone: user.phone,
+    role: user.role,
+    readOnlyAccess: user.readOnlyAccess,
+    firmRole: user.firmRole,
+    firmId: user.firmId,
+    firmKind: user.firm?.kind || null,
+    subscriptionEndsAt: user.firm?.subscriptionEndsAt || null,
+    mfaConfirmedAt: user.mfaConfirmedAt || null,
+    capabilities: resolveAppCapabilities(user),
+  };
+}
+
+function decryptedMfaSecret(value: string | null | undefined) {
+  const secret = decryptChatString(value);
+  if (!secret || secret === '[encrypted message unavailable]') return null;
+  return secret;
+}
+
+async function issueSession(res: Response, user: { id: string; sessionVersion: number }, cookieSession: boolean) {
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret || !jwtSecret.trim()) throw new Error('Server misconfigured');
+  const token = signSessionToken({ userId: user.id, sessionVersion: user.sessionVersion }, jwtSecret);
+  if (cookieSession) setSessionCookie(res, token);
+  return cookieSession ? {} : { token };
+}
+
+async function auditAuth(req: Request, action: string, email: string, ok: boolean, metadata?: unknown) {
+  await writeAuditLog(req, {
+    action,
+    entityType: 'auth',
+    entityLabel: email,
+    summary: `${action} ${ok ? 'succeeded' : 'failed'} for ${email}`,
+    metadata,
+  });
+}
+
 export const login = async (req: Request, res: Response) => {
   const { email, password } = req.body;
   if (typeof email !== 'string' || typeof password !== 'string') {
@@ -95,8 +154,13 @@ export const login = async (req: Request, res: Response) => {
   }
 
   const normalizedEmail = email.trim();
+  const key = loginKey(req, normalizedEmail);
   if (!normalizedEmail || !password) {
     return res.status(400).json({ error: 'Email and password are required' });
+  }
+  if (isLoginLocked(key)) {
+    await auditAuth(req, 'LOGIN_LOCKED', normalizedEmail, false);
+    return res.status(429).json({ error: 'Too many login attempts. Try again later.' });
   }
 
   const jwtSecret = process.env.JWT_SECRET;
@@ -110,12 +174,16 @@ export const login = async (req: Request, res: Response) => {
         equals: normalizedEmail,
         mode: 'insensitive',
       },
-      status: { not: 'DELETED' },
+      status: 'ACTIVE',
       deletedAt: null,
     },
     include: { firm: { select: { kind: true, subscriptionEndsAt: true } } },
   });
-  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+  if (!user) {
+    recordLoginFailure(key);
+    await auditAuth(req, 'LOGIN_FAILED', normalizedEmail, false);
+    return res.status(401).json({ error: INVALID_CREDENTIALS });
+  }
 
   if (user.role === Role.FIRM && user.firm?.subscriptionEndsAt && user.firm.subscriptionEndsAt <= new Date()) {
     return res.status(403).json({
@@ -125,14 +193,33 @@ export const login = async (req: Request, res: Response) => {
   }
   
   const valid = await bcrypt.compare(password, user.password);
-  if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+  if (!valid) {
+    recordLoginFailure(key);
+    await auditAuth(req, 'LOGIN_FAILED', normalizedEmail, false, { userId: user.id });
+    return res.status(401).json({ error: INVALID_CREDENTIALS });
+  }
 
-  const token = jwt.sign(
-    { userId: user.id, role: user.role, readOnlyAccess: user.readOnlyAccess, firmRole: user.firmRole, firmId: user.firmId, firmKind: user.firm?.kind || null },
-    jwtSecret,
-    { expiresIn: '1d' },
-  );
-  res.json({ token, user: { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, role: user.role, readOnlyAccess: user.readOnlyAccess, firmRole: user.firmRole, firmId: user.firmId, firmKind: user.firm?.kind || null, subscriptionEndsAt: user.firm?.subscriptionEndsAt || null } });
+  const cookieSession = req.body?.sessionTransport === 'cookie';
+  clearLoginFailure(key);
+  if (isPlatformAdmin(user.role) && user.mfaConfirmedAt) {
+    await auditAuth(req, 'LOGIN_PASSWORD_OK_MFA_REQUIRED', normalizedEmail, true, { userId: user.id });
+    return res.json({ mfaRequired: true, mfaTicket: signMfaTicket({ userId: user.id, sessionVersion: user.sessionVersion }, jwtSecret) });
+  }
+
+  const transport = await issueSession(res, user, cookieSession);
+  const mfaSetupRequired = isPlatformAdmin(user.role) && !user.mfaConfirmedAt;
+  await auditAuth(req, 'LOGIN_SUCCEEDED', normalizedEmail, true, { userId: user.id, mfaSetupRequired });
+  res.json({ ...transport, mfaSetupRequired, user: sessionUser(user) });
+};
+
+export const getSession = async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  return res.json({ user });
+};
+
+export const logout = async (_req: Request, res: Response) => {
+  clearSessionCookie(res);
+  return res.json({ ok: true });
 };
 
 export const changePassword = async (req: Request, res: Response) => {
@@ -148,8 +235,8 @@ export const changePassword = async (req: Request, res: Response) => {
   if (!currentPassword || !newPassword) {
     return res.status(400).json({ error: 'currentPassword and newPassword are required' });
   }
-  if (newPassword.length < 6) {
-    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  if (!passwordMeetsPolicy(newPassword)) {
+    return res.status(400).json({ error: PASSWORD_LENGTH_ERROR });
   }
 
   const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -159,7 +246,7 @@ export const changePassword = async (req: Request, res: Response) => {
   if (!valid) return res.status(401).json({ error: 'Invalid current password' });
 
   const hashed = await bcrypt.hash(newPassword, 10);
-  await prisma.user.update({ where: { id: userId }, data: { password: hashed } });
+  const updated = await prisma.user.update({ where: { id: userId }, data: { password: hashed, sessionVersion: { increment: 1 } }, select: { id: true, sessionVersion: true } });
   await writeAuditLog(req, {
     action: 'UPDATE',
     entityType: 'user',
@@ -168,6 +255,140 @@ export const changePassword = async (req: Request, res: Response) => {
     summary: `Changed password for ${user.email}`,
     metadata: { field: 'password' },
   });
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret || !jwtSecret.trim()) return res.status(500).json({ error: 'Server misconfigured' });
+  const token = signSessionToken({ userId, sessionVersion: updated.sessionVersion }, jwtSecret);
+  const cookieSession = req.body?.sessionTransport === 'cookie';
+  if (cookieSession) setSessionCookie(res, token);
+  return res.json({ ok: true, ...(cookieSession ? {} : { token }) });
+};
+
+export const setupMfa = async (req: Request, res: Response) => {
+  const authUser = (req as any).user as { userId?: string; role?: string } | undefined;
+  if (!authUser?.userId || !isPlatformAdmin(authUser.role)) return res.status(403).json({ error: 'Admin account required' });
+
+  const user = await prisma.user.findUnique({ where: { id: authUser.userId }, select: { id: true, email: true, role: true } });
+  if (!user || !isPlatformAdmin(user.role)) return res.status(404).json({ error: 'Admin account not found' });
+
+  const secret = generateTotpSecret();
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { mfaSecret: encryptChatString(secret), mfaConfirmedAt: null, mfaRecoveryCodeHashes: [], mfaRecoveryCodeLastUsedAt: null },
+  });
+  await writeAuditLog(req, { action: 'MFA_SETUP_STARTED', entityType: 'user', entityId: user.id, entityLabel: user.email, summary: `MFA setup started for ${user.email}` });
+  return res.json({ secret, otpauthUri: buildTotpUri(user.email, secret) });
+};
+
+export const confirmMfa = async (req: Request, res: Response) => {
+  const authUser = (req as any).user as { userId?: string; role?: string } | undefined;
+  if (!authUser?.userId || !isPlatformAdmin(authUser.role)) return res.status(403).json({ error: 'Admin account required' });
+
+  const user = await prisma.user.findUnique({
+    where: { id: authUser.userId },
+    include: { firm: { select: { kind: true, subscriptionEndsAt: true } } },
+  });
+  const secret = decryptedMfaSecret(user?.mfaSecret);
+  if (!user || !secret) return res.status(400).json({ error: 'MFA setup is not active' });
+  if (!verifyTotp(secret, req.body?.code)) {
+    await auditAuth(req, 'MFA_CONFIRM_FAILED', user.email, false, { userId: user.id });
+    return res.status(401).json({ error: 'Invalid MFA code' });
+  }
+
+  const recoveryCodes = generateRecoveryCodes();
+  const hashes = await Promise.all(recoveryCodes.map((code) => bcrypt.hash(code, 10)));
+  const updated = await prisma.user.update({
+    where: { id: user.id },
+    data: { mfaConfirmedAt: new Date(), mfaRecoveryCodeHashes: hashes, sessionVersion: { increment: 1 } },
+    include: { firm: { select: { kind: true, subscriptionEndsAt: true } } },
+  });
+  const cookieSession = req.body?.sessionTransport !== 'token';
+  const transport = await issueSession(res, updated, cookieSession);
+  await writeAuditLog(req, { action: 'MFA_ENABLED', entityType: 'user', entityId: user.id, entityLabel: user.email, summary: `MFA enabled for ${user.email}` });
+  return res.json({ ...transport, user: sessionUser(updated), recoveryCodes });
+};
+
+export const verifyMfaLogin = async (req: Request, res: Response) => {
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret || !jwtSecret.trim()) return res.status(500).json({ error: 'Server misconfigured' });
+  try {
+    const ticket = verifyMfaTicket(String(req.body?.mfaTicket || ''), jwtSecret);
+    const user = await prisma.user.findUnique({
+      where: { id: ticket.userId },
+      include: { firm: { select: { kind: true, subscriptionEndsAt: true } } },
+    });
+    const secret = decryptedMfaSecret(user?.mfaSecret);
+    if (!user || user.status !== 'ACTIVE' || user.deletedAt || user.sessionVersion !== ticket.sessionVersion || !user.mfaConfirmedAt || !secret) throw new Error('Invalid MFA session');
+    if (!verifyTotp(secret, req.body?.code)) {
+      await auditAuth(req, 'MFA_LOGIN_FAILED', user.email, false, { userId: user.id });
+      return res.status(401).json({ error: 'Invalid MFA code' });
+    }
+    const cookieSession = req.body?.sessionTransport === 'cookie';
+    const transport = await issueSession(res, user, cookieSession);
+    await auditAuth(req, 'MFA_LOGIN_SUCCEEDED', user.email, true, { userId: user.id });
+    return res.json({ ...transport, user: sessionUser(user) });
+  } catch {
+    return res.status(401).json({ error: 'Invalid MFA session' });
+  }
+};
+
+export const recoverMfaLogin = async (req: Request, res: Response) => {
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret || !jwtSecret.trim()) return res.status(500).json({ error: 'Server misconfigured' });
+  try {
+    const ticket = verifyMfaTicket(String(req.body?.mfaTicket || ''), jwtSecret);
+    const user = await prisma.user.findUnique({
+      where: { id: ticket.userId },
+      include: { firm: { select: { kind: true, subscriptionEndsAt: true } } },
+    });
+    if (!user || user.status !== 'ACTIVE' || user.deletedAt || user.sessionVersion !== ticket.sessionVersion || !user.mfaConfirmedAt) throw new Error('Invalid MFA session');
+    const code = String(req.body?.recoveryCode || '').trim().toUpperCase();
+    let usedIndex = -1;
+    for (let i = 0; i < user.mfaRecoveryCodeHashes.length; i += 1) {
+      if (await bcrypt.compare(code, user.mfaRecoveryCodeHashes[i])) {
+        usedIndex = i;
+        break;
+      }
+    }
+    if (usedIndex < 0) {
+      await auditAuth(req, 'MFA_RECOVERY_FAILED', user.email, false, { userId: user.id });
+      return res.status(401).json({ error: 'Invalid recovery code' });
+    }
+    const nextHashes = user.mfaRecoveryCodeHashes.filter((_, index) => index !== usedIndex);
+    const updated = await prisma.user.update({
+      where: { id: user.id },
+      data: { mfaRecoveryCodeHashes: nextHashes, mfaRecoveryCodeLastUsedAt: new Date() },
+      include: { firm: { select: { kind: true, subscriptionEndsAt: true } } },
+    });
+    const cookieSession = req.body?.sessionTransport === 'cookie';
+    const transport = await issueSession(res, updated, cookieSession);
+    await auditAuth(req, 'MFA_RECOVERY_SUCCEEDED', user.email, true, { userId: user.id });
+    return res.json({ ...transport, user: sessionUser(updated) });
+  } catch {
+    return res.status(401).json({ error: 'Invalid MFA session' });
+  }
+};
+
+export const disableMfa = async (req: Request, res: Response) => {
+  const authUser = (req as any).user as { userId?: string; role?: string } | undefined;
+  if (!authUser?.userId) return res.status(401).json({ error: 'Unauthorized' });
+  const targetUserId = String(req.body?.userId || authUser.userId);
+  const isSelf = targetUserId === authUser.userId;
+  if (!isSelf && String(authUser.role).toUpperCase() !== Role.SUPERADMIN) return res.status(403).json({ error: 'Superadmin required' });
+
+  const user = await prisma.user.findUnique({ where: { id: targetUserId } });
+  if (!user || !isPlatformAdmin(user.role)) return res.status(404).json({ error: 'Admin account not found' });
+  if (isSelf) {
+    const validPassword = typeof req.body?.password === 'string' && await bcrypt.compare(req.body.password, user.password);
+    const secret = decryptedMfaSecret(user.mfaSecret);
+    const validCode = secret && verifyTotp(secret, req.body?.code);
+    if (!validPassword || !validCode) return res.status(401).json({ error: 'Password and MFA code are required' });
+  }
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { mfaSecret: null, mfaConfirmedAt: null, mfaRecoveryCodeHashes: [], mfaRecoveryCodeLastUsedAt: null, sessionVersion: { increment: 1 } },
+  });
+  await writeAuditLog(req, { action: 'MFA_DISABLED', entityType: 'user', entityId: user.id, entityLabel: user.email, summary: `MFA disabled for ${user.email}` });
   return res.json({ ok: true });
 };
 
@@ -232,7 +453,7 @@ export const createAdmin = async (req: Request, res: Response) => {
   const firmIds: string[] = Array.isArray(req.body?.firmIds) ? req.body.firmIds : [];
 
   if (!email) return res.status(400).json({ error: 'Email is required' });
-  if (!password || password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  if (!passwordMeetsPolicy(password)) return res.status(400).json({ error: PASSWORD_LENGTH_ERROR });
 
   const existing = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: { id: true } });
   if (existing) return res.status(400).json({ error: 'Account already exists for this email' });
@@ -309,8 +530,9 @@ export const updateAdmin = async (req: Request, res: Response) => {
     if (typeof req.body?.fullName === 'string') data.fullName = req.body.fullName.trim() || null;
     if (typeof req.body?.phone === 'string') data.phone = req.body.phone.trim() || null;
     if (typeof req.body?.password === 'string' && req.body.password) {
-      if (req.body.password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+      if (!passwordMeetsPolicy(req.body.password)) return res.status(400).json({ error: PASSWORD_LENGTH_ERROR });
       data.password = await bcrypt.hash(req.body.password, 10);
+      data.sessionVersion = { increment: 1 };
     }
 
     await prisma.$transaction(async (tx) => {
@@ -426,8 +648,9 @@ export const updateUser = async (req: Request, res: Response) => {
       data.firmRole = normalizeFirmUserRole(req.body?.firmRole ?? existing.firmRole);
     }
     if (typeof req.body?.password === 'string' && req.body.password) {
-      if (req.body.password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+      if (!passwordMeetsPolicy(req.body.password)) return res.status(400).json({ error: PASSWORD_LENGTH_ERROR });
       data.password = await bcrypt.hash(req.body.password, 10);
+      data.sessionVersion = { increment: 1 };
     }
 
     if (req.body?.firmId !== undefined) {

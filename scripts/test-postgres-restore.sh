@@ -10,10 +10,20 @@ set -a
 . "$ENV_FILE"
 set +a
 [[ -n "${RESTORE_TEST_DATABASE_URL:-}" ]] || { echo "Set RESTORE_TEST_DATABASE_URL to a disposable database ending in _restore_test" >&2; exit 1; }
-[[ "$RESTORE_TEST_DATABASE_URL" == *"_restore_test"* ]] || { echo "Refusing non-test restore target" >&2; exit 1; }
 
-pg_restore --list "$BACKUP_FILE" >/dev/null
+archive="$BACKUP_FILE"
+if [[ "$BACKUP_FILE" == *.enc ]]; then
+  [[ -n "${BACKUP_ENCRYPTION_PASSPHRASE:-}" ]] || { echo "BACKUP_ENCRYPTION_PASSPHRASE is required" >&2; exit 1; }
+  archive="$(mktemp --suffix=.dump)"
+  trap 'rm -f "${archive:-}"' EXIT
+  openssl enc -d -aes-256-cbc -pbkdf2 -in "$BACKUP_FILE" -out "$archive" -pass env:BACKUP_ENCRYPTION_PASSPHRASE
+fi
+
+restore_database="$(psql "$RESTORE_TEST_DATABASE_URL" -Atqc 'SELECT current_database()')"
+[[ "$restore_database" == *_restore_test ]] || { echo "Refusing non-test restore target: $restore_database" >&2; exit 1; }
+
+pg_restore --list "$archive" >/dev/null
 psql "$RESTORE_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;'
-pg_restore --exit-on-error --no-owner --no-acl --dbname="$RESTORE_TEST_DATABASE_URL" "$BACKUP_FILE"
+pg_restore --exit-on-error --no-owner --no-acl --dbname="$RESTORE_TEST_DATABASE_URL" "$archive"
 psql "$RESTORE_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'SELECT COUNT(*) AS restored_tables FROM pg_catalog.pg_tables WHERE schemaname = '\''public'\'';'
 echo "Restore test passed: $BACKUP_FILE"

@@ -10,6 +10,7 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import type { AxiosError } from 'axios';
 import ExportActions from '@/components/ui/ExportActions';
 import ActionButtons from '@/components/ui/ActionButtons';
+import { MIN_PASSWORD_LENGTH, passwordLengthMessage } from '@/lib/password-policy';
 
 type FirmOption = { id: string; name: string };
 type Employee = {
@@ -199,8 +200,8 @@ export default function EmployeesPage() {
       toast.error(tr('Email is required for login access', 'Login uchun email kerak'));
       return;
     }
-    if (wantsLogin && draft.password.length < 6) {
-      toast.error(tr('Password must be at least 6 characters', 'Parol kamida 6 ta belgidan iborat bo\'lishi kerak'));
+    if (wantsLogin && draft.password.length < MIN_PASSWORD_LENGTH) {
+      toast.error(tr(passwordLengthMessage.en, passwordLengthMessage.uz));
       return;
     }
 
@@ -315,8 +316,8 @@ export default function EmployeesPage() {
 
   const resetUserPassword = async (account: UserRow) => {
     const password = (resetDrafts[account.id] || '').trim();
-    if (password.length < 6) {
-      toast.error(tr('Password must be at least 6 characters', 'Parol kamida 6 ta belgidan iborat bo\'lishi kerak'));
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      toast.error(tr(passwordLengthMessage.en, passwordLengthMessage.uz));
       return;
     }
     try {
@@ -360,7 +361,7 @@ export default function EmployeesPage() {
     && Number(draft.salary) >= 0
     && /^[A-Z]{3}$/.test(draft.currency.trim().toUpperCase())
     && (isFirmUser || isSuperAdmin || draft.firmId)
-    && (!newEmployeeWantsLogin || (draft.email.trim() && draft.password.length >= 6))
+    && (!newEmployeeWantsLogin || (draft.email.trim() && draft.password.length >= MIN_PASSWORD_LENGTH))
   );
 
   return (
@@ -639,7 +640,7 @@ export default function EmployeesPage() {
                         <button
                           type="button"
                           onClick={() => resetUserPassword(account)}
-                          disabled={resettingUserId === account.id || (resetDrafts[account.id] || '').trim().length < 6}
+                          disabled={resettingUserId === account.id || (resetDrafts[account.id] || '').trim().length < MIN_PASSWORD_LENGTH}
                           className="inline-flex items-center gap-1 border border-border bg-surface-2 px-3 py-2 text-xs font-semibold text-foreground hover:bg-surface disabled:opacity-50"
                         >
                           <Save size={14} />

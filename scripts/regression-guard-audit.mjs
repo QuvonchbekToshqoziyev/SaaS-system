@@ -113,6 +113,17 @@ requireText('airline-b2b/server/src/middleware/auth.test.ts', "['POST', 'PATCH',
 requireText('scripts/dev-release-seed-audit.mjs', "login('qa.readonly-superadmin@ado.test')", 'live read-only superadmin audit missing');
 requireText('airline-b2b/server/prisma/migrations/20260717_add_read_only_superadmin/migration.sql', 'ADD COLUMN IF NOT EXISTS "readOnlyAccess"', 'read-only account migration missing');
 requireText('scripts/dev-kassa-workflow-audit.mjs', 'deleted cash row is still visible in kassa', 'live kassa transaction delete audit missing');
+requireText('airline-b2b/server/src/index.ts', "process.env.HOST || '127.0.0.1'", 'backend is not bound to loopback by default');
+requireText('airline-b2b/server/src/middleware/auth.ts', "actor.status !== 'ACTIVE'", 'inactive account session rejection missing');
+requireText('airline-b2b/server/src/middleware/auth.ts', 'sessionVersion', 'session revocation version check missing');
+requireText('airline-b2b/server/src/middleware/auth.test.ts', 'replaces stale token roles and tenant claims', 'canonical database authorization test missing');
+requireText('airline-b2b/server/prisma/schema.prisma', '@relation("EmployeeLogin"', 'employee login lifecycle relation missing');
+requireText('airline-b2b/server/src/controllers/transactions.controller.ts', 'Math.min(500, Math.max(1', 'transaction pagination limit is unbounded');
+requireText('nginx.conf.b2b.ado-finance.com', 'limit_req zone=ado_prod_login', 'production login throttling missing');
+requireText('airline-b2b/server/src/utils/session-cookie.ts', "httpOnly: true", 'browser session cookie is not HttpOnly');
+requireText('airline-b2b/server/src/middleware/auth.ts', "req.get('x-ado-csrf') !== '1'", 'cookie authentication CSRF guard missing');
+if (/localStorage\.setItem\(['"]token['"]/.test(authContext)) failures.push('browser authentication token is persisted in localStorage');
+requireText('nginx.conf.b2b.ado-finance.com', 'add_header Strict-Transport-Security', 'static HSTS header missing');
 
 for (const file of [
   'airline-b2b/client/src/app/invite/page.tsx',
@@ -155,5 +166,5 @@ requireText('airline-b2b/client/src/app/(dashboard)/flights/detail/page.tsx', 'd
 requireText('airline-b2b/client/src/app/(dashboard)/flights/detail/page.tsx', 'disabled={sellBusy || !singleSaleDraftValid}', 'single-ticket sale confirmation validity guard missing');
 requireText('airline-b2b/client/src/app/(dashboard)/flights/detail/page.tsx', 'disabled={sellBatchBusy || !batchSaleDraftValid}', 'batch ticket sale confirmation validity guard missing');
 
-console.log(JSON.stringify({ ok: failures.length === 0, checks: 86, failures }, null, 2));
+console.log(JSON.stringify({ ok: failures.length === 0, checks: 94, failures }, null, 2));
 if (failures.length) process.exitCode = 1;

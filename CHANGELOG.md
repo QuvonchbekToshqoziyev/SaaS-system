@@ -8,6 +8,55 @@ All releases use [Semantic Versioning](https://semver.org/):
 
 Every update must have a version, a changelog entry, and a passing release audit before deployment.
 
+## [1.9.0] - 2026-08-26
+
+### Added
+
+- ADO-SYSTEM kengayishi uchun mavjud holat, yetishmayotgan qismlar va bosqichlar `ADO_SYSTEM_EXPANSION.md` gap matrixida qayd etildi.
+- Productiondagi `Firm` modeli ma’lumotni xavfli ko‘chirmasdan ADO-SYSTEM organization tenant sifatida saqlanishi ADR bilan belgilandi.
+- Login va canonical sessiya foydalanuvchining platform/firm rolidan serverda hisoblangan modul capability ro‘yxatini qaytaradi; dashboard menyusi shu ro‘yxat bo‘yicha ko‘rinadi.
+
+### Compatibility and verification
+
+- Eski backend bilan rolling deploy paytida frontend avvalgi aniq rol matrixiga qaytadi; yangi backenddan kelgan noma’lum capability qiymatlari qabul qilinmaydi.
+- `SUPERADMIN`, `ADMIN`, `FIRM_ADMIN`, `MANAGER`, `KASSIR` va `OMBOR_MUDIRI` menyu contractlari unit test va server/client TypeScript tekshiruvi bilan himoyalandi.
+
+## [1.8.2] - 2026-08-25
+
+### Security
+
+- Platform adminlar uchun MFA oqimi qo‘shildi: TOTP sozlash/tasdiqlash, login paytida MFA ticket, recovery code bilan kirish, audit yozuvlari va MFA sozlanmaguncha admin APIlarini bloklash.
+- Noto‘g‘ri login urinishlari qisqa muddatli lockout bilan cheklanadi; backup skripti encrypted dump va kichik VPS uchun count-based retentionni qo‘llaydi.
+- Eskiz VPS uchun yengil `ufw`, `fail2ban` va PM2 logrotate baseline skripti qo‘shildi; skript default holatda dry-run bo‘lib qoladi.
+- Web sessiyasi JavaScript o‘qiy olmaydigan `HttpOnly`, `Secure`, `SameSite=Strict` cookie transportiga o‘tkazildi; eski `localStorage` tokenlari brauzer ishga tushganda o‘chiriladi.
+- Cookie bilan bajariladigan barcha o‘zgartirish so‘rovlari maxsus CSRF headerini talab qiladi; ruxsat etilgan tashqi API va release auditlari uchun Bearer token transporti saqlab qolindi.
+- Sahifa yangilanganda joriy foydalanuvchi serverdagi canonical sessiyadan tiklanadi, logout cookie’ni server javobida o‘chiradi va parol almashtirilganda joriy sessiya yangilanib, qolgan sessiyalar bekor qilinadi.
+
+### Verification
+
+- Cookie parsing/options, cookie-authenticated read, CSRF bloklash va ruxsat berilgan mutation uchun regressiya testlari qo‘shildi.
+- Critical browser smoke login javobida token yo‘qligini, `localStorage` bo‘shligini va sessiya cookie’sining `HttpOnly`, `Secure`, `SameSite=Strict` atributlarini tekshiradi.
+
+### Fixed
+
+- Kassa ma’lumotlari parallel yangilanganda kech kelgan eski javob yangi karta yoki boshqa joriy holatni ekrandan yo‘qotib qo‘yishi to‘xtatildi.
+
+## [1.8.1] - 2026-08-25
+
+### Security
+
+- Backend dev va production portlari faqat loopback interfeysida tinglaydi; login endpointi Nginx rate limit bilan himoyalandi va barcha statik/API javoblariga HSTS, CSP hamda boshqa xavfsizlik headerlari qo‘shildi.
+- JWT faqat `HS256`, aniq issuer va audience bilan tekshiriladi; har bir so‘rovda foydalanuvchining joriy roli, firma scope’i, statusi va session versiyasi bazadan qayta olinadi.
+- O‘chirilgan yoki to‘xtatilgan foydalanuvchi tokenlari rad etiladi, parol almashtirilganda oldingi sessiyalar darhol bekor qilinadi va sessiya muddati 8 soatga qisqartirildi.
+- Xodimga yaratilgan login endi xodim yozuviga bevosita bog‘lanadi; xodimni to‘xtatish yoki o‘chirish loginni shu tranzaksiyada bekor qiladi.
+- Yangi, reset va invite parollari uchun minimum uzunlik 12 belgiga oshirildi; transaction sahifalash limiti 500 bilan cheklandi.
+- Production chat yozuvlari uchun encryption key majburiy qilindi va runtime dependency auditdagi qolgan advisory yangilandi.
+
+### Verification
+
+- Canonical account authorization, inactive/revoked sessions, employee-login lifecycle va parol siyosati uchun regressiya testlari qo‘shildi.
+- Dev release fixture eski tokenning parol resetidan keyin `401` bo‘lishini va xodim-login bog‘lanishini live API orqali tekshiradi.
+
 ## [1.8.0] - 2026-08-06
 
 ### Added

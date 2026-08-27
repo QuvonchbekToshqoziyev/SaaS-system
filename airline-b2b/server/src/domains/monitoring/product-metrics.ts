@@ -143,14 +143,14 @@ export async function buildProductMetrics(now = new Date()) {
       month: dateKey(featureUsageMonthStart),
       rows: featureUsage,
       removalCandidates: featureUsage.filter((row) => row.uniqueFirms <= 1 && row.totalActions <= 3),
-      note: 'Feature usage is buffered in memory and flushed to monthly counters, so user requests do not wait for telemetry database writes.',
+      note: 'Feature usage counts successful authenticated business mutations by semantic endpoint. Page loads and read-only module requests are excluded. Data starts after the feature-event migration is deployed.',
     },
     definitions: {
       activeFirm: 'A firm with at least one transaction in the period.',
       kassaClosing: 'Active firm-days with a matching closed kassa day.',
       retention: 'Firms active in the previous rolling period that were also active in the current period.',
       renewal: 'A firm subscription end date extended through an audited update; payment is not yet independently verified.',
-      featureUsage: 'Successful authenticated API requests grouped by feature, month, firm and user.',
+      featureUsage: 'Successful authenticated business mutations grouped by semantic function, month, firm and user. Read-only page loads are excluded.',
     },
   };
 }

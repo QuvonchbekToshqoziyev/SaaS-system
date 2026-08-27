@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -12,6 +12,7 @@
     "seed:dev-qa": "npx ts-node prisma/seed-dev-qa.ts",
     "backfill:expense-categories": "npx ts-node prisma/backfill-expense-categories.ts",
     "repair:allocation-transactions": "node prisma/consolidate-allocation-transactions.js",
+    "repair:employee-login-link": "npx ts-node prisma/link-employee-login.ts",
     "audit:business-invariants": "node prisma/verify-business-invariants.js",
     "wipe:keep-superadmin": "npx ts-node prisma/wipe-keep-superadmin.ts"
   },

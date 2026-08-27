@@ -5,19 +5,11 @@ const savedAccountsKey = 'ado-b2b-saved-accounts';
 
 export const api = axios.create({
   baseURL,
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
+    'X-ADO-CSRF': '1',
   },
-});
-
-api.interceptors.request.use((config) => {
-  if (typeof window !== 'undefined') {
-    const token = localStorage.getItem('token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-  }
-  return config;
 });
 
 api.interceptors.response.use(

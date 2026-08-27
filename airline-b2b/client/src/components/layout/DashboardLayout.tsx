@@ -1,6 +1,6 @@
 "use client";
 
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth, type AppCapability } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { usePathname, useRouter } from 'next/navigation';
 import { Plane, PlaneTakeoff, LayoutDashboard, LogOut, ArrowRightLeft, UserCircle, Settings, BarChart3, Wallet, PackageOpen, BriefcaseBusiness, Users, ShieldCheck, MessageCircle, History, Bell, CheckCheck, Menu, MoreHorizontal, X, Activity, Warehouse } from 'lucide-react';
@@ -44,6 +44,7 @@ type NavLinkItem = {
   key: NavKey;
   href: string;
   icon: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }>;
+  capability: AppCapability;
 };
 
 type NavGroup = {
@@ -68,7 +69,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const isAirlineFirm = false;
   const isFirmKassir = normalizedRole === 'firm' && firmRole === 'KASSIR';
   const isWarehouseManager = normalizedRole === 'firm' && firmRole === 'OMBOR_MUDIRI';
-  const isFirmManager = normalizedRole === 'firm' && firmRole === 'MANAGER';
   const isKassirAllowedPath = pathname.startsWith('/kassa') || pathname.startsWith('/chat') || pathname.startsWith('/settings');
   const isWarehouseManagerAllowedPath = pathname.startsWith('/inventory');
 
@@ -86,6 +86,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   useEffect(() => {
     if (!isLoading && isWarehouseManager && !isWarehouseManagerAllowedPath) router.replace('/inventory');
   }, [isLoading, isWarehouseManager, isWarehouseManagerAllowedPath, router]);
+
+  useEffect(() => {
+    const adminNeedsMfaSetup = !isLoading && user && ['superadmin', 'admin'].includes(normalizedRole) && !user.mfaConfirmedAt;
+    if (adminNeedsMfaSetup) router.replace('/security/mfa-setup');
+  }, [isLoading, normalizedRole, router, user]);
 
   useEffect(() => {
     if (!user) return;
@@ -168,54 +173,57 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return null;
   }
 
-  const airlineNavLinks: NavLinkItem[] = [
-    { key: 'navFlights', href: '/flights', icon: PlaneTakeoff },
-    { key: 'navTransactions', href: '/transactions', icon: ArrowRightLeft },
-    { key: 'navKassa', href: '/kassa', icon: Wallet },
-    { key: 'navChat', href: '/chat', icon: MessageCircle },
-    { key: 'navReports', href: '/reports', icon: BarChart3 },
-    { key: 'navSettings', href: '/settings', icon: Settings },
-  ];
+  const hasCapability = (capability: AppCapability) => user.capabilities.includes(capability);
+  const visible = (links: NavLinkItem[]) => links.filter((link) => hasCapability(link.capability));
+
+  const airlineNavLinks: NavLinkItem[] = visible([
+    { key: 'navFlights', href: '/flights', icon: PlaneTakeoff, capability: 'flights.view' },
+    { key: 'navTransactions', href: '/transactions', icon: ArrowRightLeft, capability: 'finance.transactions.view' },
+    { key: 'navKassa', href: '/kassa', icon: Wallet, capability: 'finance.kassa.view' },
+    { key: 'navChat', href: '/chat', icon: MessageCircle, capability: 'chat.view' },
+    { key: 'navReports', href: '/reports', icon: BarChart3, capability: 'reports.view' },
+    { key: 'navSettings', href: '/settings', icon: Settings, capability: 'settings.view' },
+  ]);
 
   const firmNavLinks = isAirlineFirm ? airlineNavLinks : isWarehouseManager ? [
-    { key: 'navInventory' as const, href: '/inventory', icon: Warehouse },
+    { key: 'navInventory' as const, href: '/inventory', icon: Warehouse, capability: 'inventory.view' as const },
   ] : isFirmKassir ? [
-    { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
-    { key: 'navChat' as const, href: '/chat', icon: MessageCircle },
-    { key: 'navSettings' as const, href: '/settings', icon: Settings },
+    { key: 'navKassa' as const, href: '/kassa', icon: Wallet, capability: 'finance.kassa.view' as const },
+    { key: 'navChat' as const, href: '/chat', icon: MessageCircle, capability: 'chat.view' as const },
+    { key: 'navSettings' as const, href: '/settings', icon: Settings, capability: 'settings.view' as const },
   ] : [
-    { key: 'navDashboard' as const, href: '/firm', icon: LayoutDashboard },
-    ...(isFirmManager ? [] : [{ key: 'navFirms' as const, href: '/firms', icon: UserCircle }]),
-    { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff },
-    { key: 'navTours' as const, href: '/tours', icon: PackageOpen },
-    { key: 'navServices' as const, href: '/services', icon: BriefcaseBusiness },
-    { key: 'navInventory' as const, href: '/inventory', icon: Warehouse },
-    { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft },
-    { key: 'navKassa' as const, href: '/kassa', icon: Wallet },
-    ...(isFirmManager ? [] : [{ key: 'navEmployees' as const, href: '/employees', icon: Users }]),
-    { key: 'navChat' as const, href: '/chat', icon: MessageCircle },
-    { key: 'navReports' as const, href: '/reports', icon: BarChart3 },
-    { key: 'navSettings' as const, href: '/settings', icon: Settings },
-  ];
+    { key: 'navDashboard' as const, href: '/firm', icon: LayoutDashboard, capability: 'dashboard.view' as const },
+    { key: 'navFirms' as const, href: '/firms', icon: UserCircle, capability: 'organizations.view' as const },
+    { key: 'navFlights' as const, href: '/flights', icon: PlaneTakeoff, capability: 'flights.view' as const },
+    { key: 'navTours' as const, href: '/tours', icon: PackageOpen, capability: 'tours.view' as const },
+    { key: 'navServices' as const, href: '/services', icon: BriefcaseBusiness, capability: 'services.view' as const },
+    { key: 'navInventory' as const, href: '/inventory', icon: Warehouse, capability: 'inventory.view' as const },
+    { key: 'navTransactions' as const, href: '/transactions', icon: ArrowRightLeft, capability: 'finance.transactions.view' as const },
+    { key: 'navKassa' as const, href: '/kassa', icon: Wallet, capability: 'finance.kassa.view' as const },
+    { key: 'navEmployees' as const, href: '/employees', icon: Users, capability: 'employees.view' as const },
+    { key: 'navChat' as const, href: '/chat', icon: MessageCircle, capability: 'chat.view' as const },
+    { key: 'navReports' as const, href: '/reports', icon: BarChart3, capability: 'reports.view' as const },
+    { key: 'navSettings' as const, href: '/settings', icon: Settings, capability: 'settings.view' as const },
+  ].filter((link) => hasCapability(link.capability));
 
-  const adminNavLinks: NavLinkItem[] = [
-    { key: 'navAdminDashboard', href: '/admin', icon: LayoutDashboard },
-    ...(normalizedRole === 'superadmin' ? [{ key: 'navAdmins' as const, href: '/admins', icon: ShieldCheck }] : []),
-    ...(normalizedRole === 'superadmin' ? [{ key: 'navAuditLog' as const, href: '/audit-log', icon: History }] : []),
-    ...(normalizedRole === 'superadmin' ? [{ key: 'navMonitoring' as const, href: '/monitoring', icon: Activity }] : []),
-    ...(normalizedRole === 'superadmin' ? [{ key: 'navAirlines' as const, href: '/airlines', icon: Plane }] : []),
-    { key: 'navFirms', href: '/firms', icon: UserCircle },
-    { key: 'navFlights', href: '/flights', icon: PlaneTakeoff },
-    { key: 'navTours', href: '/tours', icon: PackageOpen },
-    { key: 'navServices', href: '/services', icon: BriefcaseBusiness },
-    { key: 'navInventory', href: '/inventory', icon: Warehouse },
-    { key: 'navTransactions', href: '/transactions', icon: ArrowRightLeft },
-    { key: 'navKassa', href: '/kassa', icon: Wallet },
-    { key: 'navEmployees', href: '/employees', icon: Users },
-    { key: 'navChat', href: '/chat', icon: MessageCircle },
-    { key: 'navReports', href: '/reports', icon: BarChart3 },
-    { key: 'navSettings', href: '/settings', icon: Settings },
-  ];
+  const adminNavLinks: NavLinkItem[] = visible([
+    { key: 'navAdminDashboard', href: '/admin', icon: LayoutDashboard, capability: 'dashboard.view' },
+    { key: 'navAdmins', href: '/admins', icon: ShieldCheck, capability: 'platform.admins.manage' },
+    { key: 'navAuditLog', href: '/audit-log', icon: History, capability: 'audit.view' },
+    { key: 'navMonitoring', href: '/monitoring', icon: Activity, capability: 'monitoring.view' },
+    { key: 'navAirlines', href: '/airlines', icon: Plane, capability: 'airlines.view' },
+    { key: 'navFirms', href: '/firms', icon: UserCircle, capability: 'organizations.view' },
+    { key: 'navFlights', href: '/flights', icon: PlaneTakeoff, capability: 'flights.view' },
+    { key: 'navTours', href: '/tours', icon: PackageOpen, capability: 'tours.view' },
+    { key: 'navServices', href: '/services', icon: BriefcaseBusiness, capability: 'services.view' },
+    { key: 'navInventory', href: '/inventory', icon: Warehouse, capability: 'inventory.view' },
+    { key: 'navTransactions', href: '/transactions', icon: ArrowRightLeft, capability: 'finance.transactions.view' },
+    { key: 'navKassa', href: '/kassa', icon: Wallet, capability: 'finance.kassa.view' },
+    { key: 'navEmployees', href: '/employees', icon: Users, capability: 'employees.view' },
+    { key: 'navChat', href: '/chat', icon: MessageCircle, capability: 'chat.view' },
+    { key: 'navReports', href: '/reports', icon: BarChart3, capability: 'reports.view' },
+    { key: 'navSettings', href: '/settings', icon: Settings, capability: 'settings.view' },
+  ]);
 
   const navLinks = normalizedRole === 'firm' ? firmNavLinks : adminNavLinks;
   const navGroups: NavGroup[] = normalizedRole === 'firm'
@@ -250,7 +258,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return false;
   });
 
-  const pageTitle = t(activeNavLink?.key ?? navLinks[0].key);
+  const pageTitle = t(activeNavLink?.key ?? (normalizedRole === 'firm' ? 'navDashboard' : 'navAdminDashboard'));
   const subscriptionDays = user.subscriptionEndsAt && currentTime !== null ? Math.max(0, Math.ceil((new Date(user.subscriptionEndsAt).getTime() - currentTime) / 86400000)) : null;
   const subscriptionCountdown = normalizedRole === 'firm' && subscriptionDays !== null ? (
     <div className={`rounded-lg border px-3 py-2 text-center ${subscriptionDays <= 7 ? 'border-red-500/40 bg-red-500/10 text-red-600' : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600'}`}>
@@ -272,8 +280,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <Image src="/ADO-icon.png" alt="ADO Logo" width={38} height={38} priority className="h-full w-full object-contain p-1" />
           </div>
           <div className="flex flex-col justify-center">
-            <h1 className="text-[17px] font-bold text-foreground tracking-tight select-none leading-none mb-[2px]">ADO Financial</h1>
-            <span className="text-[10px] text-muted uppercase tracking-[0.05em] select-none leading-none font-medium">Accounting & Carrier</span>
+            <h1 className="mb-[2px] select-none text-[17px] font-bold leading-none text-foreground">ADO SYSTEM</h1>
+            <span className="select-none text-[10px] font-medium uppercase tracking-normal text-muted">Business Management</span>
           </div>
         </div>
 
@@ -291,6 +299,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     <Link
                       key={link.href}
                       href={link.href}
+                      prefetch={false}
                       aria-label={t(link.key)}
                       aria-current={isActive ? 'page' : undefined}
                       className={`nav-item flex items-center gap-3 px-3 py-2 text-[14px] font-semibold ${isActive ? 'nav-item--active' : ''}`}
@@ -486,6 +495,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <Link
                 key={link.href}
                 href={link.href}
+                prefetch={false}
                 onClick={() => setIsMobileMenuOpen(false)}
                 className={`flex min-h-14 flex-col items-center justify-center gap-1 rounded-lg px-1 text-[10px] font-semibold ${
                   isActive ? 'bg-primary/10 text-primary' : 'text-muted'
@@ -527,7 +537,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <aside className="app-sidebar absolute left-0 top-0 flex h-dvh w-[min(86vw,360px)] flex-col border-r p-4 shadow-2xl">
             <div className="mb-4 flex items-center justify-between gap-3 border-b border-border pb-4">
               <div className="min-w-0">
-                <div className="text-lg font-bold text-foreground">ADO Financial</div>
+                <div className="text-lg font-bold text-foreground">ADO SYSTEM</div>
                 <div className="truncate text-xs uppercase tracking-wide text-muted">{normalizedRole === 'firm' ? firmRole.replace('_', ' ') : user.role}</div>
               </div>
               <button type="button" onClick={() => setIsMobileMenuOpen(false)} className="grid h-10 w-10 place-items-center rounded-md border border-border bg-surface-2" aria-label="Close navigation">
@@ -545,6 +555,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                         <Link
                           key={link.href}
                           href={link.href}
+                          prefetch={false}
                           onClick={() => setIsMobileMenuOpen(false)}
                           className={`flex min-h-12 items-center gap-3 rounded-md px-3 text-sm font-semibold ${isActive ? 'bg-surface-2 text-foreground' : 'text-muted'}`}
                         >

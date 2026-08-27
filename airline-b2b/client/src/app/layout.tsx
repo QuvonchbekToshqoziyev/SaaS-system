@@ -11,8 +11,8 @@ const barlowCondensed = Barlow_Condensed({ subsets: ['latin'], variable: '--font
 const ibmPlexMono = IBM_Plex_Mono({ subsets: ['latin'], variable: '--font-data', weight: ['400', '500', '600'] });
 
 export const metadata: Metadata = {
-  title: 'ADO Financial Accounting — Airline Platform',
-  description: 'ADO Financial Accounting Platform',
+  title: 'ADO SYSTEM - Business Management Platform',
+  description: 'ADO SYSTEM B2B business management platform',
   icons: {
     icon: '/ADO-icon.png',
     shortcut: '/ADO-icon.png',

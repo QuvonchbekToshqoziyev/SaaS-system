@@ -3,12 +3,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { currentQaMfaCode } from './qa-mfa.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim();
 const releaseTag = version.replace(/\./g, '');
 const base = String(process.env.DEV_BASE_URL || 'https://dev.b2b.booking.ado-finance.com').replace(/\/$/, '');
-const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!';
+const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!Secure';
 const expected = {
   flightNumber: `QA-${releaseTag}-NULL-ALLOC`,
   deskCode: `QA-${releaseTag}-K1`,
@@ -24,6 +25,7 @@ const expected = {
   mixedDeleteAllocationId: `qa-${releaseTag}-mixed-delete-allocation`,
   mixedDeleteTicketId: `qa-${releaseTag}-mixed-delete-ticket`,
   inventorySku: `QA-${releaseTag}-STOCK`,
+  securityEmployeeName: `QA ${version} Security employee`,
 };
 
 async function fetchReadWithRetry(url, init = {}) {
@@ -45,8 +47,18 @@ async function login(email) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
-  const data = await response.json();
-  if (response.status !== 200 || !data.token) throw new Error(`${email} login failed with ${response.status}`);
+  let data = await response.json();
+  let status = response.status;
+  if (status === 200 && data.mfaRequired && data.mfaTicket) {
+    const mfaResponse = await fetchReadWithRetry(`${base}/api/auth/mfa/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mfaTicket: data.mfaTicket, code: currentQaMfaCode(), sessionTransport: 'token' }),
+    });
+    data = await mfaResponse.json();
+    status = mfaResponse.status;
+  }
+  if (status !== 200 || !data.token) throw new Error(`${email} login failed with ${status}`);
   return data;
 }
 
@@ -58,11 +70,12 @@ async function get(token, endpoint) {
 }
 
 async function request(token, method, endpoint, body = {}) {
-  const response = await fetch(`${base}/api${endpoint}`, {
+  const init = {
     method,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  };
+  if (method !== 'GET' && method !== 'HEAD') init.body = JSON.stringify(body);
+  const response = await fetch(`${base}/api${endpoint}`, init);
   const data = await response.json();
   return { status: response.status, data };
 }
@@ -135,6 +148,16 @@ const outgoingAirlinePayment = requireArray(sourceTransactions?.data, 'source tr
 const sourceExpenseCategories = await get(sourceAdminToken, '/expense-categories');
 const sourceExpenseReport = await get(sourceAdminToken, '/reports/expense-estimate');
 const sourceEmployees = await get(sourceAdminToken, '/employees');
+const superadminUsers = await get(superadminToken, '/auth/users');
+const securityAccount = requireArray(superadminUsers, 'superadmin users').find((row) => row.email === 'qa.security@ado.test');
+const securityLogin = await login('qa.security@ado.test');
+const securityPasswordRotate = securityAccount
+  ? await request(superadminToken, 'PATCH', `/auth/users/${securityAccount.id}`, { password: 'QaSecurity2026!Rotated' })
+  : { status: 0, data: null };
+const revokedSecuritySession = await request(securityLogin.token, 'GET', '/firms');
+const securityPasswordRestore = securityAccount
+  ? await request(superadminToken, 'PATCH', `/auth/users/${securityAccount.id}`, { password })
+  : { status: 0, data: null };
 const [sourceInventoryBootstrap, sourceInventoryProducts, sourceInventoryStock, sourceInventoryDashboard, sourceInventoryReport, partnerInventoryProducts] = await Promise.all([
   get(sourceAdminToken, '/inventory/bootstrap'),
   get(sourceAdminToken, '/inventory/products'),
@@ -174,10 +197,23 @@ const paymentDay = paymentDesk
   ? await get(sourceAdminToken, `/kassa?date=${new Date().toISOString().slice(0, 10)}&kassaDeskId=${encodeURIComponent(paymentDesk.id)}`)
   : null;
 const releaseDayKey = new Date().toISOString().slice(0, 10);
-const editDayBefore = editDesk
+let editDayBefore = editDesk
   ? await get(sourceAdminToken, `/kassa?date=${releaseDayKey}&kassaDeskId=${encodeURIComponent(editDesk.id)}`)
   : null;
-const editTransactionBefore = requireArray(editDayBefore?.transactions || [], 'edit day transactions').find((row) => row.metadata?.marker === version);
+let editTransactionBefore = requireArray(editDayBefore?.transactions || [], 'edit day transactions').find((row) => row.metadata?.marker === version);
+const editPaymentCard = requireArray(editDayBefore?.paymentCards || [], 'edit payment cards').find((row) => row.ownerName === `QA ${version} Edit Visa`);
+if (editTransactionBefore && editPaymentCard && (editTransactionBefore.transactionType !== 'INCOME' || editTransactionBefore.paymentMethod !== 'card' || Number(editTransactionBefore.originalAmount) !== 500)) {
+  const normalized = await request(sourceAdminToken, 'PATCH', `/transactions/${editTransactionBefore.id}/daily-cash`, {
+    expectedUpdatedAt: editTransactionBefore.updatedAt,
+    flow: 'IN', operationPurpose: 'FLIGHT', method: 'card', amount: 500, currency: 'USD', exchangeRate: 12100,
+    counterpartyFirmId: editTransactionBefore.counterpartyId, flightId: sourceFlight?.id, allocationId: null, tourPackageId: null,
+    kassaDeskId: editDesk.id, paymentCardId: editPaymentCard.id, bankAccountId: null,
+    note: 'QA old 500 USD card income', correctionReason: `QA ${version} audit fixture reset`,
+  });
+  if (normalized.status !== 200) throw new Error(`Could not normalize kassa edit fixture: ${normalized.status}`);
+  editDayBefore = await get(sourceAdminToken, `/kassa?date=${releaseDayKey}&kassaDeskId=${encodeURIComponent(editDesk.id)}`);
+  editTransactionBefore = requireArray(editDayBefore?.transactions || [], 'normalized edit day transactions').find((row) => row.metadata?.marker === version);
+}
 const editAccountsBefore = editDesk ? await get(sourceAdminToken, `/accounts?firmId=${encodeURIComponent(editDesk.firmId)}`) : [];
 const editResult = editTransactionBefore && sourceFlight
   ? await request(sourceAdminToken, 'PATCH', `/transactions/${editTransactionBefore.id}/daily-cash`, {
@@ -200,6 +236,15 @@ const editCardAfter = requireArray(editAccountsAfter, 'edit accounts after').fin
 const editCashBefore = requireArray(editAccountsBefore, 'edit accounts before').find((row) => row.name === editCashAccountName && row.currency === 'USD');
 const editCashAfter = requireArray(editAccountsAfter, 'edit accounts after').find((row) => row.name === editCashAccountName && row.currency === 'USD');
 const editAuditLogs = editTransactionBefore ? await get(superadminToken, '/audit-log?action=CASH_TRANSACTION_UPDATED&limit=100') : { data: [] };
+const editRestoreResult = editTransactionAfter && editPaymentCard
+  ? await request(sourceAdminToken, 'PATCH', `/transactions/${editTransactionAfter.id}/daily-cash`, {
+      expectedUpdatedAt: editTransactionAfter.updatedAt,
+      flow: 'IN', operationPurpose: 'FLIGHT', method: 'card', amount: 500, currency: 'USD', exchangeRate: 12100,
+      counterpartyFirmId: editTransactionAfter.counterpartyId, flightId: sourceFlight?.id, allocationId: null, tourPackageId: null,
+      kassaDeskId: editDesk.id, paymentCardId: editPaymentCard.id, bankAccountId: null,
+      note: 'QA old 500 USD card income', correctionReason: `QA ${version} audit fixture cleanup`,
+    })
+  : { status: 0, data: null };
 const historicalImportBody = importDesk ? {
   firmId: importDesk.firmId,
   kassaDeskId: importDesk.id,
@@ -249,6 +294,8 @@ const checks = [
   { name: 'partner firm cannot see source firm inventory product', ok: !requireArray(partnerInventoryProducts, 'partner inventory products').some((row) => row.sku === expected.inventorySku) },
   { name: 'every visible firm has one complete non-duplicated default expense catalog', ok: categoryCountsByFirm.every(({ categories }) => categories.length >= 20 && new Set(categories.map((row) => row.code)).size === categories.length) },
   { name: 'salary payment employee selector has an active firm-scoped release employee', ok: requireArray(sourceEmployees, 'source employees').some((row) => row.name === `QA ${version} Kassa xodimi` && row.status === 'ACTIVE' && row.firmId === sourceAdminLogin.user?.firmId) },
+  { name: 'employee login is explicitly linked for lifecycle revocation', ok: requireArray(sourceEmployees, 'source employees').some((row) => row.name === expected.securityEmployeeName && row.loginUserId === securityAccount?.id) },
+  { name: 'password reset immediately revokes the prior session and cleanup succeeds', ok: securityPasswordRotate.status === 200 && revokedSecuritySession.status === 401 && securityPasswordRestore.status === 200 },
   { name: 'finance release seeds the stable default expense category catalog', ok: requireArray(sourceExpenseCategories, 'expense categories').length >= 20 && requireArray(sourceExpenseCategories, 'expense categories').some((row) => row.code === 'BANK_FEES' && row.isSystemDefault === true) },
   { name: 'bank fee fixture is posted with one double-entry journal line', ok: financeFixtureDetail?.status === 'APPLIED' && financeFixtureDetail?.operationType === 'BANK_FEE' && financeFixtureDetail?.journalEntry?.status === 'POSTED' && requireArray(financeFixtureDetail?.ledgerEntries, 'finance ledger entries').some((row) => row.debitAccount === 'FINANCE_COSTS' && String(row.creditAccount || '').startsWith('BANK:') && Number(row.amount) === 125000) },
   { name: 'expense estimate includes classified finance expense without treating it as legacy outflow', ok: Number(sourceExpenseReport?.kpis?.actualExpense || 0) >= 125000 && requireArray(sourceExpenseReport?.categories, 'expense report categories').some((row) => row.code === 'BANK_FEES' && Number(row.amount) >= 125000) },
@@ -262,6 +309,7 @@ const checks = [
   { name: 'kassa DTO returns display names and only a masked card number', ok: editTransactionBefore?.transactionType === 'INCOME' && editTransactionBefore?.directionLabel === 'Kimdan: QA DEV Partner Agency' && editTransactionBefore?.cardMaskedNumber === '**** **** **** 4821' && !JSON.stringify(editTransactionBefore).includes('8600') && Boolean(editTransactionBefore?.flightDisplayName) },
   { name: 'kassa correction atomically changes card income 500 to cash expense 400', ok: editResult.status === 200 && editTransactionAfter?.transactionType === 'EXPENSE' && Number(editTransactionAfter?.originalAmount) === 400 && editTransactionAfter?.paymentMethod === 'cash' && editTransactionAfter?.directionLabel === 'Kimga: QA DEV Partner Agency' && Number(editCardBefore?.balance) === 500 && Number(editCardAfter?.balance) === 0 && Number(editCashBefore?.balance) === 0 && Number(editCashAfter?.balance) === -400 },
   { name: 'kassa correction writes the required audit action', ok: requireArray(editAuditLogs?.data, 'edit audit logs').some((row) => row.entityId === editTransactionBefore?.id && row.action === 'CASH_TRANSACTION_UPDATED') },
+  { name: 'kassa correction audit restores its fixture', ok: editRestoreResult.status === 200 },
   { name: 'mixed legacy allocation can be rejected', ok: mixedRejectResult.status === 200 && mixedRejectAfter?.status === 'REJECTED' },
   { name: 'rejection restores only the still-pending outbound segments', ok: sourceMixedTickets.length === 2 && sourceMixedTickets.every((ticket) => ticket.legs?.some((leg) => leg.direction === 'OUTBOUND' && leg.status === 'AVAILABLE')) },
   { name: 'rejection preserves return segments already owned by the receiving firm', ok: partnerMixedTickets.length === 2 && partnerMixedTickets.every((ticket) => ticket.legs?.some((leg) => leg.direction === 'RETURN' && leg.status === 'ASSIGNED')) },

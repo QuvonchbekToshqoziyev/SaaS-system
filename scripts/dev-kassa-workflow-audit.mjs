@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
+import { currentQaMfaCode } from './qa-mfa.mjs';
+
 const base = String(process.env.DEV_BASE_URL || 'https://dev.b2b.booking.ado-finance.com').replace(/\/$/, '');
-const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!';
+const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!Secure';
 const actors = [
   ['superadmin', 'qa.superadmin@ado.test', '2026-06-20'],
   ['admin', 'qa.admin@ado.test', '2026-06-21'],
@@ -21,6 +23,11 @@ async function request(token, endpoint, options = {}) {
 
 async function login(email) {
   const result = await request('', '/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+  if (result.status === 200 && result.data.mfaRequired && result.data.mfaTicket) {
+    const mfa = await request('', '/auth/mfa/verify', { method: 'POST', body: JSON.stringify({ mfaTicket: result.data.mfaTicket, code: currentQaMfaCode(), sessionTransport: 'token' }) });
+    if (mfa.status !== 200 || !mfa.data.token || !mfa.data.user) throw new Error(`${email} MFA failed with ${mfa.status}`);
+    return mfa.data;
+  }
   if (result.status !== 200 || !result.data.token || !result.data.user) throw new Error(`${email} login failed with ${result.status}`);
   return result.data;
 }

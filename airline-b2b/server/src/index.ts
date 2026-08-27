@@ -39,6 +39,10 @@ if (!jwtSecret || !jwtSecret.trim()) {
   logger.fatal('FATAL: JWT_SECRET is required');
   process.exit(1);
 }
+if (process.env.NODE_ENV === 'production' && !String(process.env.CHAT_ENCRYPTION_KEY || '').trim()) {
+  logger.fatal('FATAL: CHAT_ENCRYPTION_KEY is required in production');
+  process.exit(1);
+}
 
 const app = express();
 
@@ -92,14 +96,14 @@ app.use(
       return callback(null, false);
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-ADO-CSRF'],
+    credentials: true,
     maxAge: 600,
   }),
 );
 
 app.use(express.json({ limit: '2mb' }));
 app.use(featureUsageMiddleware);
-
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -140,8 +144,9 @@ app.use('/telegram', telegramRoutes);
 app.use(errorHandler);
 
 const PORT = parseInt(process.env.PORT || '5000', 10);
-app.listen(PORT, '0.0.0.0', () => {
-  logger.info({ port: PORT }, 'Server running');
+const HOST = process.env.HOST || '127.0.0.1';
+app.listen(PORT, HOST, () => {
+  logger.info({ host: HOST, port: PORT }, 'Server running');
   startFeatureUsageFlush();
   startTelegramBot();
 });

@@ -1,0 +1,29 @@
+{
+  "name": "ado-extensions",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only extension ecosystem for the sealed ADO B2B base project",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "health": "node dist/index.js health",
+    "snapshot": "node dist/index.js snapshot",
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:integration-smoke": "node scripts/integration-smoke.mjs",
+    "release-check": "node scripts/release-check.mjs",
+    "test": "node --test dist/extensions/bhms21-accounting.test.js dist/registry.test.js dist/accounting/journal-engine.test.js dist/documents/document-service.test.js dist/tax/tax-service.test.js dist/payroll/payroll-service.test.js dist/notifications/notification-service.test.js dist/reporting/reporting-service.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "@types/node": "^22.15.0",
+    "@types/pg": "^8.15.4"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  }
+}

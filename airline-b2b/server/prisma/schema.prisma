@@ -205,8 +205,13 @@ model User {
   phone                           String?
   role                            Role                      @default(FIRM)
   readOnlyAccess                  Boolean                   @default(false)
+  sessionVersion                 Int                       @default(0)
   firmRole                        FirmUserRole              @default(MANAGER)
   status                          String                    @default("ACTIVE")
+  mfaSecret                       String?
+  mfaConfirmedAt                  DateTime?
+  mfaRecoveryCodeHashes           String[]                  @default([])
+  mfaRecoveryCodeLastUsedAt       DateTime?
   firmId                          String?
   firm                            Firm?                     @relation(fields: [firmId], references: [id])
   firmAccesses                    UserFirmAccess[]
@@ -232,6 +237,7 @@ model User {
   telegramLinkTokenHash           String?                   @unique
   telegramLinkExpiresAt           DateTime?
   telegramDeliveries              TelegramDelivery[]
+  employee                        Employee?                 @relation("EmployeeLogin")
   createdCurrencyRates            CurrencyRate[]            @relation("CurrencyRateCreatedBy")
   createdTicketSales              TicketSale[]              @relation("TicketSaleCreatedBy")
   createdExpenseCategories        ExpenseCategory[]         @relation("ExpenseCategoryCreatedBy")
@@ -410,6 +416,8 @@ model Employee {
   currency        String     @default("UZS")
   firmId          String?
   firm            Firm?      @relation(fields: [firmId], references: [id])
+  loginUserId     String?    @unique
+  loginUser       User?      @relation("EmployeeLogin", fields: [loginUserId], references: [id], onDelete: SetNull)
   status          FirmStatus @default(ACTIVE)
   deletedAt       DateTime?
   deletedByUserId String?
@@ -524,6 +532,27 @@ model AuditLog {
 }
 
 model FeatureUsageMonthly {
+  id          String   @id @default(uuid())
+  month       DateTime
+  featureKey  String
+  featureLabel String
+  action      String
+  firmId      String   @default("")
+  actorUserId String   @default("")
+  actorRole   String   @default("")
+  count       Int      @default(0)
+  firstUsedAt DateTime @default(now())
+  lastUsedAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([month, featureKey, action, firmId, actorUserId, actorRole])
+  @@index([month, featureKey])
+  @@index([firmId, month])
+  @@index([actorUserId, month])
+}
+
+model FeatureEventMonthly {
   id          String   @id @default(uuid())
   month       DateTime
   featureKey  String

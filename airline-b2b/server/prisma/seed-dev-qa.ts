@@ -2,11 +2,13 @@ import { FinancialAccountType, FirmUserRole, KassaStatus, Prisma, PrismaClient, 
 import bcrypt from 'bcryptjs';
 import 'dotenv/config';
 import { seedDefaultExpenseCategories } from '../src/services/expense-categories.service';
+import { encryptChatString } from '../src/utils/chat-crypto';
 
 const prisma = new PrismaClient();
-const password = 'QaDev2026!';
-const RELEASE_FIXTURE_VERSION = '1.8.0';
-const RELEASE_FIXTURE_DESCRIPTION = 'Kassa kategoriya qidiruvi va Ombor o‘lchov birligi regressiyasi';
+const password = 'QaDev2026!Secure';
+const qaMfaSecret = process.env.DEV_QA_MFA_SECRET || 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PX';
+const RELEASE_FIXTURE_VERSION = '1.9.0';
+const RELEASE_FIXTURE_DESCRIPTION = 'ADO-SYSTEM capability contract, admin MFA va cookie session regressiyasi';
 
 function assertDevSeedEnvironment() {
   const databaseUrl = String(process.env.DATABASE_URL || '');
@@ -25,7 +27,14 @@ async function firm(name: string, kind: 'AGENCY' | 'AIRLINE' | 'CONTRACTOR', cur
 
 async function user(email: string, role: Role, firmId?: string, firmRole: FirmUserRole = FirmUserRole.MANAGER, readOnlyAccess = false) {
   const hash = await bcrypt.hash(password, 10);
-  return prisma.user.upsert({ where: { email }, update: { password: hash, role, firmId, firmRole, readOnlyAccess, status: 'ACTIVE', deletedAt: null, fullName: `QA DEV ${firmRole}` }, create: { email, password: hash, role, firmId, firmRole, readOnlyAccess, fullName: `QA DEV ${firmRole}` } });
+  const adminMfa = role === Role.SUPERADMIN || role === Role.ADMIN
+    ? { mfaSecret: encryptChatString(qaMfaSecret), mfaConfirmedAt: new Date('2026-08-25T00:00:00.000Z'), mfaRecoveryCodeHashes: [], mfaRecoveryCodeLastUsedAt: null }
+    : {};
+  return prisma.user.upsert({
+    where: { email },
+    update: { password: hash, role, firmId, firmRole, readOnlyAccess, sessionVersion: 0, status: 'ACTIVE', deletedAt: null, fullName: `QA DEV ${firmRole}`, ...adminMfa },
+    create: { email, password: hash, role, firmId, firmRole, readOnlyAccess, fullName: `QA DEV ${firmRole}`, ...adminMfa },
+  });
 }
 
 async function main() {
@@ -47,9 +56,17 @@ async function main() {
   const firmAdmin = await user('qa.firmadmin@ado.test', Role.FIRM, agency.id, FirmUserRole.FIRM_ADMIN);
   const partnerAdmin = await user('qa.partneradmin@ado.test', Role.FIRM, partner.id, FirmUserRole.FIRM_ADMIN);
   const manager = await user('qa.manager@ado.test', Role.FIRM, agency.id, FirmUserRole.MANAGER);
+  const securityUser = await user('qa.security@ado.test', Role.FIRM, agency.id, FirmUserRole.MANAGER);
   const kassir1 = await user('qa.kassir1@ado.test', Role.FIRM, agency.id, FirmUserRole.KASSIR);
   const kassir2 = await user('qa.kassir2@ado.test', Role.FIRM, agency.id, FirmUserRole.KASSIR);
   await user('qa.ombor.mudiri@ado.test', Role.FIRM, agency.id, FirmUserRole.OMBOR_MUDIRI);
+  const securityEmployeeName = `QA ${RELEASE_FIXTURE_VERSION} Security employee`;
+  const existingSecurityEmployee = await prisma.employee.findFirst({
+    where: { firmId: agency.id, OR: [{ loginUserId: securityUser.id }, { name: securityEmployeeName }] },
+  });
+  const securityEmployee = existingSecurityEmployee
+    ? await prisma.employee.update({ where: { id: existingSecurityEmployee.id }, data: { name: securityEmployeeName, role: 'MANAGER', status: 'ACTIVE', deletedAt: null, loginUserId: securityUser.id } })
+    : await prisma.employee.create({ data: { name: securityEmployeeName, role: 'MANAGER', firmId: agency.id, status: 'ACTIVE', loginUserId: securityUser.id } });
   await prisma.userFirmAccess.createMany({ data: [agency.id, partner.id].map((firmId) => ({ userId: admin.id, firmId })), skipDuplicates: true });
   await prisma.$transaction(async (tx) => {
     for (const seededFirm of [agency, partner, airlineFirm, provider, noLoginFirm]) {
@@ -650,9 +667,9 @@ async function main() {
   else await prisma.notification.create({ data: releaseNotificationData });
 
   console.log(JSON.stringify({
-    releaseFixture: { version: RELEASE_FIXTURE_VERSION, description: RELEASE_FIXTURE_DESCRIPTION, flightNumber: releaseFlightNumber, deskCode: releaseDesk.code, carryDeskCode: carryDesk.code, importDeskCode: importDesk.code, editDeskCode: editDesk.code, editTransactionId: releaseEditTransaction.id, financeTransactionId: financeFixture.id, financeLedgerId: financeLedger.id, inventorySku, inventoryProductId: inventoryProduct.id, inventoryMovementId: inventoryMovement.id, inventoryTransactionId: inventoryTransaction.id, inventoryLedgerId: inventoryLedger.id, salaryEmployeeId: salaryEmployee.id, salaryEmployeeName, discountTourName, partnerOnlyServiceName, unassignedServiceName, mixedRejectAllocationId, mixedRejectTicketIds, mixedDeleteAllocationId, mixedDeleteTicketId },
+    releaseFixture: { version: RELEASE_FIXTURE_VERSION, description: RELEASE_FIXTURE_DESCRIPTION, flightNumber: releaseFlightNumber, deskCode: releaseDesk.code, carryDeskCode: carryDesk.code, importDeskCode: importDesk.code, editDeskCode: editDesk.code, editTransactionId: releaseEditTransaction.id, financeTransactionId: financeFixture.id, financeLedgerId: financeLedger.id, inventorySku, inventoryProductId: inventoryProduct.id, inventoryMovementId: inventoryMovement.id, inventoryTransactionId: inventoryTransaction.id, inventoryLedgerId: inventoryLedger.id, salaryEmployeeId: salaryEmployee.id, salaryEmployeeName, securityEmployeeId: securityEmployee.id, securityEmployeeName, discountTourName, partnerOnlyServiceName, unassignedServiceName, mixedRejectAllocationId, mixedRejectTicketIds, mixedDeleteAllocationId, mixedDeleteTicketId },
     password,
-    users: ['qa.superadmin@ado.test', 'qa.readonly-superadmin@ado.test', 'qa.admin@ado.test', 'qa.firmadmin@ado.test', 'qa.partneradmin@ado.test', 'qa.manager@ado.test', 'qa.kassir1@ado.test', 'qa.kassir2@ado.test', 'qa.ombor.mudiri@ado.test'],
+    users: ['qa.superadmin@ado.test', 'qa.readonly-superadmin@ado.test', 'qa.admin@ado.test', 'qa.firmadmin@ado.test', 'qa.partneradmin@ado.test', 'qa.manager@ado.test', 'qa.security@ado.test', 'qa.kassir1@ado.test', 'qa.kassir2@ado.test', 'qa.ombor.mudiri@ado.test'],
     firms: [agency.name, partner.name, airlineFirm.name, provider.name, noLoginFirm.name],
   }, null, 2));
 }

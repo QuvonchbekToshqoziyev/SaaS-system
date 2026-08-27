@@ -10,6 +10,7 @@ import { Bell, ChevronRight, CircleUserRound, Download, ExternalLink, FileSpread
 import { defaultLoginPageContent, normalizeLoginPageContent, resolveLocalizedText, type LoginPageContent } from '@/lib/login-content';
 import { downloadCsv, downloadXlsx, uzbekTemplates } from '@/lib/data-export';
 import ActionButtons from '@/components/ui/ActionButtons';
+import { MIN_PASSWORD_LENGTH, passwordLengthMessage } from '@/lib/password-policy';
 
 type LocalizedFieldKey =
   | 'brandName'
@@ -330,8 +331,8 @@ export default function SettingsPage() {
       toast.error(tr('Please fill in all fields', 'Iltimos, barcha maydonlarni to\'ldiring'));
       return;
     }
-    if (newPassword.length < 6) {
-      toast.error(tr('Password must be at least 6 characters', "Parol kamida 6 ta belgidan iborat bo'lishi kerak"));
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      toast.error(tr(passwordLengthMessage.en, passwordLengthMessage.uz));
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -344,6 +345,7 @@ export default function SettingsPage() {
       await api.post('/auth/change-password', {
         currentPassword,
         newPassword,
+        sessionTransport: 'cookie',
       });
 
       setCurrentPassword('');
@@ -999,7 +1001,7 @@ export default function SettingsPage() {
             confirmLabel={tr('Confirm', 'Tasdiqlash')}
             busyLabel={tr('Updating...', 'Yangilanmoqda...')}
             busy={submitting}
-            canConfirm={newPassword.length >= 6 && newPassword === confirmPassword}
+            canConfirm={newPassword.length >= MIN_PASSWORD_LENGTH && newPassword === confirmPassword}
             onCancel={() => { setCurrentPassword(''); setNewPassword(''); setConfirmPassword(''); }}
           />
         </form>

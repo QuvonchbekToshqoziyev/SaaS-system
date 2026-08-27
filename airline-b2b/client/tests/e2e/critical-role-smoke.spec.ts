@@ -1,6 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
+import crypto from 'node:crypto';
 
-const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!';
+const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!Secure';
+const qaMfaSecret = process.env.DEV_QA_MFA_SECRET || 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PX';
 
 const actors = [
   { name: 'superadmin', email: 'qa.superadmin@ado.test', home: '/admin', visibleNav: ['/admins', '/audit-log', '/monitoring', '/airlines', '/firms', '/flights', '/tours', '/services', '/transactions', '/kassa', '/employees', '/chat', '/reports', '/settings'], hiddenNav: [] },
@@ -14,9 +16,54 @@ async function login(page: Page, email: string, home: string) {
   await page.goto('/login/');
   await page.locator('#email-address').fill(email);
   await page.locator('#password').fill(password);
+  const loginResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/api/auth/login'));
   await page.locator('form button[type="submit"]').click();
+  expect((await (await loginResponse).json()).token).toBeUndefined();
+  if (['qa.superadmin@ado.test', 'qa.admin@ado.test'].includes(email)) {
+    await page.locator('#mfa-code').fill(currentQaMfaCode());
+    await page.locator('form button[type="submit"]').click();
+  }
   await expect(page).toHaveURL(new RegExp(`${home}/?$`));
-  await expect(page.getByRole('heading', { name: 'ADO Financial', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'ADO SYSTEM', exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('token'))).toBeNull();
+  const sessionCookie = (await page.context().cookies()).find((cookie) => cookie.name === 'ado_session');
+  expect(sessionCookie).toMatchObject({ httpOnly: true, secure: true, sameSite: 'Strict' });
+}
+
+function currentQaMfaCode() {
+  return totp(qaMfaSecret, Math.floor(Date.now() / 30000));
+}
+
+function totp(secret: string, counter: number) {
+  const key = base32Decode(secret);
+  const msg = Buffer.alloc(8);
+  msg.writeUInt32BE(Math.floor(counter / 0x100000000), 0);
+  msg.writeUInt32BE(counter >>> 0, 4);
+  const hmac = crypto.createHmac('sha1', key).update(msg).digest();
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const binary = ((hmac[offset] & 0x7f) << 24)
+    | ((hmac[offset + 1] & 0xff) << 16)
+    | ((hmac[offset + 2] & 0xff) << 8)
+    | (hmac[offset + 3] & 0xff);
+  return String(binary % 1000000).padStart(6, '0');
+}
+
+function base32Decode(secret: string) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = 0;
+  let value = 0;
+  const bytes: number[] = [];
+  for (const char of secret.replace(/=+$/g, '').toUpperCase()) {
+    const index = alphabet.indexOf(char);
+    if (index < 0) throw new Error('Invalid TOTP secret');
+    value = (value << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push((value >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(bytes);
 }
 
 async function selectOptions(select: ReturnType<Page['locator']>) {
@@ -45,7 +92,7 @@ for (const actor of actors) {
     for (const href of [actor.home, ...actor.visibleNav]) {
       currentSurface = href;
       await page.goto(`${href}/`, { waitUntil: 'domcontentloaded' });
-      await expect(page.getByRole('heading', { name: 'ADO Financial', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'ADO SYSTEM', exact: true })).toBeVisible();
       await expect(page.locator('body')).not.toContainText('Application error');
     }
 
@@ -137,7 +184,6 @@ test('firm admin sees complete warehouse keeper workflow and firm contractors', 
   const unitCode = `QA_${marker.slice(-6)}`;
   const unitName = `QA birlik ${marker}`;
   const unitForm = page.getByRole('form', { name: 'O‘lchov birligi qo‘shish' });
-  const token = await page.evaluate(() => localStorage.getItem('token'));
   let unitId = '';
   try {
     await unitForm.getByLabel('Birlik kodi').fill(unitCode);
@@ -150,7 +196,7 @@ test('firm admin sees complete warehouse keeper workflow and firm contractors', 
     expect(unitId).toBeTruthy();
     await expect(page.getByText(unitName, { exact: true })).toBeVisible();
   } finally {
-    if (unitId) await page.request.delete(`/api/inventory/units/${unitId}`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, data: {} });
+    if (unitId) await page.request.delete(`/api/inventory/units/${unitId}`, { headers: { 'X-ADO-CSRF': '1' }, data: {} });
   }
 
   await page.getByRole('button', { name: 'Hisobotlar', exact: true }).click();
@@ -168,8 +214,7 @@ test('firm admin can create, open and add a card to a first kassa', async ({ pag
   const deskCode = `QK-${marker.slice(-6)}`;
   const cardOwner = `QA Karta ${marker}`;
   const businessDate = new Date().toISOString().slice(0, 10);
-  const token = await page.evaluate(() => localStorage.getItem('token'));
-  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const headers: Record<string, string> = { 'X-ADO-CSRF': '1' };
   let deskId = '';
   let cardId = '';
   let opened = false;

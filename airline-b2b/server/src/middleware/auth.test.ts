@@ -1,5 +1,111 @@
-import { describe, expect, it } from 'vitest';
-import { isReadOnlyHttpMethod, isSubscriptionExpired, warehouseManagerCanAccessPath } from './auth';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { signSessionToken } from '../utils/session-token';
+
+const db = vi.hoisted(() => ({ findUnique: vi.fn() }));
+vi.mock('../db', () => ({ prisma: { user: { findUnique: db.findUnique } } }));
+
+import { authMiddleware, isReadOnlyHttpMethod, isSubscriptionExpired, warehouseManagerCanAccessPath } from './auth';
+
+function responseMock() {
+  const res: any = {};
+  res.status = vi.fn(() => res);
+  res.json = vi.fn(() => res);
+  return res;
+}
+
+describe('authenticated account boundary', () => {
+  const secret = 'test-secret-that-is-long-enough-for-signing';
+
+  beforeEach(() => {
+    process.env.JWT_SECRET = secret;
+    db.findUnique.mockReset();
+  });
+
+  it('replaces stale token roles and tenant claims with current database values', async () => {
+    const token = signSessionToken({ userId: 'user-1', sessionVersion: 2 }, secret);
+    db.findUnique.mockResolvedValue({
+      id: 'user-1', role: 'FIRM', readOnlyAccess: false, firmRole: 'MANAGER', firmId: 'firm-current',
+      status: 'ACTIVE', deletedAt: null, sessionVersion: 2,
+      firm: { kind: 'AGENCY', subscriptionEndsAt: null },
+    });
+    const req: any = { headers: { authorization: `Bearer ${token}` }, method: 'GET', originalUrl: '/firms' };
+    const res = responseMock();
+    const next = vi.fn();
+
+    await authMiddleware(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(req.user).toMatchObject({ role: 'FIRM', firmRole: 'MANAGER', firmId: 'firm-current' });
+  });
+
+  it('rejects deleted, suspended, and version-revoked sessions', async () => {
+    const token = signSessionToken({ userId: 'user-1', sessionVersion: 1 }, secret);
+    const req = () => ({ headers: { authorization: `Bearer ${token}` }, method: 'GET', originalUrl: '/firms' } as any);
+
+    for (const actor of [
+      { status: 'DELETED', deletedAt: new Date(), sessionVersion: 1 },
+      { status: 'SUSPENDED', deletedAt: null, sessionVersion: 1 },
+      { status: 'ACTIVE', deletedAt: null, sessionVersion: 2 },
+    ]) {
+      db.findUnique.mockResolvedValue({
+        id: 'user-1', role: 'FIRM', readOnlyAccess: false, firmRole: 'MANAGER', firmId: 'firm-1',
+        firm: { kind: 'AGENCY', subscriptionEndsAt: null }, ...actor,
+      });
+      const res = responseMock();
+      const next = vi.fn();
+      await authMiddleware(req(), res, next);
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(401);
+    }
+  });
+
+  it('accepts a cookie session for reads and requires the CSRF header for mutations', async () => {
+    const token = signSessionToken({ userId: 'user-1', sessionVersion: 1 }, secret);
+    db.findUnique.mockResolvedValue({
+      id: 'user-1', email: 'user@example.com', fullName: 'User', phone: null,
+      role: 'FIRM', readOnlyAccess: false, firmRole: 'MANAGER', firmId: 'firm-1',
+      status: 'ACTIVE', deletedAt: null, sessionVersion: 1,
+      firm: { kind: 'AGENCY', subscriptionEndsAt: null },
+    });
+    const request = (method: string, csrf?: string) => ({
+      headers: { cookie: `ado_session=${token}` }, method, originalUrl: '/firms',
+      get: (name: string) => name.toLowerCase() === 'x-ado-csrf' ? csrf : undefined,
+    } as any);
+
+    const readNext = vi.fn();
+    await authMiddleware(request('GET'), responseMock(), readNext);
+    expect(readNext).toHaveBeenCalledOnce();
+
+    const blocked = responseMock();
+    await authMiddleware(request('POST'), blocked, vi.fn());
+    expect(blocked.status).toHaveBeenCalledWith(403);
+    expect(db.findUnique).toHaveBeenCalledTimes(1);
+
+    const writeNext = vi.fn();
+    await authMiddleware(request('POST', '1'), responseMock(), writeNext);
+    expect(writeNext).toHaveBeenCalledOnce();
+  });
+
+  it('blocks platform admins from business APIs until MFA setup is confirmed', async () => {
+    const token = signSessionToken({ userId: 'admin-1', sessionVersion: 1 }, secret);
+    db.findUnique.mockResolvedValue({
+      id: 'admin-1', email: 'admin@example.com', fullName: 'Admin', phone: null,
+      role: 'ADMIN', readOnlyAccess: false, firmRole: 'MANAGER', firmId: null,
+      status: 'ACTIVE', deletedAt: null, sessionVersion: 1, mfaConfirmedAt: null,
+      firm: null,
+    });
+    const request = (path: string) => ({ headers: { authorization: `Bearer ${token}` }, method: 'GET', originalUrl: path } as any);
+
+    const blocked = responseMock();
+    await authMiddleware(request('/firms'), blocked, vi.fn());
+    expect(blocked.status).toHaveBeenCalledWith(403);
+    expect(blocked.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'MFA_SETUP_REQUIRED' }));
+
+    const allowedNext = vi.fn();
+    await authMiddleware(request('/auth/mfa/setup'), responseMock(), allowedNext);
+    expect(allowedNext).toHaveBeenCalledOnce();
+  });
+});
 
 describe('subscription expiry boundary', () => {
   const now = new Date('2026-07-11T12:00:00.000Z');

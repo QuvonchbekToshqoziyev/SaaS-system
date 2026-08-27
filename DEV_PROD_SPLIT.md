@@ -111,10 +111,22 @@ only after an explicit release decision and the checks in `FINAL_RELEASE_PLAN.md
 
 The maintained backup command is `scripts/backup-postgres.sh`. It creates a
 permission-restricted custom-format dump, verifies that PostgreSQL can read its
-catalog, and retains 14 days by default. `BACKUP_COPY_CMD` can copy the resulting
-`$BACKUP_FILE` to off-server storage. Use `scripts/test-postgres-restore.sh` with a
-dedicated database whose URL ends in `_restore_test` for a real restore test.
+catalog, and can encrypt the dump with `BACKUP_ENCRYPTION_PASSPHRASE`. Production
+must set `REQUIRE_BACKUP_ENCRYPTION=1`. Use `scripts/test-postgres-restore.sh`
+with a dedicated database whose actual name ends in `_restore_test` for a real
+encrypted restore test.
 
 Production scheduling is intentionally not installed by application deploys. Add
 the daily cron/systemd schedule only during an explicitly approved production
-operations change.
+operations change:
+
+```bash
+sudo scripts/install-backup-schedule.sh
+scripts/pull-latest-backup.sh
+scripts/install-local-backup-pull.sh
+```
+
+The server timer keeps two encrypted copies. The local pull verifies SHA-256 and
+stores off-server copies under the ignored `.private-backups/` directory. Keep an
+off-server copy of both the backup passphrase and chat encryption key; an
+encrypted dump is unusable if its passphrase is lost.
