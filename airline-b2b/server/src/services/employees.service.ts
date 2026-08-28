@@ -299,6 +299,8 @@ export async function updateEmployeeService(authUser: AuthUser, id: string, inpu
           where: { id: existing.loginUserId },
           data: loginData,
         });
+        await tx.trustedDevice.updateMany({ where: { userId: existing.loginUserId, revokedAt: null }, data: { revokedAt: new Date() } });
+        await tx.loginVerificationChallenge.updateMany({ where: { userId: existing.loginUserId, consumedAt: null }, data: { consumedAt: new Date() } });
       }
     }
     return employee;
@@ -335,6 +337,8 @@ export async function softDeleteEmployeeService(authUser: AuthUser, id: string, 
         where: { id: existing.loginUserId },
         data: { status: 'DELETED', deletedAt, deletedByUserId, deleteReason, sessionVersion: { increment: 1 } },
       });
+      await tx.trustedDevice.updateMany({ where: { userId: existing.loginUserId, revokedAt: null }, data: { revokedAt: deletedAt } });
+      await tx.loginVerificationChallenge.updateMany({ where: { userId: existing.loginUserId, consumedAt: null }, data: { consumedAt: deletedAt } });
     }
     return employee;
   });

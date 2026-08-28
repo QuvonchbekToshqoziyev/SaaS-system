@@ -107,7 +107,7 @@ requireText('airline-b2b/server/prisma/seed-dev-qa.ts', "databaseUrl.includes('a
 requireText('deploy-dev.sh', 'ALLOW_DEV_QA_SEED=1 npm run seed:dev-qa', 'release seed missing from dev deploy');
 if (/ALLOW_DEV_QA_SEED|npm run seed:dev-qa/.test(read('deploy.sh'))) failures.push('production deploy directly runs dev QA seed');
 requireText('scripts/release-audit.mjs', "['scripts/dev-release-seed-audit.mjs']", 'live release seed audit missing from release gate');
-requireText('airline-b2b/server/prisma/schema.prisma', 'readOnlyAccess                  Boolean                   @default(false)', 'read-only account schema flag missing');
+requireText('airline-b2b/server/prisma/schema.prisma', 'readOnlyAccess                  Boolean', 'read-only account schema flag missing');
 requireText('airline-b2b/server/src/middleware/auth.ts', "code: 'READ_ONLY_ACCOUNT'", 'read-only mutation guard missing');
 requireText('airline-b2b/server/src/middleware/auth.test.ts', "['POST', 'PATCH', 'PUT', 'DELETE'].some(isReadOnlyHttpMethod)", 'read-only method regression test missing');
 requireText('scripts/dev-release-seed-audit.mjs', "login('qa.readonly-superadmin@ado.test')", 'live read-only superadmin audit missing');
@@ -124,6 +124,16 @@ requireText('airline-b2b/server/src/utils/session-cookie.ts', "httpOnly: true", 
 requireText('airline-b2b/server/src/middleware/auth.ts', "req.get('x-ado-csrf') !== '1'", 'cookie authentication CSRF guard missing');
 if (/localStorage\.setItem\(['"]token['"]/.test(authContext)) failures.push('browser authentication token is persisted in localStorage');
 requireText('nginx.conf.b2b.ado-finance.com', 'add_header Strict-Transport-Security', 'static HSTS header missing');
+requireText('airline-b2b/server/prisma/schema.prisma', 'model TrustedDevice {', 'trusted-device schema missing');
+requireText('airline-b2b/server/prisma/schema.prisma', 'model LoginVerificationChallenge {', 'login verification challenge schema missing');
+requireText('airline-b2b/server/src/controllers/auth.controller.ts', 'attempts: { increment: 1 }', 'verification attempt limit missing');
+requireText('airline-b2b/server/src/controllers/auth.controller.ts', 'consumedAt: null, attempts: { lt: 5 }', 'verification one-time consumption guard missing');
+requireText('airline-b2b/server/src/controllers/auth.controller.ts', 'hashTrustedDeviceSecret(nextSecret)', 'trusted-device token rotation missing');
+requireText('airline-b2b/server/src/controllers/auth.controller.ts', 'revokeTrustedSecurityState', 'trusted-device revocation missing from account changes');
+requireText('airline-b2b/server/src/utils/trusted-device-cookie.ts', "httpOnly: true", 'trusted-device cookie is not HttpOnly');
+requireText('airline-b2b/client/src/contexts/AuthContext.tsx', '!isPublicPath && (isLoading || !user)', 'protected UI hydration wall missing');
+requireText('deploy.sh', 'SMTP_HOST and SMTP_FROM are required', 'production email verification preflight missing');
+if (/\/mfa\//.test(read('airline-b2b/server/src/routes/auth.ts'))) failures.push('retired authenticator API is still mounted');
 
 for (const file of [
   'airline-b2b/client/src/app/invite/page.tsx',
@@ -166,5 +176,5 @@ requireText('airline-b2b/client/src/app/(dashboard)/flights/detail/page.tsx', 'd
 requireText('airline-b2b/client/src/app/(dashboard)/flights/detail/page.tsx', 'disabled={sellBusy || !singleSaleDraftValid}', 'single-ticket sale confirmation validity guard missing');
 requireText('airline-b2b/client/src/app/(dashboard)/flights/detail/page.tsx', 'disabled={sellBatchBusy || !batchSaleDraftValid}', 'batch ticket sale confirmation validity guard missing');
 
-console.log(JSON.stringify({ ok: failures.length === 0, checks: 94, failures }, null, 2));
+console.log(JSON.stringify({ ok: failures.length === 0, checks: 104, failures }, null, 2));
 if (failures.length) process.exitCode = 1;

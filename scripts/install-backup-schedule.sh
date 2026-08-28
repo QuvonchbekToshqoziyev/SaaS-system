@@ -6,10 +6,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_SCRIPT="${BACKUP_SCRIPT:-$SCRIPT_DIR/backup-postgres.sh}"
 ENV_FILE="${ENV_FILE:-/root/apps/ado-b2b/airline-b2b/server/.env}"
+BACKUP_SECRET_FILE="${BACKUP_SECRET_FILE:-/etc/ado-b2b/backup.env}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/ado-b2b/postgres}"
 
 [[ -x "$BACKUP_SCRIPT" ]] || { echo "Missing executable backup script: $BACKUP_SCRIPT" >&2; exit 1; }
 [[ -f "$ENV_FILE" ]] || { echo "Missing environment file: $ENV_FILE" >&2; exit 1; }
+[[ -f "$BACKUP_SECRET_FILE" ]] || { echo "Missing backup secret file: $BACKUP_SECRET_FILE" >&2; exit 1; }
+grep -Eq '^BACKUP_ENCRYPTION_PASSPHRASE=.{32,}$' "$BACKUP_SECRET_FILE" || { echo "Backup passphrase is missing or too short" >&2; exit 1; }
 
 install -m 700 "$BACKUP_SCRIPT" /usr/local/sbin/ado-b2b-backup-postgres
 install -d -m 700 "$BACKUP_DIR"
@@ -24,6 +27,7 @@ Type=oneshot
 Environment=BACKUP_DIR=$BACKUP_DIR
 Environment=RETENTION_COUNT=2
 Environment=REQUIRE_BACKUP_ENCRYPTION=1
+EnvironmentFile=$BACKUP_SECRET_FILE
 ExecStart=/usr/local/sbin/ado-b2b-backup-postgres $ENV_FILE
 UMask=0077
 Nice=10

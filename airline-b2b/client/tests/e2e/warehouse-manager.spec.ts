@@ -1,12 +1,20 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!Secure';
+const qaLoginCode = process.env.DEV_QA_LOGIN_CODE || '481927';
 
 async function login(page: Page, email: string) {
   await page.goto('/login/');
   await page.locator('#email-address').fill(email);
   await page.locator('#password').fill(password);
+  const loginResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/api/auth/login'));
   await page.locator('form button[type="submit"]').click();
+  const loginData = await (await loginResponse).json();
+  expect(loginData.token).toBeUndefined();
+  if (loginData.verificationRequired) {
+    await page.locator('#verification-code').fill(qaLoginCode);
+    await page.locator('form button[type="submit"]').click();
+  }
 }
 
 test('firm admin can choose Ombor mudiri with platform login', async ({ page }) => {

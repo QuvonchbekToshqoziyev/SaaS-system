@@ -2,13 +2,11 @@ import { FinancialAccountType, FirmUserRole, KassaStatus, Prisma, PrismaClient, 
 import bcrypt from 'bcryptjs';
 import 'dotenv/config';
 import { seedDefaultExpenseCategories } from '../src/services/expense-categories.service';
-import { encryptChatString } from '../src/utils/chat-crypto';
 
 const prisma = new PrismaClient();
 const password = 'QaDev2026!Secure';
-const qaMfaSecret = process.env.DEV_QA_MFA_SECRET || 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PX';
-const RELEASE_FIXTURE_VERSION = '1.9.0';
-const RELEASE_FIXTURE_DESCRIPTION = 'ADO-SYSTEM capability contract, admin MFA va cookie session regressiyasi';
+const RELEASE_FIXTURE_VERSION = '1.10.0';
+const RELEASE_FIXTURE_DESCRIPTION = 'ADO-SYSTEM capability contract, device verification va cookie session regressiyasi';
 
 function assertDevSeedEnvironment() {
   const databaseUrl = String(process.env.DATABASE_URL || '');
@@ -27,13 +25,10 @@ async function firm(name: string, kind: 'AGENCY' | 'AIRLINE' | 'CONTRACTOR', cur
 
 async function user(email: string, role: Role, firmId?: string, firmRole: FirmUserRole = FirmUserRole.MANAGER, readOnlyAccess = false) {
   const hash = await bcrypt.hash(password, 10);
-  const adminMfa = role === Role.SUPERADMIN || role === Role.ADMIN
-    ? { mfaSecret: encryptChatString(qaMfaSecret), mfaConfirmedAt: new Date('2026-08-25T00:00:00.000Z'), mfaRecoveryCodeHashes: [], mfaRecoveryCodeLastUsedAt: null }
-    : {};
   return prisma.user.upsert({
     where: { email },
-    update: { password: hash, role, firmId, firmRole, readOnlyAccess, sessionVersion: 0, status: 'ACTIVE', deletedAt: null, fullName: `QA DEV ${firmRole}`, ...adminMfa },
-    create: { email, password: hash, role, firmId, firmRole, readOnlyAccess, fullName: `QA DEV ${firmRole}`, ...adminMfa },
+    update: { password: hash, role, firmId, firmRole, readOnlyAccess, sessionVersion: 0, status: 'ACTIVE', deletedAt: null, fullName: `QA DEV ${firmRole}` },
+    create: { email, password: hash, role, firmId, firmRole, readOnlyAccess, fullName: `QA DEV ${firmRole}` },
   });
 }
 

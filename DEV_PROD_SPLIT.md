@@ -126,6 +126,10 @@ scripts/pull-latest-backup.sh
 scripts/install-local-backup-pull.sh
 ```
 
+Store `BACKUP_ENCRYPTION_PASSPHRASE` in `/etc/ado-b2b/backup.env` with mode
+`600`, not in the application `.env`. The installed systemd service reads that
+file while the application process does not.
+
 The server timer keeps two encrypted copies. The local pull verifies SHA-256 and
 stores off-server copies under the ignored `.private-backups/` directory. Keep an
 off-server copy of both the backup passphrase and chat encryption key; an

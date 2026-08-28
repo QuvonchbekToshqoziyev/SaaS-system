@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { CookieSession, requiredLoginCode } from './cookie-session.mjs';
 
 function stripTrailingSlash(url) {
   return url.endsWith('/') ? url.slice(0, -1) : url;
@@ -86,15 +87,16 @@ async function checkApiReachable(apiBase) {
   }
 }
 
-async function postJson(apiBase, pathName, body, { token } = {}) {
+async function postJson(apiBase, pathName, body, { session } = {}) {
   const res = await fetchWithTimeout(`${apiBase}${pathName}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(session ? session.headers({ csrf: true }) : {}),
     },
     body: JSON.stringify(body),
   });
+  session?.capture(res);
   const text = await res.text();
   let json;
   try {
@@ -105,13 +107,12 @@ async function postJson(apiBase, pathName, body, { token } = {}) {
   return { res, json };
 }
 
-async function getJson(apiBase, pathName, { token } = {}) {
+async function getJson(apiBase, pathName, { session } = {}) {
   const res = await fetchWithTimeout(`${apiBase}${pathName}`, {
     method: 'GET',
-    headers: {
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-    },
+    headers: session ? session.headers() : {},
   });
+  session?.capture(res);
 
   const text = await res.text();
   let json;
@@ -121,24 +122,36 @@ async function getJson(apiBase, pathName, { token } = {}) {
     json = { _raw: text };
   }
   return { res, json };
+}
+
+async function loginWithSession(apiBase, email, password, scope = 'ADMIN') {
+  const session = new CookieSession();
+  let login = await postJson(apiBase, '/auth/login', { email, password }, { session });
+  assertOk(login.res.ok, `Login failed: ${login.res.status} ${JSON.stringify({ error: login.json?.error })}`);
+  if (login.json?.verificationRequired) {
+    login = await postJson(apiBase, '/auth/device/verify', {
+      challengeTicket: login.json.challengeTicket,
+      code: requiredLoginCode(scope),
+      deviceName: 'ADO production release audit',
+    }, { session });
+  }
+  assertOk(login.res.ok && login.json?.user, `Device verification failed: ${login.res.status} ${JSON.stringify({ error: login.json?.error })}`);
+  assertOk(login.json?.token === undefined, 'Login unexpectedly returned a bearer token');
+  return { session, user: login.json.user };
 }
 
 async function strictAuthChecks(apiBase) {
-  const SUPERADMIN_EMAIL = 'admin@ado-finance.com';
-  const SUPERADMIN_PASSWORD = '12345678';
+  const SUPERADMIN_EMAIL = process.env.PROD_ADMIN_EMAIL || '';
+  const SUPERADMIN_PASSWORD = process.env.PROD_ADMIN_PASSWORD || '';
+  assertOk(SUPERADMIN_EMAIL && SUPERADMIN_PASSWORD, 'Strict mode requires PROD_ADMIN_EMAIL and PROD_ADMIN_PASSWORD.');
 
   process.stdout.write('==> POST /auth/login (superadmin)\n');
-  const login = await postJson(apiBase, '/auth/login', { email: SUPERADMIN_EMAIL, password: SUPERADMIN_PASSWORD });
-  if (!login.res.ok || !login.json?.token) {
-    throw new Error(`Superadmin login failed: ${login.res.status} ${JSON.stringify(login.json)}`);
-  }
-
-  const token = login.json.token;
+  const { session } = await loginWithSession(apiBase, SUPERADMIN_EMAIL, SUPERADMIN_PASSWORD);
 
   process.stdout.write('==> GET /auth/users (admin-only)\n');
   const usersRes = await fetchWithTimeout(`${apiBase}/auth/users`, {
     method: 'GET',
-    headers: { authorization: `Bearer ${token}` },
+    headers: session.headers(),
   });
 
   const text = await usersRes.text();
@@ -154,7 +167,7 @@ async function strictAuthChecks(apiBase) {
   }
 
   process.stdout.write('==> POST /auth/change-password (invalid body -> 400)\n');
-  const changePwMissing = await postJson(apiBase, '/auth/change-password', {}, { token });
+  const changePwMissing = await postJson(apiBase, '/auth/change-password', {}, { session });
   if (changePwMissing.res.status !== 400) {
     throw new Error(`/auth/change-password expected 400: ${changePwMissing.res.status} ${JSON.stringify(changePwMissing.json)}`);
   }
@@ -167,7 +180,7 @@ async function strictAuthChecks(apiBase) {
       currentPassword: `${SUPERADMIN_PASSWORD}__wrong__`,
       newPassword: 'NewPassword#123',
     },
-    { token },
+    { session },
   );
   if (changePwWrong.res.status !== 401) {
     throw new Error(`/auth/change-password expected 401: ${changePwWrong.res.status} ${JSON.stringify(changePwWrong.json)}`);
@@ -178,7 +191,7 @@ async function strictAuthChecks(apiBase) {
   const monthKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
 
   process.stdout.write(`==> GET /reports/calendar?month=${monthKey}\n`);
-  const calendarRes = await getJson(apiBase, `/reports/calendar?month=${encodeURIComponent(monthKey)}`, { token });
+  const calendarRes = await getJson(apiBase, `/reports/calendar?month=${encodeURIComponent(monthKey)}`, { session });
   if (!calendarRes.res.ok) {
     throw new Error(`/reports/calendar failed: ${calendarRes.res.status} ${JSON.stringify(calendarRes.json)}`);
   }
@@ -190,7 +203,7 @@ async function strictAuthChecks(apiBase) {
   }
 
   process.stdout.write('==> GET /reports/dashboard\n');
-  const dashboardRes = await getJson(apiBase, '/reports/dashboard', { token });
+  const dashboardRes = await getJson(apiBase, '/reports/dashboard', { session });
   if (!dashboardRes.res.ok) {
     throw new Error(`/reports/dashboard failed: ${dashboardRes.res.status} ${JSON.stringify(dashboardRes.json)}`);
   }
@@ -199,7 +212,7 @@ async function strictAuthChecks(apiBase) {
   }
 
   process.stdout.write('==> GET /reports/transactions\n');
-  const txReportRes = await getJson(apiBase, '/reports/transactions', { token });
+  const txReportRes = await getJson(apiBase, '/reports/transactions', { session });
   if (!txReportRes.res.ok) {
     throw new Error(`/reports/transactions failed: ${txReportRes.res.status} ${JSON.stringify(txReportRes.json)}`);
   }
@@ -208,7 +221,7 @@ async function strictAuthChecks(apiBase) {
   }
 
   process.stdout.write('==> GET /reports/payments\n');
-  const paymentsReportRes = await getJson(apiBase, '/reports/payments', { token });
+  const paymentsReportRes = await getJson(apiBase, '/reports/payments', { session });
   if (!paymentsReportRes.res.ok) {
     throw new Error(`/reports/payments failed: ${paymentsReportRes.res.status} ${JSON.stringify(paymentsReportRes.json)}`);
   }
@@ -217,7 +230,7 @@ async function strictAuthChecks(apiBase) {
   }
 
   process.stdout.write('==> GET /reports/interactions (superadmin-only)\n');
-  const interactionsRes = await getJson(apiBase, '/reports/interactions', { token });
+  const interactionsRes = await getJson(apiBase, '/reports/interactions', { session });
   if (!interactionsRes.res.ok) {
     throw new Error(`/reports/interactions failed: ${interactionsRes.res.status} ${JSON.stringify(interactionsRes.json)}`);
   }
@@ -229,7 +242,7 @@ async function strictAuthChecks(apiBase) {
   }
 
   process.stdout.write('==> GET /reports/monthly\n');
-  const monthlyRes = await getJson(apiBase, '/reports/monthly', { token });
+  const monthlyRes = await getJson(apiBase, '/reports/monthly', { session });
   if (!monthlyRes.res.ok) {
     throw new Error(`/reports/monthly failed: ${monthlyRes.res.status} ${JSON.stringify(monthlyRes.json)}`);
   }
@@ -238,7 +251,7 @@ async function strictAuthChecks(apiBase) {
   }
 
   process.stdout.write('==> GET /flights (for /reports/flight sanity)\n');
-  const flightsRes = await getJson(apiBase, '/flights', { token });
+  const flightsRes = await getJson(apiBase, '/flights', { session });
   if (!flightsRes.res.ok) {
     throw new Error(`/flights failed: ${flightsRes.res.status} ${JSON.stringify(flightsRes.json)}`);
   }
@@ -247,7 +260,7 @@ async function strictAuthChecks(apiBase) {
 
   if (sampleFlightId) {
     process.stdout.write(`==> GET /flights/${sampleFlightId}\n`);
-    const flightByIdRes = await getJson(apiBase, `/flights/${encodeURIComponent(sampleFlightId)}`, { token });
+    const flightByIdRes = await getJson(apiBase, `/flights/${encodeURIComponent(sampleFlightId)}`, { session });
     if (!flightByIdRes.res.ok) {
       throw new Error(`/flights/:id failed: ${flightByIdRes.res.status} ${JSON.stringify(flightByIdRes.json)}`);
     }
@@ -260,7 +273,7 @@ async function strictAuthChecks(apiBase) {
   const flightReportPath = sampleFlightId
     ? `/reports/flight?flightId=${encodeURIComponent(sampleFlightId)}`
     : '/reports/flight';
-  const flightReportRes = await getJson(apiBase, flightReportPath, { token });
+  const flightReportRes = await getJson(apiBase, flightReportPath, { session });
   if (!flightReportRes.res.ok) {
     throw new Error(`/reports/flight failed: ${flightReportRes.res.status} ${JSON.stringify(flightReportRes.json)}`);
   }
@@ -269,7 +282,7 @@ async function strictAuthChecks(apiBase) {
   }
 
   process.stdout.write('==> GET /firms (admin-only)\n');
-  const firmsRes = await getJson(apiBase, '/firms', { token });
+  const firmsRes = await getJson(apiBase, '/firms', { session });
   if (!firmsRes.res.ok) {
     throw new Error(`/firms failed: ${firmsRes.res.status} ${JSON.stringify(firmsRes.json)}`);
   }
@@ -278,7 +291,7 @@ async function strictAuthChecks(apiBase) {
 
   if (sampleFirmId) {
     process.stdout.write(`==> GET /firms/${sampleFirmId}\n`);
-    const firmByIdRes = await getJson(apiBase, `/firms/${encodeURIComponent(sampleFirmId)}`, { token });
+    const firmByIdRes = await getJson(apiBase, `/firms/${encodeURIComponent(sampleFirmId)}`, { session });
     if (!firmByIdRes.res.ok) {
       throw new Error(`/firms/:id failed: ${firmByIdRes.res.status} ${JSON.stringify(firmByIdRes.json)}`);
     }
@@ -289,7 +302,7 @@ async function strictAuthChecks(apiBase) {
 
   if (sampleFirmId) {
     process.stdout.write(`==> GET /reports/firm?firmId=${sampleFirmId}\n`);
-    const firmReportRes = await getJson(apiBase, `/reports/firm?firmId=${encodeURIComponent(sampleFirmId)}`, { token });
+    const firmReportRes = await getJson(apiBase, `/reports/firm?firmId=${encodeURIComponent(sampleFirmId)}`, { session });
     if (!firmReportRes.res.ok) {
       throw new Error(`/reports/firm failed: ${firmReportRes.res.status} ${JSON.stringify(firmReportRes.json)}`);
     }
@@ -299,19 +312,19 @@ async function strictAuthChecks(apiBase) {
   }
 
   process.stdout.write('==> GET /currency-rates (auth)\n');
-  const ratesRes = await getJson(apiBase, '/currency-rates', { token });
+  const ratesRes = await getJson(apiBase, '/currency-rates', { session });
   if (!ratesRes.res.ok) {
     throw new Error(`/currency-rates failed: ${ratesRes.res.status} ${JSON.stringify(ratesRes.json)}`);
   }
 
   process.stdout.write('==> POST /currency-rates (invalid body -> 400)\n');
-  const rateInvalid = await postJson(apiBase, '/currency-rates', { baseCurrency: 'USD' }, { token });
+  const rateInvalid = await postJson(apiBase, '/currency-rates', { baseCurrency: 'USD' }, { session });
   if (rateInvalid.res.status !== 400) {
     throw new Error(`/currency-rates expected 400: ${rateInvalid.res.status} ${JSON.stringify(rateInvalid.json)}`);
   }
 
   process.stdout.write('==> GET /tickets (auth)\n');
-  const ticketsRes = await getJson(apiBase, '/tickets', { token });
+  const ticketsRes = await getJson(apiBase, '/tickets', { session });
   if (!ticketsRes.res.ok) {
     throw new Error(`/tickets failed: ${ticketsRes.res.status} ${JSON.stringify(ticketsRes.json)}`);
   }
@@ -319,44 +332,44 @@ async function strictAuthChecks(apiBase) {
     throw new Error(`/tickets unexpected shape: ${JSON.stringify(ticketsRes.json)}`);
   }
 
-  process.stdout.write('==> POST /tickets (invalid body -> 400)\n');
-  const createTicketsInvalid = await postJson(apiBase, '/tickets', {}, { token });
-  if (createTicketsInvalid.res.status !== 400) {
-    throw new Error(`/tickets create expected 400: ${createTicketsInvalid.res.status} ${JSON.stringify(createTicketsInvalid.json)}`);
+  process.stdout.write('==> POST /tickets (superadmin -> 403)\n');
+  const createTicketsInvalid = await postJson(apiBase, '/tickets', {}, { session });
+  if (createTicketsInvalid.res.status !== 403) {
+    throw new Error(`/tickets create expected 403: ${createTicketsInvalid.res.status} ${JSON.stringify(createTicketsInvalid.json)}`);
   }
 
   process.stdout.write('==> POST /tickets/allocate (invalid body -> 400)\n');
-  const allocateInvalid = await postJson(apiBase, '/tickets/allocate', {}, { token });
+  const allocateInvalid = await postJson(apiBase, '/tickets/allocate', {}, { session });
   if (allocateInvalid.res.status !== 400) {
     throw new Error(`/tickets/allocate expected 400: ${allocateInvalid.res.status} ${JSON.stringify(allocateInvalid.json)}`);
   }
 
-  process.stdout.write('==> POST /tickets/confirm (superadmin -> 403)\n');
-  const confirmForbidden = await postJson(apiBase, '/tickets/confirm', {}, { token });
-  if (confirmForbidden.res.status !== 403) {
-    throw new Error(`/tickets/confirm expected 403: ${confirmForbidden.res.status} ${JSON.stringify(confirmForbidden.json)}`);
+  process.stdout.write('==> POST /tickets/confirm (invalid body -> 400)\n');
+  const confirmForbidden = await postJson(apiBase, '/tickets/confirm', {}, { session });
+  if (confirmForbidden.res.status !== 400) {
+    throw new Error(`/tickets/confirm expected 400: ${confirmForbidden.res.status} ${JSON.stringify(confirmForbidden.json)}`);
   }
 
   process.stdout.write('==> POST /tickets/deallocate (invalid body -> 400)\n');
-  const deallocateInvalid = await postJson(apiBase, '/tickets/deallocate', {}, { token });
+  const deallocateInvalid = await postJson(apiBase, '/tickets/deallocate', {}, { session });
   if (deallocateInvalid.res.status !== 400) {
     throw new Error(`/tickets/deallocate expected 400: ${deallocateInvalid.res.status} ${JSON.stringify(deallocateInvalid.json)}`);
   }
 
   process.stdout.write('==> POST /tickets/sell (invalid body -> 400)\n');
-  const sellInvalid = await postJson(apiBase, '/tickets/sell', {}, { token });
+  const sellInvalid = await postJson(apiBase, '/tickets/sell', {}, { session });
   if (sellInvalid.res.status !== 400) {
     throw new Error(`/tickets/sell expected 400: ${sellInvalid.res.status} ${JSON.stringify(sellInvalid.json)}`);
   }
 
   process.stdout.write('==> POST /payments (invalid body -> 400)\n');
-  const paymentInvalid = await postJson(apiBase, '/payments', {}, { token });
+  const paymentInvalid = await postJson(apiBase, '/payments', {}, { session });
   if (paymentInvalid.res.status !== 400) {
     throw new Error(`/payments expected 400: ${paymentInvalid.res.status} ${JSON.stringify(paymentInvalid.json)}`);
   }
 
   process.stdout.write('==> GET /transactions (auth)\n');
-  const transactionsRes = await getJson(apiBase, '/transactions?page=1&limit=5', { token });
+  const transactionsRes = await getJson(apiBase, '/transactions?page=1&limit=5', { session });
   if (!transactionsRes.res.ok) {
     throw new Error(`/transactions failed: ${transactionsRes.res.status} ${JSON.stringify(transactionsRes.json)}`);
   }
@@ -367,7 +380,7 @@ async function strictAuthChecks(apiBase) {
   const sampleTransactionId = transactionsRes.json.data?.[0]?.id ? String(transactionsRes.json.data[0].id) : '';
   if (sampleTransactionId) {
     process.stdout.write(`==> GET /transactions/${sampleTransactionId}\n`);
-    const transactionByIdRes = await getJson(apiBase, `/transactions/${encodeURIComponent(sampleTransactionId)}`, { token });
+    const transactionByIdRes = await getJson(apiBase, `/transactions/${encodeURIComponent(sampleTransactionId)}`, { session });
     if (!transactionByIdRes.res.ok) {
       throw new Error(`/transactions/:id failed: ${transactionByIdRes.res.status} ${JSON.stringify(transactionByIdRes.json)}`);
     }
@@ -377,7 +390,7 @@ async function strictAuthChecks(apiBase) {
   }
 
   process.stdout.write('==> POST /invites (invalid body -> 400)\n');
-  const inviteInvalid = await postJson(apiBase, '/invites', {}, { token });
+  const inviteInvalid = await postJson(apiBase, '/invites', {}, { session });
   if (inviteInvalid.res.status !== 400) {
     throw new Error(`/invites expected 400: ${inviteInvalid.res.status} ${JSON.stringify(inviteInvalid.json)}`);
   }
@@ -389,7 +402,7 @@ async function strictAuthChecks(apiBase) {
   }
 
   process.stdout.write('==> GET /logs/errors (superadmin-only)\n');
-  const logsRes = await getJson(apiBase, '/logs/errors?status=all', { token });
+  const logsRes = await getJson(apiBase, '/logs/errors?status=all', { session });
   if (!logsRes.res.ok) {
     throw new Error(`/logs/errors failed: ${logsRes.res.status} ${JSON.stringify(logsRes.json)}`);
   }
@@ -398,7 +411,7 @@ async function strictAuthChecks(apiBase) {
   }
 
   process.stdout.write('==> POST /logs/errors/:id/resolve (missing id -> 404)\n');
-  const resolveRes = await postJson(apiBase, '/logs/errors/__missing__/resolve', { note: 'test' }, { token });
+  const resolveRes = await postJson(apiBase, '/logs/errors/__missing__/resolve', { note: 'test' }, { session });
   if (resolveRes.res.status !== 404) {
     throw new Error(`/logs/errors/:id/resolve expected 404: ${resolveRes.res.status} ${JSON.stringify(resolveRes.json)}`);
   }
@@ -406,7 +419,7 @@ async function strictAuthChecks(apiBase) {
   process.stdout.write('==> DELETE /flights/:id (missing flight -> 404)\n');
   const deleteMissingRes = await fetchWithTimeout(`${apiBase}/flights/__missing__`, {
     method: 'DELETE',
-    headers: { authorization: `Bearer ${token}` },
+    headers: session.headers({ csrf: true }),
   });
   if (deleteMissingRes.status !== 404) {
     const text = await deleteMissingRes.text();

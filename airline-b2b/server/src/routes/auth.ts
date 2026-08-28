@@ -4,19 +4,17 @@ import {
   getSession,
   logout,
   changePassword,
-  confirmMfa,
   createAdmin,
   deleteAdmin,
   deleteUser,
-  disableMfa,
+  forgetTrustedDevice,
   listAdmins,
   listUsers,
-  recoverMfaLogin,
+  resendDeviceLoginCode,
   setUserFirmAccess,
-  setupMfa,
   updateAdmin,
   updateUser,
-  verifyMfaLogin,
+  verifyDeviceLogin,
 } from '../controllers/auth.controller';
 import { authMiddleware } from '../middleware/auth';
 import { roleMiddleware } from '../middleware/role';
@@ -25,11 +23,9 @@ router.post('/login', login);
 router.get('/session', authMiddleware, getSession);
 router.post('/logout', authMiddleware, logout);
 router.post('/change-password', authMiddleware, changePassword);
-router.post('/mfa/setup', authMiddleware, setupMfa);
-router.post('/mfa/confirm', authMiddleware, confirmMfa);
-router.post('/mfa/verify', verifyMfaLogin);
-router.post('/mfa/recovery', recoverMfaLogin);
-router.post('/mfa/disable', authMiddleware, roleMiddleware(['SUPERADMIN', 'ADMIN']), disableMfa);
+router.post('/device/verify', verifyDeviceLogin);
+router.post('/device/resend', resendDeviceLoginCode);
+router.post('/device/forget', authMiddleware, forgetTrustedDevice);
 router.get('/users', authMiddleware, roleMiddleware(['SUPERADMIN', 'ADMIN']), listUsers);
 router.patch('/users/:id', authMiddleware, roleMiddleware(['SUPERADMIN']), updateUser);
 router.delete('/users/:id', authMiddleware, roleMiddleware(['SUPERADMIN']), deleteUser);

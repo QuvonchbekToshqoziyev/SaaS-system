@@ -8,6 +8,25 @@ All releases use [Semantic Versioning](https://semver.org/):
 
 Every update must have a version, a changelog entry, and a passing release audit before deployment.
 
+## [1.10.0] - 2026-08-27
+
+### Security
+
+- Authenticator ilovasi va recovery code oqimi olib tashlandi. Noma'lum qurilmada paroldan keyin 10 daqiqalik, 5 urinish bilan cheklangan email tasdiqlash kodi talab qilinadi; ulangan Telegramga ham ayni kod yuboriladi.
+- Tasdiqlangan qurilma 30 kunlik `HttpOnly`, `Secure`, `SameSite=Strict` cookie bilan eslab qolinadi. Token har muvaffaqiyatli kirishda almashtiriladi va parol, rol, firma ruxsati yoki xodim-login holati o'zgarganda bekor qilinadi.
+- Login va invite accept APIlaridagi Bearer token javobi olib tashlandi; brauzer va auditlar faqat cookie sessiyasidan foydalanadi. Invite qabul qilingandan keyin yangi foydalanuvchi alohida sign-in va qurilma tasdiqlashidan o'tadi.
+- Production deploy SMTP sozlamasisiz to'xtaydi; login kodlari bazada server secret bilan HMAC hash ko'rinishida saqlanadi va audit loglariga yozilmaydi.
+
+### Fixed
+
+- Himoyalangan sahifa sessiya tekshiruvidan oldin bir lahza ko'rinib qolmasligi uchun global, opaque auth hydration wall qo'shildi.
+- Login sahifasi noma'lum qurilmada faqat email/Telegram kodi bosqichini ko'rsatadi; tanilgan qurilmada keyingi kirish faqat parol bilan davom etadi.
+
+### Verification
+
+- Kodning bir martalik sarflanishi, noto'g'ri urinish limiti, ticket purpose, trusted-device cookie atributlari va token rotatsiyasi unit/regression testlari bilan himoyalandi.
+- Browser smoke himoyalangan dashboard markup'i redirectdan oldin ko'rinmasligini va tasdiqlangan qurilma keyingi loginda kodni o'tkazib yuborishini tekshiradi.
+
 ## [1.9.0] - 2026-08-26
 
 ### Added

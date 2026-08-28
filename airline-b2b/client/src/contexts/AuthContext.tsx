@@ -1,7 +1,7 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 
@@ -41,7 +41,6 @@ export interface User {
   firmKind?: 'AGENCY' | 'AIRLINE' | 'CONTRACTOR' | null;
   firmId: string | null;
   subscriptionEndsAt?: string | null;
-  mfaConfirmedAt?: string | null;
   capabilities: AppCapability[];
 }
 
@@ -121,7 +120,6 @@ function normalizeUser(raw: unknown): User | null {
       : null,
     firmId,
     subscriptionEndsAt: typeof obj.subscriptionEndsAt === 'string' ? obj.subscriptionEndsAt : null,
-    mfaConfirmedAt: typeof obj.mfaConfirmedAt === 'string' ? obj.mfaConfirmedAt : null,
     capabilities,
   };
 }
@@ -152,35 +150,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [savedAccounts, setSavedAccounts] = useState<SavedAccount[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
+  const pathname = usePathname();
   const queryClient = useQueryClient();
+  const sessionRequestId = useRef(0);
+  const normalizedPathname = pathname !== '/' ? pathname.replace(/\/+$/, '') : pathname;
+  const isPublicPath = normalizedPathname === '/'
+    || normalizedPathname === '/login'
+    || normalizedPathname === '/invite'
+    || normalizedPathname.startsWith('/invite/');
 
   useEffect(() => {
-    let cancelled = false;
+    const requestId = ++sessionRequestId.current;
     clearLegacySession();
-    api.get('/auth/session')
+    api.get('/auth/session', { timeout: 15_000 })
       .then((response) => {
-        if (!cancelled) setUser(normalizeUser(response.data?.user));
+        if (sessionRequestId.current === requestId) setUser(normalizeUser(response.data?.user));
       })
       .catch(() => {
-        if (!cancelled) setUser(null);
+        if (sessionRequestId.current === requestId) setUser(null);
       })
       .finally(() => {
-        if (!cancelled) setIsLoading(false);
+        if (sessionRequestId.current === requestId) setIsLoading(false);
       });
-    return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (!isLoading && !user && !isPublicPath) router.replace('/login');
+  }, [isLoading, isPublicPath, router, user]);
 
   const login = (newUser: unknown) => {
     const normalized = normalizeUser(newUser);
     if (!normalized) return;
+    sessionRequestId.current += 1;
     queryClient.clear();
     writeSavedAccounts([]);
     setSavedAccounts([]);
     setUser(normalized);
+    setIsLoading(false);
   };
 
   const logout = async () => {
     await api.post('/auth/logout');
+    sessionRequestId.current += 1;
     queryClient.clear();
     writeSavedAccounts([]);
     setSavedAccounts([]);
@@ -209,6 +220,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     writeSavedAccounts(nextAccounts);
     setSavedAccounts(nextAccounts);
     if (user && (user.id === accountId || user.email === accountId)) {
+      sessionRequestId.current += 1;
       queryClient.clear();
       clearLegacySession();
       setUser(null);
@@ -217,9 +229,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const content = !isPublicPath && (isLoading || !user) ? (
+    <div className="fixed inset-0 z-[9999] flex min-h-dvh items-center justify-center bg-[#030710] text-white">
+      <div className="flex items-center gap-3">
+        <div className="h-8 w-8 animate-spin rounded-full border-[3px] border-white/15 border-t-[#ff2337]" />
+        <span className="text-sm font-semibold">Authenticating...</span>
+      </div>
+    </div>
+  ) : children;
+
   return (
     <AuthContext.Provider value={{ user, login, logout, savedAccounts, switchAccount, forgetAccount, isLoading }}>
-      {children}
+      {content}
     </AuthContext.Provider>
   );
 }

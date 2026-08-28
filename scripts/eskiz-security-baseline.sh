@@ -22,7 +22,7 @@ ufw --force enable
 
 cat >/etc/fail2ban/filter.d/ado-b2b-login.conf <<'FILTER'
 [Definition]
-failregex = ^<HOST> .* "POST /api/auth/login(?:\?[^ ]*)? HTTP/[^\"]+" (?:401|429)[[:space:]]
+failregex = ^<HOST> .* "POST /api/auth/login(?:\?[^ ]*)? HTTP/[^\"]+" (?:401|429)\s
 ignoreregex =
 FILTER
 

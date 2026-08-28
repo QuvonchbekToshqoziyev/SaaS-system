@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { currentQaMfaCode } from './qa-mfa.mjs';
+import { qaLoginCode } from './qa-login-code.mjs';
 
 const base = String(process.env.DEV_BASE_URL || 'https://dev.b2b.booking.ado-finance.com').replace(/\/$/, '');
 const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!Secure';
@@ -50,11 +50,9 @@ add('/auth', ALL, [
   ['GET', '/session'],
   ['POST', '/logout', { safeAllowedProbe: true }],
   ['POST', '/change-password', { safeAllowedProbe: true }],
-  ['POST', '/mfa/setup', { roles: SA_ADMIN, safeAllowedProbe: false }],
-  ['POST', '/mfa/confirm', { roles: SA_ADMIN, safeAllowedProbe: false }],
-  ['POST', '/mfa/verify', { authenticated: false, expected: [401], safeAllowedProbe: true, body: { mfaTicket: 'invalid', code: '000000' } }],
-  ['POST', '/mfa/recovery', { authenticated: false, expected: [401], safeAllowedProbe: true, body: { mfaTicket: 'invalid', recoveryCode: 'invalid' } }],
-  ['POST', '/mfa/disable', { roles: SA_ADMIN, safeAllowedProbe: false }],
+  ['POST', '/device/verify', { authenticated: false, expected: [401], safeAllowedProbe: true, body: { challengeTicket: 'invalid', code: '000000' } }],
+  ['POST', '/device/resend', { authenticated: false, expected: [401], safeAllowedProbe: true, body: { challengeTicket: 'invalid' } }],
+  ['POST', '/device/forget', { safeAllowedProbe: true }],
   ['GET', '/users', { roles: SA_ADMIN }],
   ['PATCH', `/users/${fakeId}`, { roles: SA, safeAllowedProbe: true }],
   ['DELETE', `/users/${fakeId}`, { roles: SA, safeAllowedProbe: true }],
@@ -205,7 +203,7 @@ if (process.argv.includes('--list-contracts')) {
 }
 
 const results = [];
-const tokens = {};
+const sessions = {};
 const actorFirmIds = {};
 
 async function fetchWithTimeout(path, init = {}) {
@@ -227,15 +225,26 @@ async function fetchWithTransportRetry(path, init = {}) {
   }
 }
 
+function responseCookie(response, name) {
+  const values = typeof response.headers.getSetCookie === 'function'
+    ? response.headers.getSetCookie()
+    : [response.headers.get('set-cookie') || ''];
+  for (const value of values) {
+    const match = value.match(new RegExp(`(?:^|,\\s*)${name}=([^;]+)`));
+    if (match) return `${name}=${match[1]}`;
+  }
+  return '';
+}
+
 async function probe(contract, actorName, expected, reason) {
-  const token = actorName === 'public' ? '' : tokens[actorName];
+  const session = actorName === 'public' ? '' : sessions[actorName];
   const body = contract.method === 'GET' ? undefined : (contract.body ?? {});
   const path = contract.path.replace('__ACCESSIBLE_FIRM__', actorFirmIds[actorName] || fakeId);
   try {
     const response = await fetchWithTransportRetry(path, {
       method: contract.method,
       headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(session ? { Cookie: session, 'X-ADO-CSRF': '1' } : {}),
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -256,25 +265,25 @@ for (const [actorName, actor] of Object.entries(actors)) {
     });
     let data = await response.json();
     let status = response.status;
-    if (status === 200 && data.mfaRequired && data.mfaTicket) {
-      const mfaResponse = await fetchWithTransportRetry('/auth/mfa/verify', {
+    if (status === 200 && data.verificationRequired && data.challengeTicket) {
+      const verificationResponse = await fetchWithTransportRetry('/auth/device/verify', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mfaTicket: data.mfaTicket, code: currentQaMfaCode(), sessionTransport: 'token' }),
+        body: JSON.stringify({ challengeTicket: data.challengeTicket, code: qaLoginCode }),
       });
-      data = await mfaResponse.json();
-      status = mfaResponse.status;
+      data = await verificationResponse.json();
+      status = verificationResponse.status;
+      sessions[actorName] = responseCookie(verificationResponse, 'ado_session');
     }
-    tokens[actorName] = data.token;
-    results.push({ method: 'POST', path: '/auth/login', actor: actorName, reason: 'qa-login', expected: [200], status, ok: status === 200 && Boolean(data.token), detail: data.error || '' });
+    results.push({ method: 'POST', path: '/auth/login', actor: actorName, reason: 'qa-login', expected: [200], status, ok: status === 200 && Boolean(sessions[actorName]) && Boolean(data.user), detail: data.error || '' });
   } catch (error) {
     results.push({ method: 'POST', path: '/auth/login', actor: actorName, reason: 'qa-login', expected: [200], status: 0, ok: false, detail: String(error) });
   }
 }
 
 for (const actorName of Object.keys(actors)) {
-  if (!tokens[actorName]) continue;
+  if (!sessions[actorName]) continue;
   try {
-    const response = await fetchWithTransportRetry('/firms', { headers: { Authorization: `Bearer ${tokens[actorName]}` } });
+    const response = await fetchWithTransportRetry('/firms', { headers: { Cookie: sessions[actorName] } });
     const data = await response.json();
     actorFirmIds[actorName] = Array.isArray(data) ? data[0]?.id : undefined;
   } catch {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { currentQaMfaCode } from './qa-mfa.mjs';
+import { qaAuthHeaders, qaLogin } from './qa-login.mjs';
 
 const base = String(process.env.DEV_BASE_URL || 'https://dev.b2b.booking.ado-finance.com').replace(/\/$/, '');
 const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!Secure';
@@ -12,26 +12,11 @@ const qaUsers = {
 };
 
 async function login(email) {
-  const response = await fetch(`${base}/api/auth/login`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  });
-  let data = await response.json();
-  let status = response.status;
-  if (status === 200 && data.mfaRequired && data.mfaTicket) {
-    const mfaResponse = await fetch(`${base}/api/auth/mfa/verify`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mfaTicket: data.mfaTicket, code: currentQaMfaCode(), sessionTransport: 'token' }),
-    });
-    data = await mfaResponse.json();
-    status = mfaResponse.status;
-  }
-  if (status !== 200 || !data.token || !data.user) throw new Error(`${email} login failed with ${status}`);
-  return data;
+  return qaLogin(base, email, password);
 }
 
-async function get(token, endpoint) {
-  const response = await fetch(`${base}/api${endpoint}`, { headers: { Authorization: `Bearer ${token}` } });
+async function get(session, endpoint) {
+  const response = await fetch(`${base}/api${endpoint}`, { headers: qaAuthHeaders(session) });
   const data = await response.json();
   if (response.status !== 200) throw new Error(`${endpoint} returned ${response.status}: ${JSON.stringify(data).slice(0, 200)}`);
   return data;
@@ -52,21 +37,21 @@ function check(actor, surface, rows, predicate, describe) {
 for (const [actor, email] of Object.entries(qaUsers)) {
   const session = await login(email);
   const ownFirmId = String(session.user.firmId || '');
-  const firmDirectory = array(await get(session.token, '/firms'));
+  const firmDirectory = array(await get(session, '/firms'));
   const operationalFirmIds = session.user.role === 'FIRM'
     ? new Set([ownFirmId].filter(Boolean))
     : new Set(firmDirectory.map((firm) => String(firm.id)));
   if (!operationalFirmIds.size) throw new Error(`${actor} has no operational firm scope`);
 
   const [transactions, accounts, employees, notifications, desks, cards, kassaHistory, services] = await Promise.all([
-    get(session.token, '/transactions?page=1&limit=1000'),
-    get(session.token, '/accounts'),
-    get(session.token, '/employees'),
-    get(session.token, '/notifications?limit=100'),
-    get(session.token, '/kassa/desks'),
-    get(session.token, '/kassa/cards'),
-    get(session.token, '/kassa/history?limit=50'),
-    get(session.token, '/services'),
+    get(session, '/transactions?page=1&limit=1000'),
+    get(session, '/accounts'),
+    get(session, '/employees'),
+    get(session, '/notifications?limit=100'),
+    get(session, '/kassa/desks'),
+    get(session, '/kassa/cards'),
+    get(session, '/kassa/history?limit=50'),
+    get(session, '/services'),
   ]);
 
   check(actor, 'transactions', array(transactions, 'data'), (row) => [row.firmId, row.payerFirmId, row.receiverFirmId].some((id) => id && operationalFirmIds.has(String(id))), (row) => `outside transaction ${row.id}`);

@@ -208,10 +208,8 @@ model User {
   sessionVersion                 Int                       @default(0)
   firmRole                        FirmUserRole              @default(MANAGER)
   status                          String                    @default("ACTIVE")
-  mfaSecret                       String?
-  mfaConfirmedAt                  DateTime?
-  mfaRecoveryCodeHashes           String[]                  @default([])
-  mfaRecoveryCodeLastUsedAt       DateTime?
+  trustedDevices                  TrustedDevice[]
+  loginVerificationChallenges     LoginVerificationChallenge[]
   firmId                          String?
   firm                            Firm?                     @relation(fields: [firmId], references: [id])
   firmAccesses                    UserFirmAccess[]
@@ -252,6 +250,46 @@ model User {
   @@index([status])
   @@index([firmRole])
   @@index([deletedAt])
+}
+
+model TrustedDevice {
+  id             String    @id @default(uuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash      String
+  sessionVersion Int
+  name           String?
+  userAgent      String?
+  lastIp         String?
+  expiresAt      DateTime
+  lastUsedAt     DateTime  @default(now())
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([userId, revokedAt, expiresAt])
+  @@index([expiresAt])
+}
+
+model LoginVerificationChallenge {
+  id                String    @id @default(uuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash          String
+  attempts          Int       @default(0)
+  sentAt            DateTime  @default(now())
+  emailDelivered    Boolean   @default(false)
+  telegramDelivered Boolean   @default(false)
+  qaDelivery        Boolean   @default(false)
+  expiresAt         DateTime
+  consumedAt        DateTime?
+  requestIp         String?
+  userAgent         String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([userId, consumedAt, expiresAt])
+  @@index([expiresAt])
 }
 
 model Firm {

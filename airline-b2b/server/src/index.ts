@@ -30,6 +30,7 @@ import expenseCategoryRoutes from './routes/expense-categories';
 import expenseBudgetRoutes from './routes/expense-budgets';
 import telegramRoutes from './routes/telegram';
 import { startTelegramBot } from './services/telegram.service';
+import { isLoginEmailConfigured } from './services/login-verification.service';
 import { featureUsageMiddleware, flushFeatureUsage, startFeatureUsageFlush } from './services/feature-usage.service';
 
 const jwtSecret = process.env.JWT_SECRET;
@@ -41,6 +42,10 @@ if (!jwtSecret || !jwtSecret.trim()) {
 }
 if (process.env.NODE_ENV === 'production' && !String(process.env.CHAT_ENCRYPTION_KEY || '').trim()) {
   logger.fatal('FATAL: CHAT_ENCRYPTION_KEY is required in production');
+  process.exit(1);
+}
+if (process.env.LOGIN_EMAIL_REQUIRED === '1' && !isLoginEmailConfigured()) {
+  logger.fatal('FATAL: SMTP_HOST and SMTP_FROM are required for login email verification');
   process.exit(1);
 }
 

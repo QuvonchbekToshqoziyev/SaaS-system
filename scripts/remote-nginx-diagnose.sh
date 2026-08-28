@@ -44,7 +44,7 @@ server_block_with_file=$(remote "sudo nginx -T 2>/dev/null" | awk -v sn="$SERVER
   inblk {buf=buf $0"\n"}
   inblk && $0 ~ /server_name/ && $0 ~ sn {found=1}
   inblk && $0 ~ /^\}/ {
-    if(found){
+    if(found && buf ~ /root[[:space:]]+/){
       print "__FILE__=" serverFile "\n" buf;
       exit 0
     }

@@ -1,10 +1,11 @@
 import crypto from 'node:crypto';
+import { CookieSession, requiredLoginCode } from './cookie-session.mjs';
 
 const BASE = process.env.PROD_BASE_URL || 'https://quvonchbek.me';
 const API = `${BASE.replace(/\/$/, '')}/api`;
 
-const SUPERADMIN_EMAIL = 'admin@ado-finance.com';
-const SUPERADMIN_PASSWORD = '12345678';
+const SUPERADMIN_EMAIL = process.env.PROD_ADMIN_EMAIL || '';
+const SUPERADMIN_PASSWORD = process.env.PROD_ADMIN_PASSWORD || '';
 
 const PERSIST_FIRM_EMAIL = process.env.FIRM_EMAIL || process.env.TEST_FIRM_EMAIL || '';
 const PERSIST_FIRM_PASSWORD = process.env.FIRM_PASSWORD || process.env.TEST_FIRM_PASSWORD || '';
@@ -15,16 +16,17 @@ function assertOk(cond, msg) {
   if (!cond) throw new Error(msg);
 }
 
-async function postJson(path, body, { token, origin } = {}) {
+async function postJson(path, body, { session, origin } = {}) {
   const res = await fetch(`${API}${path}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(session ? session.headers({ csrf: true }) : {}),
       ...(origin ? { origin } : {}),
     },
     body: JSON.stringify(body),
   });
+  session?.capture(res);
   const contentType = res.headers.get('content-type') || '';
   const text = await res.text();
   let json;
@@ -36,14 +38,15 @@ async function postJson(path, body, { token, origin } = {}) {
   return { res, json, contentType, text };
 }
 
-async function getJson(path, { token, origin } = {}) {
+async function getJson(path, { session, origin } = {}) {
   const res = await fetch(`${API}${path}`, {
     method: 'GET',
     headers: {
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(session ? session.headers() : {}),
       ...(origin ? { origin } : {}),
     },
   });
+  session?.capture(res);
   const contentType = res.headers.get('content-type') || '';
   const text = await res.text();
   let json;
@@ -53,6 +56,22 @@ async function getJson(path, { token, origin } = {}) {
     json = { _raw: text };
   }
   return { res, json, contentType, text };
+}
+
+async function login(email, password, scope) {
+  const session = new CookieSession();
+  let result = await postJson('/auth/login', { email, password }, { session });
+  assertOk(result.res.ok, `Login failed: ${result.res.status} ${JSON.stringify({ error: result.json?.error })}`);
+  if (result.json?.verificationRequired) {
+    result = await postJson('/auth/device/verify', {
+      challengeTicket: result.json.challengeTicket,
+      code: requiredLoginCode(scope),
+      deviceName: 'ADO production invite audit',
+    }, { session });
+  }
+  assertOk(result.res.ok && result.json?.user, `Device verification failed: ${result.res.status} ${JSON.stringify({ error: result.json?.error })}`);
+  assertOk(result.json?.token === undefined, 'Login unexpectedly returned a bearer token');
+  return { session, user: result.json.user };
 }
 
 function redact(obj) {
@@ -66,6 +85,7 @@ function redact(obj) {
 }
 
 async function main() {
+  assertOk(SUPERADMIN_EMAIL && SUPERADMIN_PASSWORD, 'Invite flow requires PROD_ADMIN_EMAIL and PROD_ADMIN_PASSWORD.');
   const runId = new Date().toISOString().replace(/[:.TZ-]/g, '').slice(0, 14);
   const persistentMode = Boolean(PERSIST_FIRM_EMAIL) && !FORCE_NEW_FIRM_USER;
 
@@ -88,28 +108,22 @@ async function main() {
 
   // 1) Login as superadmin
   {
-    const { res, json } = await postJson('/auth/login', { email: SUPERADMIN_EMAIL, password: SUPERADMIN_PASSWORD });
-    assertOk(res.ok, `Superadmin login failed: ${res.status} ${JSON.stringify(json)}`);
-    assertOk(json?.token, 'Superadmin login response missing token');
-    globalThis.__ADMIN_TOKEN = json.token;
+    const adminLogin = await login(SUPERADMIN_EMAIL, SUPERADMIN_PASSWORD, 'ADMIN');
+    globalThis.__ADMIN_SESSION = adminLogin.session;
     console.log('OK superadmin login');
   }
 
   if (persistentMode) {
     // If the user already exists, avoid generating new invites/users (production pollution).
-    const { res, json } = await getJson('/auth/users', { token: globalThis.__ADMIN_TOKEN });
+    const { res, json } = await getJson('/auth/users', { session: globalThis.__ADMIN_SESSION });
     assertOk(res.ok, `List users failed: ${res.status} ${JSON.stringify(redact(json))}`);
 
     const users = Array.isArray(json) ? json : Array.isArray(json?.users) ? json.users : [];
     const existing = users.find((u) => String(u?.email || '').toLowerCase() === String(email).toLowerCase());
 
     if (existing) {
-      const firmLogin = await postJson('/auth/login', { email, password });
-      assertOk(
-        firmLogin.res.ok,
-        `Firm user exists but login failed (${firmLogin.res.status}). Check FIRM_PASSWORD or set FORCE_NEW_FIRM_USER=1.`,
-      );
-      const role = firmLogin.json?.user?.role;
+      const firmLogin = await login(email, password, 'FIRM');
+      const role = firmLogin.user?.role;
       console.log(`OK firm login (existing user, role=${role})`);
       console.log('DONE');
       return;
@@ -123,7 +137,7 @@ async function main() {
     const { res, json, contentType, text } = await postJson(
       '/invites',
       { email, role: 'FIRM', firmName },
-      { token: globalThis.__ADMIN_TOKEN, origin: BASE },
+      { session: globalThis.__ADMIN_SESSION, origin: BASE },
     );
     assertOk(res.ok, `Create invite failed: ${res.status} ${JSON.stringify(json)}`);
     inviteId = json?.inviteId;
@@ -158,9 +172,8 @@ async function main() {
 
   // 4) Login as firm
   {
-    const { res, json } = await postJson('/auth/login', { email, password });
-    assertOk(res.ok, `Firm login failed: ${res.status} ${JSON.stringify(json)}`);
-    const role = json?.user?.role;
+    const firmLogin = await login(email, password, 'FIRM');
+    const role = firmLogin.user?.role;
     console.log(`OK firm login (role=${role})`);
   }
 

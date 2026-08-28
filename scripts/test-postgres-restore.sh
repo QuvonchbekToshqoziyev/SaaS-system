@@ -3,12 +3,19 @@ set -euo pipefail
 
 BACKUP_FILE="${1:-}"
 ENV_FILE="${2:-/root/apps/ado-b2b/airline-b2b/server/.env}"
+BACKUP_SECRET_FILE="${BACKUP_SECRET_FILE:-/etc/ado-b2b/backup.env}"
 [[ -f "$BACKUP_FILE" ]] || { echo "Usage: $0 BACKUP_FILE [ENV_FILE]" >&2; exit 1; }
 [[ -f "$ENV_FILE" ]] || { echo "Missing environment file: $ENV_FILE" >&2; exit 1; }
 set -a
 # shellcheck disable=SC1090
 . "$ENV_FILE"
 set +a
+if [[ -f "$BACKUP_SECRET_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$BACKUP_SECRET_FILE"
+  set +a
+fi
 [[ -n "${RESTORE_TEST_DATABASE_URL:-}" ]] || { echo "Set RESTORE_TEST_DATABASE_URL to a disposable database ending in _restore_test" >&2; exit 1; }
 
 archive="$BACKUP_FILE"

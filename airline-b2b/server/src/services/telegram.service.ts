@@ -22,6 +22,18 @@ async function telegram(method: string, body: Record<string, unknown>) {
   return data.result;
 }
 
+export function isTelegramConfigured() {
+  return Boolean(token());
+}
+
+export async function sendTelegramLoginVerificationCode(chatId: string, code: string) {
+  if (!token()) throw new Error('Telegram bot is not configured');
+  await telegram('sendMessage', {
+    chat_id: chatId,
+    text: `ADO SYSTEM sign-in verification code: ${code}\n\nIt expires in 10 minutes. Do not share this code.`,
+  });
+}
+
 export async function createTelegramLink(userId: string) {
   const code = randomBytes(24).toString('base64url');
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);

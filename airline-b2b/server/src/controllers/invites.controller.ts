@@ -6,9 +6,7 @@ import { FirmUserRole, Prisma, Role } from '@prisma/client';
 import { canAccessFirm } from '../utils/access';
 import { isFirmAdminLike, normalizeFirmUserRole } from '../utils/firm-user-roles';
 import { resolveExchangeRateToUzs } from '../services/currency-rates.service';
-import { signSessionToken } from '../utils/session-token';
 import { PASSWORD_LENGTH_ERROR, passwordMeetsPolicy } from '../utils/password-policy';
-import { setSessionCookie } from '../utils/session-cookie';
 
 const ALLOWED_ROLES = new Set(Object.values(Role));
 
@@ -313,11 +311,6 @@ export const createInvite = async (req: Request, res: Response) => {
 export const acceptInvite = async (req: Request, res: Response) => {
   const { id, token, password } = req.body;
 
-  const jwtSecret = process.env.JWT_SECRET;
-  if (!jwtSecret || !jwtSecret.trim()) {
-    return res.status(500).json({ error: 'Server misconfigured' });
-  }
-
   if (!id || typeof id !== 'string') {
     return res.status(400).json({ error: 'Invite id is required' });
   }
@@ -387,14 +380,9 @@ export const acceptInvite = async (req: Request, res: Response) => {
       return { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, role: user.role, firmRole: user.firmRole, firmId: user.firmId, firmKind: firm?.kind || null };
     });
 
-    const jwtToken = signSessionToken({ userId: createdUser.id, sessionVersion: 0 }, jwtSecret);
-    const cookieSession = req.body?.sessionTransport === 'cookie';
-    if (cookieSession) setSessionCookie(res, jwtToken);
-
     return res.json({
       success: true,
       message: 'Account created',
-      ...(cookieSession ? {} : { token: jwtToken }),
       user: createdUser,
     });
   } catch (error: any) {

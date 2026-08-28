@@ -88,9 +88,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }, [isLoading, isWarehouseManager, isWarehouseManagerAllowedPath, router]);
 
   useEffect(() => {
-    const adminNeedsMfaSetup = !isLoading && user && ['superadmin', 'admin'].includes(normalizedRole) && !user.mfaConfirmedAt;
-    if (adminNeedsMfaSetup) router.replace('/security/mfa-setup');
-  }, [isLoading, normalizedRole, router, user]);
+    if (!isLoading && !user) router.replace('/login');
+  }, [isLoading, router, user]);
 
   useEffect(() => {
     if (!user) return;
@@ -170,7 +169,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   if (!user) {
-    return null;
+    return <div className="min-h-screen bg-background" />;
   }
 
   const hasCapability = (capability: AppCapability) => user.capabilities.includes(capability);

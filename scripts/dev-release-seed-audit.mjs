@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { currentQaMfaCode } from './qa-mfa.mjs';
+import { qaAuthHeaders, qaLogin } from './qa-login.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim();
@@ -42,37 +42,20 @@ async function fetchReadWithRetry(url, init = {}) {
 }
 
 async function login(email) {
-  const response = await fetchReadWithRetry(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  });
-  let data = await response.json();
-  let status = response.status;
-  if (status === 200 && data.mfaRequired && data.mfaTicket) {
-    const mfaResponse = await fetchReadWithRetry(`${base}/api/auth/mfa/verify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mfaTicket: data.mfaTicket, code: currentQaMfaCode(), sessionTransport: 'token' }),
-    });
-    data = await mfaResponse.json();
-    status = mfaResponse.status;
-  }
-  if (status !== 200 || !data.token) throw new Error(`${email} login failed with ${status}`);
-  return data;
+  return qaLogin(base, email, password, fetchReadWithRetry);
 }
 
-async function get(token, endpoint) {
-  const response = await fetchReadWithRetry(`${base}/api${endpoint}`, { headers: { Authorization: `Bearer ${token}` } });
+async function get(session, endpoint) {
+  const response = await fetchReadWithRetry(`${base}/api${endpoint}`, { headers: qaAuthHeaders(session) });
   const data = await response.json();
   if (response.status !== 200) throw new Error(`${endpoint} returned ${response.status}: ${JSON.stringify(data).slice(0, 240)}`);
   return data;
 }
 
-async function request(token, method, endpoint, body = {}) {
+async function request(session, method, endpoint, body = {}) {
   const init = {
     method,
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { ...qaAuthHeaders(session, method !== 'GET' && method !== 'HEAD'), 'Content-Type': 'application/json' },
   };
   if (method !== 'GET' && method !== 'HEAD') init.body = JSON.stringify(body);
   const response = await fetch(`${base}/api${endpoint}`, init);
@@ -92,11 +75,11 @@ const [superadminLogin, readOnlyLogin, scopedAdminLogin, sourceAdminLogin, partn
   login('qa.firmadmin@ado.test'),
   login('qa.partneradmin@ado.test'),
 ]);
-const superadminToken = superadminLogin.token;
-const readOnlyToken = readOnlyLogin.token;
-const scopedAdminToken = scopedAdminLogin.token;
-const sourceAdminToken = sourceAdminLogin.token;
-const partnerAdminToken = partnerAdminLogin.token;
+const superadminToken = superadminLogin;
+const readOnlyToken = readOnlyLogin;
+const scopedAdminToken = scopedAdminLogin;
+const sourceAdminToken = sourceAdminLogin;
+const partnerAdminToken = partnerAdminLogin;
 const [desks, superadminFirms, sourceFlights, partnerFlights, partnerAllocations, superadminAllocations, superadminServices, scopedAdminServices, sourceServices, sourceTourSales, notifications, partnerTransactions, sourceTransactions, sourceAgentReport, sourceDashboard, readOnlyAdmins, readOnlyDesks, readOnlyTransactions, readOnlyReports] = await Promise.all([
   get(superadminToken, '/kassa/desks'),
   get(superadminToken, '/firms'),
@@ -154,7 +137,7 @@ const securityLogin = await login('qa.security@ado.test');
 const securityPasswordRotate = securityAccount
   ? await request(superadminToken, 'PATCH', `/auth/users/${securityAccount.id}`, { password: 'QaSecurity2026!Rotated' })
   : { status: 0, data: null };
-const revokedSecuritySession = await request(securityLogin.token, 'GET', '/firms');
+const revokedSecuritySession = await request(securityLogin, 'GET', '/firms');
 const securityPasswordRestore = securityAccount
   ? await request(superadminToken, 'PATCH', `/auth/users/${securityAccount.id}`, { password })
   : { status: 0, data: null };

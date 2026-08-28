@@ -1,8 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
-import crypto from 'node:crypto';
 
 const password = process.env.DEV_QA_PASSWORD || 'QaDev2026!Secure';
-const qaMfaSecret = process.env.DEV_QA_MFA_SECRET || 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PX';
+const qaLoginCode = process.env.DEV_QA_LOGIN_CODE || '481927';
 
 const actors = [
   { name: 'superadmin', email: 'qa.superadmin@ado.test', home: '/admin', visibleNav: ['/admins', '/audit-log', '/monitoring', '/airlines', '/firms', '/flights', '/tours', '/services', '/transactions', '/kassa', '/employees', '/chat', '/reports', '/settings'], hiddenNav: [] },
@@ -18,9 +17,10 @@ async function login(page: Page, email: string, home: string) {
   await page.locator('#password').fill(password);
   const loginResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/api/auth/login'));
   await page.locator('form button[type="submit"]').click();
-  expect((await (await loginResponse).json()).token).toBeUndefined();
-  if (['qa.superadmin@ado.test', 'qa.admin@ado.test'].includes(email)) {
-    await page.locator('#mfa-code').fill(currentQaMfaCode());
+  const loginData = await (await loginResponse).json();
+  expect(loginData.token).toBeUndefined();
+  if (loginData.verificationRequired) {
+    await page.locator('#verification-code').fill(qaLoginCode);
     await page.locator('form button[type="submit"]').click();
   }
   await expect(page).toHaveURL(new RegExp(`${home}/?$`));
@@ -28,42 +28,8 @@ async function login(page: Page, email: string, home: string) {
   await expect.poll(() => page.evaluate(() => localStorage.getItem('token'))).toBeNull();
   const sessionCookie = (await page.context().cookies()).find((cookie) => cookie.name === 'ado_session');
   expect(sessionCookie).toMatchObject({ httpOnly: true, secure: true, sameSite: 'Strict' });
-}
-
-function currentQaMfaCode() {
-  return totp(qaMfaSecret, Math.floor(Date.now() / 30000));
-}
-
-function totp(secret: string, counter: number) {
-  const key = base32Decode(secret);
-  const msg = Buffer.alloc(8);
-  msg.writeUInt32BE(Math.floor(counter / 0x100000000), 0);
-  msg.writeUInt32BE(counter >>> 0, 4);
-  const hmac = crypto.createHmac('sha1', key).update(msg).digest();
-  const offset = hmac[hmac.length - 1] & 0x0f;
-  const binary = ((hmac[offset] & 0x7f) << 24)
-    | ((hmac[offset + 1] & 0xff) << 16)
-    | ((hmac[offset + 2] & 0xff) << 8)
-    | (hmac[offset + 3] & 0xff);
-  return String(binary % 1000000).padStart(6, '0');
-}
-
-function base32Decode(secret: string) {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-  let bits = 0;
-  let value = 0;
-  const bytes: number[] = [];
-  for (const char of secret.replace(/=+$/g, '').toUpperCase()) {
-    const index = alphabet.indexOf(char);
-    if (index < 0) throw new Error('Invalid TOTP secret');
-    value = (value << 5) | index;
-    bits += 5;
-    if (bits >= 8) {
-      bytes.push((value >>> (bits - 8)) & 255);
-      bits -= 8;
-    }
-  }
-  return Buffer.from(bytes);
+  const trustedCookie = (await page.context().cookies()).find((cookie) => cookie.name === 'ado_trusted_device');
+  expect(trustedCookie).toMatchObject({ httpOnly: true, secure: true, sameSite: 'Strict' });
 }
 
 async function selectOptions(select: ReturnType<Page['locator']>) {
@@ -73,6 +39,36 @@ async function selectOptions(select: ReturnType<Page['locator']>) {
 function expectUnique(values: string[], label: string) {
   expect(new Set(values).size, `${label}: ${values.join(' | ')}`).toBe(values.length);
 }
+
+test('protected dashboard markup never appears before unauthenticated redirect', async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).__adoDashboardFlashed = false;
+    const inspect = () => {
+      if (document.querySelector('aside, nav a[href="/admin"]')) (window as any).__adoDashboardFlashed = true;
+    };
+    new MutationObserver(inspect).observe(document.documentElement, { childList: true, subtree: true });
+    inspect();
+  });
+  await page.goto('/admin/');
+  await expect(page).toHaveURL(/\/login\/?$/);
+  expect(await page.evaluate(() => (window as any).__adoDashboardFlashed)).toBe(false);
+});
+
+test('a verified device skips the code on the next password login', async ({ page }) => {
+  await login(page, 'qa.manager@ado.test', '/firm');
+  await page.evaluate(async () => {
+    await fetch('/api/auth/logout', { method: 'POST', headers: { 'X-ADO-CSRF': '1' } });
+  });
+  await page.goto('/login/');
+  await page.locator('#email-address').fill('qa.manager@ado.test');
+  await page.locator('#password').fill(password);
+  const responsePromise = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/api/auth/login'));
+  await page.locator('form button[type="submit"]').click();
+  const data = await (await responsePromise).json();
+  expect(data.verificationRequired).toBeUndefined();
+  await expect(page).toHaveURL(/\/firm\/?$/);
+  await expect(page.locator('#verification-code')).toHaveCount(0);
+});
 
 for (const actor of actors) {
   test(`${actor.name} critical navigation and pages load without browser or API 5xx errors`, async ({ page }) => {

@@ -19,6 +19,8 @@ promotion remains blocked pending release acceptance and explicit approval.
   authentication are disabled, and root is limited to public-key login.
 - Unknown Host and direct-IP HTTP/TLS requests are rejected by the default Nginx
   server. Only ADO prod, ADO dev, and the default reject site remain enabled.
+- Production Nginx now applies the audited `10r/m` login throttle, HSTS, CSP,
+  permissions, frame, content-type, and referrer headers.
 - Eight legacy OpenBudget/taxi services and the Telegram PM2 app are disabled;
   PM2 startup now contains only ADO prod and dev.
 - Deploy and remote-maintenance scripts now default to the verified Ed25519 key;
@@ -39,8 +41,10 @@ promotion remains blocked pending release acceptance and explicit approval.
 ### Resolved - Production encryption prerequisites
 
 - Production now has stable `CHAT_ENCRYPTION_KEY` and
-  `BACKUP_ENCRYPTION_PASSPHRASE` values with mode-`600` environment storage and
-  an off-server recovery copy. Secret values were not logged.
+  `BACKUP_ENCRYPTION_PASSPHRASE` values with mode-`600` storage and an off-server
+  recovery copy. The backup passphrase is isolated in `/etc/ado-b2b/backup.env`
+  and is absent from the Node application environment file. Secret values were
+  not logged.
 - PM2 production was not restarted and remains on 1.8.0 with zero restarts; the
   chat key becomes active when the approved 1.9.0 release starts.
 - PostgreSQL stayed on 16.15, but package maintenance restarted its service once
@@ -68,6 +72,9 @@ promotion remains blocked pending release acceptance and explicit approval.
 - Release fixture audit: 51/51 checks passed.
 - Kassa five-role workflow: 7/7 checks passed, including open, close, reopen, history, wrong-desk denial, and cleanup.
 - Chromium E2E: 10/10 tests passed across superadmin, admin, firm admin, manager, kassir, and warehouse manager.
+- Pre-cutover exact-source live revalidation passed again: endpoint/RBAC
+  `999/999`, tenant isolation `35/35`, release fixtures `51/51`, Kassa workflow
+  `7/7`, and Chromium `10/10`.
 - Dev application stderr: empty in the inspected tail.
 - Recent dev HTTP status sample: no 5xx responses.
 - Production public smoke: login and all inspected dashboard deep links passed; production PM2 remained online on 1.8.0 with zero restarts.
@@ -78,8 +85,20 @@ promotion remains blocked pending release acceptance and explicit approval.
 - The generated and deployed `/firm/` artifact contains `ADO SYSTEM`, the business-management metadata, the corrected mobile drawer label, and `prefetch: false` navigation behavior.
 - The independent in-app browser plugin had no available browser session, so no additional plugin-driven screenshots were captured. This is a tooling limitation, not a release pass substituted for a failed browser test.
 
+## Production Migration Review
+
+- Generated the live production-to-`1.9.0` Prisma diff and saved it as
+  `dogfood-output/1.9.0/production-migration.sql`.
+- The SQL is additive only: nullable `Employee.loginUserId`, four nullable MFA
+  fields, `User.sessionVersion` with default `0`, one unique index, and one
+  nullable foreign key.
+- No table/column/type/schema drops, truncation, deletes, renames, enum rewrites,
+  or other data-loss operations were generated.
+- Applied the exact SQL to a fresh encrypted production restore: 60 tables
+  restored, business invariants passed, and the post-apply Prisma diff reported
+  zero residual drift. The disposable database was removed.
+
 ## Remaining Production Gates
 
-- Review the production Prisma migration diff for destructive SQL.
 - Manually exercise ticket allocation/sale/cancellation, invite acceptance, login-page content mutation permissions, and Telegram preference changes if those surfaces are included in the production release acceptance scope.
 - Obtain explicit production cutover approval. No production deployment was performed.

@@ -5,13 +5,14 @@ import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { CircleCheck, Eye, Lock, Mail, ShieldCheck, UserCircle, X } from 'lucide-react';
+import { ArrowLeft, CircleCheck, Eye, Lock, Mail, ShieldCheck, UserCircle, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
 import type { AxiosError } from 'axios';
 import { defaultLoginPageContent, normalizeLoginPageContent, resolveLocalizedText, type LoginPageContent } from '@/lib/login-content';
 
 type ApiErrorResponse = { error?: string };
+type VerificationDelivery = { email?: string | null; telegram?: boolean };
 
 function apiErrorMessage(err: unknown): string | undefined {
   return (err as AxiosError<ApiErrorResponse>)?.response?.data?.error;
@@ -20,15 +21,18 @@ function apiErrorMessage(err: unknown): string | undefined {
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [mfaTicket, setMfaTicket] = useState('');
-  const [mfaCode, setMfaCode] = useState('');
-  const [useRecoveryCode, setUseRecoveryCode] = useState(false);
+  const [challengeTicket, setChallengeTicket] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [verificationDelivery, setVerificationDelivery] = useState<VerificationDelivery>({});
+  const [resendAvailableAt, setResendAvailableAt] = useState(0);
+  const [now, setNow] = useState(0);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [content, setContent] = useState<LoginPageContent>(defaultLoginPageContent);
   const router = useRouter();
   const { login, savedAccounts, switchAccount, forgetAccount } = useAuth();
   const { tr, language } = useLanguage();
+  const resendSeconds = Math.max(0, Math.ceil((resendAvailableAt - now) / 1000));
 
   const goToUserHome = (nextUser: { role?: unknown; firmRole?: unknown }) => {
     const role = String(nextUser?.role || '').toLowerCase();
@@ -58,30 +62,34 @@ export default function LoginPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!challengeTicket || resendAvailableAt <= Date.now()) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [challengeTicket, resendAvailableAt]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const res = mfaTicket
-        ? await api.post(useRecoveryCode ? '/auth/mfa/recovery' : '/auth/mfa/verify', {
-          mfaTicket,
-          code: useRecoveryCode ? undefined : mfaCode,
-          recoveryCode: useRecoveryCode ? mfaCode : undefined,
-          sessionTransport: 'cookie',
+      const res = challengeTicket
+        ? await api.post('/auth/device/verify', {
+          challengeTicket,
+          code: verificationCode,
+          deviceName: typeof navigator === 'undefined' ? undefined : navigator.platform,
         })
-        : await api.post('/auth/login', { email, password, sessionTransport: 'cookie' });
-      if (res.data?.mfaRequired && res.data?.mfaTicket) {
-        setMfaTicket(res.data.mfaTicket);
-        setMfaCode('');
-        toast.success(tr('Enter your verification code', 'Tasdiqlash kodini kiriting'));
+        : await api.post('/auth/login', { email, password });
+      if (res.data?.verificationRequired && res.data?.challengeTicket) {
+        setChallengeTicket(res.data.challengeTicket);
+        setVerificationCode('');
+        setVerificationDelivery(res.data.delivery || {});
+        setNow(Date.now());
+        setResendAvailableAt(Date.now() + 60_000);
+        toast.success(tr('Verification code sent', 'Tasdiqlash kodi yuborildi'));
         return;
       }
       const { user } = res.data;
       login(user);
-      if (res.data?.mfaSetupRequired) {
-        router.push('/security/mfa-setup');
-        return;
-      }
       toast.success(tr('Logged in successfully', 'Muvaffaqiyatli kirdik'));
       goToUserHome(user);
     } catch (err: unknown) {
@@ -89,6 +97,31 @@ export default function LoginPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const resendCode = async () => {
+    if (!challengeTicket || resendSeconds > 0 || loading) return;
+    setLoading(true);
+    try {
+      const response = await api.post('/auth/device/resend', { challengeTicket });
+      setChallengeTicket(response.data.challengeTicket);
+      setVerificationCode('');
+      setVerificationDelivery(response.data.delivery || {});
+      setNow(Date.now());
+      setResendAvailableAt(Date.now() + 60_000);
+      toast.success(tr('New code sent', 'Yangi kod yuborildi'));
+    } catch (err: unknown) {
+      toast.error(apiErrorMessage(err) || tr('Could not resend the code', 'Kodni qayta yuborib bo‘lmadi'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const restartLogin = () => {
+    setChallengeTicket('');
+    setVerificationCode('');
+    setVerificationDelivery({});
+    setPassword('');
   };
 
   return (
@@ -160,89 +193,110 @@ export default function LoginPage() {
             <div className="w-full rounded-none border border-[#273142] bg-[#070b15]/72 p-4 shadow-[0_28px_120px_rgba(0,0,0,0.46)] backdrop-blur-xl sm:rounded-[1.375rem] sm:p-10 lg:self-center xl:p-11">
               <div className="mb-6 sm:mb-10">
                 <h2 className="text-2xl font-black tracking-normal text-white sm:text-[2rem]">
-                  {resolveLocalizedText(content.panelTitle, language)}
+                  {challengeTicket ? tr('Verify this device', 'Ushbu qurilmani tasdiqlang') : resolveLocalizedText(content.panelTitle, language)}
                 </h2>
                 <p className="mt-3 text-sm leading-6 text-[#b2b8c5] sm:mt-4 sm:text-base">
-                  {resolveLocalizedText(content.panelSubtitle, language)}
+                  {challengeTicket
+                    ? verificationDelivery.telegram && verificationDelivery.email
+                      ? tr(`We sent a code to ${verificationDelivery.email} and Telegram.`, `Kod ${verificationDelivery.email} va Telegramga yuborildi.`)
+                      : verificationDelivery.telegram
+                        ? tr('We sent a code to your connected Telegram account.', 'Kod ulangan Telegram akkauntingizga yuborildi.')
+                        : tr(`We sent a code to ${verificationDelivery.email || 'your email'}.`, `Kod ${verificationDelivery.email || 'elektron pochtangizga'} yuborildi.`)
+                    : resolveLocalizedText(content.panelSubtitle, language)}
                 </p>
               </div>
 
               <form className="space-y-5" onSubmit={handleSubmit}>
-                <div>
-                  <label className="sr-only" htmlFor="email-address">{resolveLocalizedText(content.emailLabel, language)}</label>
-                  <div className="flex min-h-12 items-center gap-3 rounded-lg border border-[#273142] bg-[#111622]/78 px-4 text-[#a4abb8] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition focus-within:border-[#ff2337] sm:min-h-[72px] sm:gap-4 sm:px-5">
-                    <Mail size={22} />
-                    <input
-                      id="email-address"
-                      name="email"
-                      type="email"
-                      required
-                      className="min-w-0 flex-1 bg-transparent text-base text-white outline-none placeholder:text-[#a4abb8]"
-                      placeholder={content.emailPlaceholder || resolveLocalizedText(content.emailLabel, language)}
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                    />
-                  </div>
-                </div>
+                {!challengeTicket ? (
+                  <>
+                    <div>
+                      <label className="sr-only" htmlFor="email-address">{resolveLocalizedText(content.emailLabel, language)}</label>
+                      <div className="flex min-h-12 items-center gap-3 rounded-lg border border-[#273142] bg-[#111622]/78 px-4 text-[#a4abb8] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition focus-within:border-[#ff2337] sm:min-h-[72px] sm:gap-4 sm:px-5">
+                        <Mail size={22} />
+                        <input
+                          id="email-address"
+                          name="email"
+                          type="email"
+                          autoComplete="username"
+                          required
+                          className="min-w-0 flex-1 bg-transparent text-base text-white outline-none placeholder:text-[#a4abb8]"
+                          placeholder={content.emailPlaceholder || resolveLocalizedText(content.emailLabel, language)}
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                        />
+                      </div>
+                    </div>
 
-                <div>
-                  <label className="sr-only" htmlFor="password">{resolveLocalizedText(content.passwordLabel, language)}</label>
-                  <div className="flex min-h-12 items-center gap-3 rounded-lg border border-[#273142] bg-[#111622]/78 px-4 text-[#a4abb8] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition focus-within:border-[#ff2337] sm:min-h-[72px] sm:gap-4 sm:px-5">
-                    <Lock size={22} />
-                    <input
-                      id="password"
-                      name="password"
-                      type={showPassword ? 'text' : 'password'}
-                      required
-                      className="min-w-0 flex-1 bg-transparent text-base text-white outline-none placeholder:text-[#a4abb8]"
-                      placeholder={content.passwordPlaceholder || resolveLocalizedText(content.passwordLabel, language)}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                    />
-                    <button type="button" onClick={() => setShowPassword((value) => !value)} className="text-[#a4abb8] transition hover:text-white" aria-label={tr('Show password', 'Parolni ko‘rsatish')}>
-                      <Eye size={22} />
-                    </button>
-                  </div>
-                </div>
+                    <div>
+                      <label className="sr-only" htmlFor="password">{resolveLocalizedText(content.passwordLabel, language)}</label>
+                      <div className="flex min-h-12 items-center gap-3 rounded-lg border border-[#273142] bg-[#111622]/78 px-4 text-[#a4abb8] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition focus-within:border-[#ff2337] sm:min-h-[72px] sm:gap-4 sm:px-5">
+                        <Lock size={22} />
+                        <input
+                          id="password"
+                          name="password"
+                          type={showPassword ? 'text' : 'password'}
+                          autoComplete="current-password"
+                          required
+                          className="min-w-0 flex-1 bg-transparent text-base text-white outline-none placeholder:text-[#a4abb8]"
+                          placeholder={content.passwordPlaceholder || resolveLocalizedText(content.passwordLabel, language)}
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                        />
+                        <button type="button" onClick={() => setShowPassword((value) => !value)} className="text-[#a4abb8] transition hover:text-white" aria-label={tr('Show password', 'Parolni ko‘rsatish')}>
+                          <Eye size={22} />
+                        </button>
+                      </div>
+                    </div>
 
-                {mfaTicket && (
+                    <div className="flex justify-end text-sm text-[#aeb4c0]">
+                      <button type="button" className="transition hover:text-white">
+                        {tr('Forgot password?', 'Parolni unutdingizmi?')}
+                      </button>
+                    </div>
+                  </>
+                ) : (
                   <div>
-                    <label className="sr-only" htmlFor="mfa-code">{useRecoveryCode ? tr('Recovery code', 'Tiklash kodi') : tr('MFA code', 'MFA kodi')}</label>
+                    <button type="button" onClick={restartLogin} className="mb-4 inline-flex items-center gap-2 text-sm text-[#aeb4c0] transition hover:text-white">
+                      <ArrowLeft size={17} />
+                      {tr('Use another account', 'Boshqa akkauntdan foydalanish')}
+                    </button>
+                    <label className="sr-only" htmlFor="verification-code">{tr('Verification code', 'Tasdiqlash kodi')}</label>
                     <div className="flex min-h-12 items-center gap-3 rounded-lg border border-[#273142] bg-[#111622]/78 px-4 text-[#a4abb8] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition focus-within:border-[#ff2337] sm:min-h-[72px] sm:gap-4 sm:px-5">
                       <ShieldCheck size={22} />
                       <input
-                        id="mfa-code"
-                        name="mfa-code"
+                        id="verification-code"
+                        name="verification-code"
                         required
-                        className="min-w-0 flex-1 bg-transparent text-base text-white outline-none placeholder:text-[#a4abb8]"
-                        placeholder={useRecoveryCode ? tr('Recovery code', 'Tiklash kodi') : tr('6-digit code', '6 xonali kod')}
-                        value={mfaCode}
-                        onChange={(e) => setMfaCode(e.target.value)}
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        pattern="[0-9]{6}"
+                        maxLength={6}
+                        className="min-w-0 flex-1 bg-transparent text-lg tracking-[0.25em] text-white outline-none placeholder:tracking-normal placeholder:text-[#a4abb8]"
+                        placeholder={tr('6-digit code', '6 xonali kod')}
+                        value={verificationCode}
+                        onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
                       />
                     </div>
-                    <button type="button" onClick={() => setUseRecoveryCode((value) => !value)} className="mt-3 text-sm text-[#aeb4c0] transition hover:text-white">
-                      {useRecoveryCode ? tr('Use authenticator code', 'Authenticator kodidan foydalanish') : tr('Use recovery code', 'Tiklash kodidan foydalanish')}
+                    <button
+                      type="button"
+                      disabled={resendSeconds > 0 || loading}
+                      onClick={resendCode}
+                      className="mt-3 text-sm text-[#aeb4c0] transition hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {resendSeconds > 0
+                        ? tr(`Send again in ${resendSeconds}s`, `${resendSeconds}s dan keyin qayta yuborish`)
+                        : tr('Send code again', 'Kodni qayta yuborish')}
                     </button>
                   </div>
                 )}
 
-                <div className="flex flex-col gap-3 text-sm text-[#aeb4c0] sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-                  <label className="inline-flex items-center gap-3">
-                    <input type="checkbox" className="h-5 w-5 rounded border-[#303a4f] bg-[#101520] accent-[#ff2337]" />
-                    {tr('Remember me', 'Meni eslab qolish')}
-                  </label>
-                  <button type="button" className="transition hover:text-white">
-                    {tr('Forgot password?', 'Parolni unutdingizmi?')}
-                  </button>
-                </div>
-
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || (challengeTicket ? verificationCode.length !== 6 : false)}
                   className="mt-6 flex min-h-12 w-full items-center justify-center gap-3 rounded-lg bg-gradient-to-r from-[#ff142c] to-[#b60919] px-4 text-base font-extrabold text-white shadow-[0_18px_48px_rgba(239,35,60,0.3)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70 sm:mt-8 sm:min-h-[66px]"
                 >
                   <Lock size={22} />
-                  {loading ? resolveLocalizedText(content.submittingLabel, language) : mfaTicket ? tr('Verify', 'Tasdiqlash') : resolveLocalizedText(content.submitLabel, language)}
+                  {loading ? resolveLocalizedText(content.submittingLabel, language) : challengeTicket ? tr('Verify device', 'Qurilmani tasdiqlash') : resolveLocalizedText(content.submitLabel, language)}
                 </button>
               </form>
 

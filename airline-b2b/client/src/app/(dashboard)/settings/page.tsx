@@ -60,7 +60,7 @@ function SettingsSection({ title, description, icon: Icon, open, onToggle, child
 }
 
 export default function SettingsPage() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const { tr, language } = useLanguage();
   const financeValueLabel = (value: string) => ({
     MANAGEMENT_ONLY: tr('Management accounting only', 'Faqat boshqaruv hisobi'),
@@ -80,6 +80,7 @@ export default function SettingsPage() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [forgettingDevice, setForgettingDevice] = useState(false);
   const [firms, setFirms] = useState<Array<{ id: string; name: string; currency?: string; subscriptionEndsAt?: string | null; accountingFramework?: string; accountingPolicyVersion?: string; chartOfAccountsVersion?: string; reportingStartDate?: string | null; fiscalYearStart?: number; timezone?: string }>>([]);
   const [selectedFirmId, setSelectedFirmId] = useState('');
   const [firmCurrency, setFirmCurrency] = useState('UZS');
@@ -103,6 +104,18 @@ export default function SettingsPage() {
   const [budgetDraft, setBudgetDraft] = useState({ expenseCategoryId: '', month: new Date().toISOString().slice(0, 7), amount: '', limitAction: 'WARNING' });
   const [policyDraft, setPolicyDraft] = useState({ accountingFramework: 'MANAGEMENT_ONLY', accountingPolicyVersion: '1', chartOfAccountsVersion: '1', reportingStartDate: '', fiscalYearStart: 1, timezone: 'Asia/Tashkent' });
   const toggleSection = (section: string) => setActiveSection((current) => current === section ? null : section);
+
+  const forgetCurrentDevice = async () => {
+    setForgettingDevice(true);
+    try {
+      await api.post('/auth/device/forget');
+      await logout();
+      toast.success(tr('This device is no longer trusted', 'Bu qurilma endi ishonchli emas'));
+    } catch {
+      toast.error(tr('Could not remove this device', 'Qurilmani olib tashlab bo‘lmadi'));
+      setForgettingDevice(false);
+    }
+  };
 
   const role = String(user?.role || '').toUpperCase();
   const canEditAnyFirm = role === 'SUPERADMIN';
@@ -345,7 +358,6 @@ export default function SettingsPage() {
       await api.post('/auth/change-password', {
         currentPassword,
         newPassword,
-        sessionTransport: 'cookie',
       });
 
       setCurrentPassword('');
@@ -952,7 +964,7 @@ export default function SettingsPage() {
       </div>
       </SettingsSection>
 
-      <SettingsSection title={tr('Security', 'Xavfsizlik')} description={tr('Change your account password.', 'Hisob parolini almashtiring.')} icon={KeyRound} open={activeSection === 'password'} onToggle={() => toggleSection('password')}>
+      <SettingsSection title={tr('Security', 'Xavfsizlik')} description={tr('Manage your password and trusted device.', 'Parol va ishonchli qurilmani boshqaring.')} icon={KeyRound} open={activeSection === 'password'} onToggle={() => toggleSection('password')}>
       <div className="p-1">
         <h3 className="text-lg font-semibold text-foreground mb-4">{tr('Change password', 'Parolni almashtirish')}</h3>
 
@@ -1005,6 +1017,19 @@ export default function SettingsPage() {
             onCancel={() => { setCurrentPassword(''); setNewPassword(''); setConfirmPassword(''); }}
           />
         </form>
+
+        <div className="mt-6 border-t border-border pt-5">
+          <h3 className="text-base font-semibold text-foreground">{tr('Trusted device', 'Ishonchli qurilma')}</h3>
+          <button
+            type="button"
+            disabled={forgettingDevice}
+            onClick={forgetCurrentDevice}
+            className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-lg border border-red-500/30 px-4 text-sm font-semibold text-red-500 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <ShieldCheck size={18} />
+            {forgettingDevice ? tr('Removing...', 'Olib tashlanmoqda...') : tr('Forget this device and sign out', 'Bu qurilmani unutish va chiqish')}
+          </button>
+        </div>
       </div>
       </SettingsSection>
     </div>

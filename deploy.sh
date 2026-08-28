@@ -77,8 +77,8 @@ fi
 if [[ -f "$CREDS_FILE" ]]; then
   file_user=$(awk -F':[[:space:]]*' 'tolower($1) ~ /username|user/ {print $2; exit}' "$CREDS_FILE" || true)
   file_ip=$(awk -F':[[:space:]]*' 'tolower($1) ~ /(^|- )[[:space:]]*ip$|server/ {print $2; exit}' "$CREDS_FILE" || true)
-  [[ -n "${file_user:-}" ]] && REMOTE_USER="$file_user"
-  [[ -n "${file_ip:-}" ]] && REMOTE_SERVER_IP="$file_ip"
+  [[ "$USE_SSH_KEY" != "1" && -n "${file_user:-}" ]] && REMOTE_USER="$file_user"
+  [[ "$USE_SSH_KEY" != "1" && -n "${file_ip:-}" ]] && REMOTE_SERVER_IP="$file_ip"
   if [[ "$USE_SSH_KEY" != "1" && -z "${SSHPASS:-}" ]]; then
     SSHPASS=$(awk -F':[[:space:]]*' 'tolower($1) ~ /password|pass/ {print $2; exit}' "$CREDS_FILE" || true)
     export SSHPASS
@@ -223,9 +223,23 @@ else
 fi
 
 write_var "NODE_ENV"          "production"
+write_var "APP_ENV"           "production"
+write_var "LOGIN_EMAIL_REQUIRED" "1"
 write_var "PORT"              "5000"
 write_var "PUBLIC_WEB_ORIGIN" "https://${DOMAIN}"
 write_var "CORS_ORIGINS"      "https://${DOMAIN}"
+if ! grep -q '^SMTP_HOST=.' "\$ENV_FILE" || ! grep -q '^SMTP_FROM=.' "\$ENV_FILE"; then
+  echo "ERROR: SMTP_HOST and SMTP_FROM are required before production can enable login email verification." >&2
+  exit 1
+fi
+if grep -q '^SMTP_USER=.' "\$ENV_FILE" && ! grep -q '^SMTP_PASS=.' "\$ENV_FILE"; then
+  echo "ERROR: SMTP_PASS is required when SMTP_USER is configured." >&2
+  exit 1
+fi
+if grep -q '^SMTP_PASS=.' "\$ENV_FILE" && ! grep -q '^SMTP_USER=.' "\$ENV_FILE"; then
+  echo "ERROR: SMTP_USER is required when SMTP_PASS is configured." >&2
+  exit 1
+fi
 echo ".env updated"
 REMOTE_ENV
   success "Remote .env updated"

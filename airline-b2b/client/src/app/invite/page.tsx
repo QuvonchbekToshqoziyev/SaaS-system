@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import toast from 'react-hot-toast';
 import type { AxiosError } from 'axios';
-import { useAuth } from '@/contexts/AuthContext';
 import ThemeLanguageSwitcher from '@/components/ui/ThemeLanguageSwitcher';
 import ActionButtons from '@/components/ui/ActionButtons';
 import { MIN_PASSWORD_LENGTH } from '@/lib/password-policy';
@@ -23,7 +22,6 @@ function InviteContent() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
-  const { user: currentUser, login } = useAuth();
   const searchParams = useSearchParams();
   const token = searchParams.get('token') || '';
   const id = searchParams.get('id') || '';
@@ -43,18 +41,9 @@ function InviteContent() {
 
     setLoading(true);
     try {
-      const res = await api.post<AcceptInviteResponse>('/invites/accept', { id, token, password, sessionTransport: currentUser ? 'token' : 'cookie' });
-      const apiUser = res.data?.user;
-
-      if (!currentUser && apiUser) {
-        login(apiUser);
-        toast.success('Hisob faollashtirildi. Tizimga kirdingiz.');
-        const role = String(apiUser.role || '').toLowerCase();
-        router.push(role === 'firm' ? '/firm' : '/admin');
-      } else {
-        toast.success('Hisob yaratildi. Iltimos login qiling.');
-        router.push('/login');
-      }
+      await api.post<AcceptInviteResponse>('/invites/accept', { id, token, password });
+      toast.success('Hisob yaratildi. Iltimos login qiling.');
+      router.push('/login');
     } catch (error: unknown) {
       toast.error(getApiErrorMessage(error) || 'Xatolik yuz berdi');
     } finally {

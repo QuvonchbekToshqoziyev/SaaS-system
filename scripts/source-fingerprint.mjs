@@ -35,6 +35,7 @@ export function sourceFingerprint(scope) {
   const hash = createHash('sha256');
   for (const relativePath of trackedAndUntrackedFiles(scopes)) {
     const absolutePath = path.join(root, relativePath);
+    if (!fs.existsSync(absolutePath)) continue;
     hash.update(relativePath);
     hash.update('\0');
     hash.update(fs.lstatSync(absolutePath).isSymbolicLink() ? fs.readlinkSync(absolutePath) : fs.readFileSync(absolutePath));

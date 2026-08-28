@@ -86,23 +86,18 @@ describe('authenticated account boundary', () => {
     expect(writeNext).toHaveBeenCalledOnce();
   });
 
-  it('blocks platform admins from business APIs until MFA setup is confirmed', async () => {
+  it('allows an active admin session because device verification happens before session issuance', async () => {
     const token = signSessionToken({ userId: 'admin-1', sessionVersion: 1 }, secret);
     db.findUnique.mockResolvedValue({
       id: 'admin-1', email: 'admin@example.com', fullName: 'Admin', phone: null,
       role: 'ADMIN', readOnlyAccess: false, firmRole: 'MANAGER', firmId: null,
-      status: 'ACTIVE', deletedAt: null, sessionVersion: 1, mfaConfirmedAt: null,
+      status: 'ACTIVE', deletedAt: null, sessionVersion: 1,
       firm: null,
     });
-    const request = (path: string) => ({ headers: { authorization: `Bearer ${token}` }, method: 'GET', originalUrl: path } as any);
-
-    const blocked = responseMock();
-    await authMiddleware(request('/firms'), blocked, vi.fn());
-    expect(blocked.status).toHaveBeenCalledWith(403);
-    expect(blocked.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'MFA_SETUP_REQUIRED' }));
+    const request = { headers: { authorization: `Bearer ${token}` }, method: 'GET', originalUrl: '/firms' } as any;
 
     const allowedNext = vi.fn();
-    await authMiddleware(request('/auth/mfa/setup'), responseMock(), allowedNext);
+    await authMiddleware(request, responseMock(), allowedNext);
     expect(allowedNext).toHaveBeenCalledOnce();
   });
 });

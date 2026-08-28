@@ -143,6 +143,19 @@ and the maintained server environment files.
 
 Set a stable, secret `CHAT_ENCRYPTION_KEY` to encrypt new chat messages and attachment metadata at rest. Use a 32-byte random base64 value, keep it backed up in the password manager, and do not rotate or lose it without a migration plan.
 
+Unknown-device sign-in requires SMTP in production. Add the mail provider credentials to the remote server environment before deployment:
+
+```bash
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=<smtp username>
+SMTP_PASS=<smtp password>
+SMTP_FROM="ADO SYSTEM <security@example.com>"
+```
+
+The same six-digit code is also sent to Telegram when that user has connected the company bot. Production deployment stops before restart when `SMTP_HOST` or `SMTP_FROM` is missing, or when only one of `SMTP_USER` and `SMTP_PASS` is configured.
+
 Telegram notifications are optional. Add the existing company bot credentials to the server environment and restart the backend:
 
 ```bash

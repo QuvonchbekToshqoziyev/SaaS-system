@@ -56,7 +56,6 @@ export const authMiddleware = async (req: Request, res: Response, next: NextFunc
         status: true,
         deletedAt: true,
         sessionVersion: true,
-        mfaConfirmedAt: true,
         firm: { select: { kind: true, subscriptionEndsAt: true } },
       },
     });
@@ -75,16 +74,9 @@ export const authMiddleware = async (req: Request, res: Response, next: NextFunc
       firmId: actor.firmId,
       firmKind: actor.firm?.kind || null,
       subscriptionEndsAt: actor.firm?.subscriptionEndsAt || null,
-      mfaConfirmedAt: actor.mfaConfirmedAt,
+      sessionVersion: actor.sessionVersion,
       capabilities: resolveAppCapabilities(actor),
     };
-
-    const path = String(req.originalUrl || '').split('?')[0];
-    const adminNeedsMfaSetup = ['SUPERADMIN', 'ADMIN'].includes(String(actor.role).toUpperCase()) && !actor.mfaConfirmedAt;
-    const mfaSetupAllowedPath = ['/auth/session', '/auth/logout', '/auth/change-password', '/auth/mfa/setup', '/auth/mfa/confirm'].includes(path);
-    if (adminNeedsMfaSetup && !mfaSetupAllowedPath) {
-      return res.status(403).json({ code: 'MFA_SETUP_REQUIRED', error: 'Admin MFA setup is required' });
-    }
 
     if (String(actor.role).toUpperCase() === 'FIRM' && String(actor.firmRole).toUpperCase() === 'OMBOR_MUDIRI' && !warehouseManagerCanAccessPath(req.originalUrl)) {
       return res.status(403).json({ error: 'Ombor mudiri faqat Ombor nazorati va operatsiyalariga kira oladi' });

@@ -7,10 +7,20 @@ import { normalizeFirmUserRole } from '../utils/firm-user-roles';
 import { signSessionToken } from '../utils/session-token';
 import { PASSWORD_LENGTH_ERROR, passwordMeetsPolicy } from '../utils/password-policy';
 import { clearSessionCookie, setSessionCookie } from '../utils/session-cookie';
-import { buildTotpUri, generateRecoveryCodes, generateTotpSecret, signMfaTicket, verifyMfaTicket, verifyTotp } from '../utils/mfa';
-import { decryptChatString, encryptChatString } from '../utils/chat-crypto';
 import { clearLoginFailure, isLoginLocked, recordLoginFailure } from '../utils/login-protection';
 import { resolveAppCapabilities } from '../utils/app-capabilities';
+import {
+  generateLoginVerificationCode, generateTrustedDeviceSecret, hashLoginVerificationCode,
+  hashTrustedDeviceSecret, parseTrustedDeviceCookie, signDeviceVerificationTicket,
+  timingSafeEqual, trustedDeviceCookieValue, verifyDeviceVerificationTicket,
+  verifyLoginVerificationCode,
+} from '../utils/device-verification';
+import {
+  clearTrustedDeviceCookie, readTrustedDeviceCookie, setTrustedDeviceCookie,
+  trustedDeviceMaxAgeMs,
+} from '../utils/trusted-device-cookie';
+import { isLoginEmailConfigured, sendLoginVerificationEmail, warnLoginDeliveryFailure } from '../services/login-verification.service';
+import { isTelegramConfigured, sendTelegramLoginVerificationCode } from '../services/telegram.service';
 
 const adminUserSelect = {
   id: true,
@@ -19,7 +29,6 @@ const adminUserSelect = {
   readOnlyAccess: true,
   firmRole: true,
   status: true,
-  mfaConfirmedAt: true,
   fullName: true,
   phone: true,
   firmId: true,
@@ -78,28 +87,23 @@ async function hasOtherWritableSuperadmin(userId: string) {
   })) > 0;
 }
 
-async function replaceAdminFirmAccess(userId: string, firmIds: string[]) {
+async function replaceAdminFirmAccess(tx: Prisma.TransactionClient, userId: string, firmIds: string[]) {
   const uniqueFirmIds = Array.from(new Set(firmIds.map(String).map((id) => id.trim()).filter(Boolean)));
   const firms = uniqueFirmIds.length
-    ? await prisma.firm.findMany({ where: { id: { in: uniqueFirmIds } }, select: { id: true } })
+    ? await tx.firm.findMany({ where: { id: { in: uniqueFirmIds } }, select: { id: true } })
     : [];
 
   if (firms.length !== uniqueFirmIds.length) {
     throw new Error('One or more firms were not found');
   }
 
-  await prisma.userFirmAccess.deleteMany({ where: { userId } });
+  await tx.userFirmAccess.deleteMany({ where: { userId } });
   if (uniqueFirmIds.length) {
-    await prisma.userFirmAccess.createMany({
+    await tx.userFirmAccess.createMany({
       data: uniqueFirmIds.map((firmId) => ({ userId, firmId })),
       skipDuplicates: true,
     });
   }
-}
-
-function isPlatformAdmin(role: unknown) {
-  const normalized = String(role || '').toUpperCase();
-  return normalized === Role.SUPERADMIN || normalized === Role.ADMIN;
 }
 
 function loginKey(req: Request, email: string) {
@@ -118,23 +122,15 @@ function sessionUser(user: any) {
     firmId: user.firmId,
     firmKind: user.firm?.kind || null,
     subscriptionEndsAt: user.firm?.subscriptionEndsAt || null,
-    mfaConfirmedAt: user.mfaConfirmedAt || null,
     capabilities: resolveAppCapabilities(user),
   };
 }
 
-function decryptedMfaSecret(value: string | null | undefined) {
-  const secret = decryptChatString(value);
-  if (!secret || secret === '[encrypted message unavailable]') return null;
-  return secret;
-}
-
-async function issueSession(res: Response, user: { id: string; sessionVersion: number }, cookieSession: boolean) {
+async function issueSession(res: Response, user: { id: string; sessionVersion: number }) {
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret || !jwtSecret.trim()) throw new Error('Server misconfigured');
   const token = signSessionToken({ userId: user.id, sessionVersion: user.sessionVersion }, jwtSecret);
-  if (cookieSession) setSessionCookie(res, token);
-  return cookieSession ? {} : { token };
+  setSessionCookie(res, token);
 }
 
 async function auditAuth(req: Request, action: string, email: string, ok: boolean, metadata?: unknown) {
@@ -145,6 +141,153 @@ async function auditAuth(req: Request, action: string, email: string, ok: boolea
     summary: `${action} ${ok ? 'succeeded' : 'failed'} for ${email}`,
     metadata,
   });
+}
+
+function requestIp(req: Request) {
+  return String(req.ip || req.socket.remoteAddress || '').slice(0, 128) || null;
+}
+
+function requestUserAgent(req: Request) {
+  return String(req.get('user-agent') || '').slice(0, 500) || null;
+}
+
+function maskEmail(email: string) {
+  const [local, domain] = email.split('@');
+  if (!domain) return '***';
+  const visible = local.slice(0, Math.min(2, local.length));
+  return `${visible}${'*'.repeat(Math.max(3, local.length - visible.length))}@${domain}`;
+}
+
+function qaLoginCode(email: string) {
+  const code = String(process.env.DEV_QA_LOGIN_CODE || '').trim();
+  return process.env.APP_ENV === 'development' && email.toLowerCase().endsWith('@ado.test') && /^\d{6}$/.test(code) ? code : null;
+}
+
+function challengeResponse(challenge: {
+  id: string; userId: string; emailDelivered: boolean; telegramDelivered: boolean;
+  qaDelivery: boolean; expiresAt: Date;
+}, user: { email: string; sessionVersion: number }, jwtSecret: string) {
+  return {
+    verificationRequired: true,
+    challengeTicket: signDeviceVerificationTicket({ challengeId: challenge.id, userId: challenge.userId, sessionVersion: user.sessionVersion }, jwtSecret),
+    delivery: {
+      email: challenge.emailDelivered || challenge.qaDelivery ? maskEmail(user.email) : null,
+      telegram: challenge.telegramDelivered,
+    },
+    expiresAt: challenge.expiresAt,
+  };
+}
+
+async function deliverLoginCode(user: {
+  email: string; telegramChatId: string | null; telegramNotificationsEnabled: boolean;
+}, code: string) {
+  if (qaLoginCode(user.email)) return { emailDelivered: false, telegramDelivered: false, qaDelivery: true };
+  let emailDelivered = false;
+  let telegramDelivered = false;
+  if (isLoginEmailConfigured()) {
+    try {
+      await sendLoginVerificationEmail(user.email, code);
+      emailDelivered = true;
+    } catch (err) {
+      warnLoginDeliveryFailure('email', err);
+    }
+  }
+  if (user.telegramChatId && user.telegramNotificationsEnabled && isTelegramConfigured()) {
+    try {
+      await sendTelegramLoginVerificationCode(user.telegramChatId, code);
+      telegramDelivered = true;
+    } catch (err) {
+      warnLoginDeliveryFailure('telegram', err);
+    }
+  }
+  if (process.env.LOGIN_EMAIL_REQUIRED === '1' && !emailDelivered) throw new Error('Login email delivery failed');
+  if (!emailDelivered && !telegramDelivered) throw new Error('No login verification channel is available');
+  return { emailDelivered, telegramDelivered, qaDelivery: false };
+}
+
+async function createLoginChallenge(req: Request, user: {
+  id: string; email: string; sessionVersion: number; telegramChatId: string | null;
+  telegramNotificationsEnabled: boolean;
+}) {
+  const jwtSecret = String(process.env.JWT_SECRET || '').trim();
+  if (!jwtSecret) throw new Error('Server misconfigured');
+  const activeChallenges = await prisma.loginVerificationChallenge.findMany({
+    where: { userId: user.id, consumedAt: null, expiresAt: { gt: new Date() } },
+    select: { id: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (activeChallenges.length >= 5) {
+    await prisma.loginVerificationChallenge.updateMany({
+      where: { id: { in: activeChallenges.slice(4).map((challenge) => challenge.id) } },
+      data: { consumedAt: new Date() },
+    });
+  }
+  const challenge = await prisma.loginVerificationChallenge.create({
+    data: {
+      userId: user.id, codeHash: '', expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      requestIp: requestIp(req), userAgent: requestUserAgent(req),
+    },
+  });
+  const code = qaLoginCode(user.email) || generateLoginVerificationCode();
+  try {
+    const delivery = await deliverLoginCode(user, code);
+    return prisma.loginVerificationChallenge.update({
+      where: { id: challenge.id },
+      data: { codeHash: hashLoginVerificationCode(challenge.id, code, jwtSecret), ...delivery },
+    });
+  } catch (err) {
+    await prisma.loginVerificationChallenge.delete({ where: { id: challenge.id } }).catch(() => undefined);
+    throw err;
+  }
+}
+
+async function useTrustedDevice(req: Request, res: Response, user: { id: string; sessionVersion: number }) {
+  const parsed = parseTrustedDeviceCookie(readTrustedDeviceCookie(req.headers.cookie));
+  if (!parsed) return false;
+  const device = await prisma.trustedDevice.findUnique({ where: { id: parsed.deviceId } });
+  const valid = device && device.userId === user.id && !device.revokedAt
+    && device.expiresAt > new Date() && device.sessionVersion === user.sessionVersion
+    && timingSafeEqual(hashTrustedDeviceSecret(parsed.secret), device.tokenHash);
+  if (!valid) {
+    clearTrustedDeviceCookie(res);
+    return false;
+  }
+  const nextSecret = generateTrustedDeviceSecret();
+  const rotated = await prisma.trustedDevice.updateMany({
+    where: { id: device.id, tokenHash: device.tokenHash, revokedAt: null },
+    data: { tokenHash: hashTrustedDeviceSecret(nextSecret), lastUsedAt: new Date(), lastIp: requestIp(req), userAgent: requestUserAgent(req) },
+  });
+  if (!rotated.count) {
+    clearTrustedDeviceCookie(res);
+    return false;
+  }
+  setTrustedDeviceCookie(res, trustedDeviceCookieValue(device.id, nextSecret));
+  return true;
+}
+
+async function trustCurrentDevice(req: Request, res: Response, user: { id: string; sessionVersion: number }) {
+  const secret = generateTrustedDeviceSecret();
+  const active = await prisma.trustedDevice.findMany({
+    where: { userId: user.id, revokedAt: null, expiresAt: { gt: new Date() } },
+    select: { id: true }, orderBy: { lastUsedAt: 'desc' },
+  });
+  if (active.length >= 10) {
+    await prisma.trustedDevice.updateMany({ where: { id: { in: active.slice(9).map((device) => device.id) } }, data: { revokedAt: new Date() } });
+  }
+  const device = await prisma.trustedDevice.create({
+    data: {
+      userId: user.id, tokenHash: hashTrustedDeviceSecret(secret), sessionVersion: user.sessionVersion,
+      name: String(req.body?.deviceName || '').trim().slice(0, 120) || null,
+      userAgent: requestUserAgent(req), lastIp: requestIp(req),
+      expiresAt: new Date(Date.now() + trustedDeviceMaxAgeMs()),
+    },
+  });
+  setTrustedDeviceCookie(res, trustedDeviceCookieValue(device.id, secret));
+}
+
+async function revokeTrustedSecurityState(tx: Prisma.TransactionClient, userId: string) {
+  await tx.trustedDevice.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } });
+  await tx.loginVerificationChallenge.updateMany({ where: { userId, consumedAt: null }, data: { consumedAt: new Date() } });
 }
 
 export const login = async (req: Request, res: Response) => {
@@ -199,22 +342,33 @@ export const login = async (req: Request, res: Response) => {
     return res.status(401).json({ error: INVALID_CREDENTIALS });
   }
 
-  const cookieSession = req.body?.sessionTransport === 'cookie';
   clearLoginFailure(key);
-  if (isPlatformAdmin(user.role) && user.mfaConfirmedAt) {
-    await auditAuth(req, 'LOGIN_PASSWORD_OK_MFA_REQUIRED', normalizedEmail, true, { userId: user.id });
-    return res.json({ mfaRequired: true, mfaTicket: signMfaTicket({ userId: user.id, sessionVersion: user.sessionVersion }, jwtSecret) });
+  if (await useTrustedDevice(req, res, user)) {
+    await issueSession(res, user);
+    await auditAuth(req, 'LOGIN_SUCCEEDED', normalizedEmail, true, { userId: user.id, trustedDevice: true });
+    return res.json({ user: sessionUser(user) });
   }
 
-  const transport = await issueSession(res, user, cookieSession);
-  const mfaSetupRequired = isPlatformAdmin(user.role) && !user.mfaConfirmedAt;
-  await auditAuth(req, 'LOGIN_SUCCEEDED', normalizedEmail, true, { userId: user.id, mfaSetupRequired });
-  res.json({ ...transport, mfaSetupRequired, user: sessionUser(user) });
+  try {
+    const challenge = await createLoginChallenge(req, user);
+    clearSessionCookie(res);
+    await auditAuth(req, 'LOGIN_DEVICE_VERIFICATION_REQUIRED', normalizedEmail, true, {
+      userId: user.id,
+      emailDelivered: challenge.emailDelivered,
+      telegramDelivered: challenge.telegramDelivered,
+    });
+    return res.json(challengeResponse(challenge, user, jwtSecret));
+  } catch {
+    await auditAuth(req, 'LOGIN_VERIFICATION_DELIVERY_FAILED', normalizedEmail, false, { userId: user.id });
+    return res.status(503).json({ error: 'Sign-in verification is temporarily unavailable. Contact your administrator.' });
+  }
 };
 
 export const getSession = async (req: Request, res: Response) => {
-  const user = (req as any).user;
-  return res.json({ user });
+  const user = (req as any).user as { id: string; sessionVersion: number; [key: string]: unknown };
+  if (!readTrustedDeviceCookie(req.headers.cookie)) await trustCurrentDevice(req, res, user);
+  const { sessionVersion: _sessionVersion, ...publicUser } = user;
+  return res.json({ user: publicUser });
 };
 
 export const logout = async (_req: Request, res: Response) => {
@@ -246,7 +400,15 @@ export const changePassword = async (req: Request, res: Response) => {
   if (!valid) return res.status(401).json({ error: 'Invalid current password' });
 
   const hashed = await bcrypt.hash(newPassword, 10);
-  const updated = await prisma.user.update({ where: { id: userId }, data: { password: hashed, sessionVersion: { increment: 1 } }, select: { id: true, sessionVersion: true } });
+  const updated = await prisma.$transaction(async (tx) => {
+    const nextUser = await tx.user.update({
+      where: { id: userId },
+      data: { password: hashed, sessionVersion: { increment: 1 } },
+      select: { id: true, sessionVersion: true },
+    });
+    await revokeTrustedSecurityState(tx, userId);
+    return nextUser;
+  });
   await writeAuditLog(req, {
     action: 'UPDATE',
     entityType: 'user',
@@ -258,137 +420,87 @@ export const changePassword = async (req: Request, res: Response) => {
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret || !jwtSecret.trim()) return res.status(500).json({ error: 'Server misconfigured' });
   const token = signSessionToken({ userId, sessionVersion: updated.sessionVersion }, jwtSecret);
-  const cookieSession = req.body?.sessionTransport === 'cookie';
-  if (cookieSession) setSessionCookie(res, token);
-  return res.json({ ok: true, ...(cookieSession ? {} : { token }) });
+  setSessionCookie(res, token);
+  clearTrustedDeviceCookie(res);
+  return res.json({ ok: true });
 };
 
-export const setupMfa = async (req: Request, res: Response) => {
-  const authUser = (req as any).user as { userId?: string; role?: string } | undefined;
-  if (!authUser?.userId || !isPlatformAdmin(authUser.role)) return res.status(403).json({ error: 'Admin account required' });
-
-  const user = await prisma.user.findUnique({ where: { id: authUser.userId }, select: { id: true, email: true, role: true } });
-  if (!user || !isPlatformAdmin(user.role)) return res.status(404).json({ error: 'Admin account not found' });
-
-  const secret = generateTotpSecret();
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { mfaSecret: encryptChatString(secret), mfaConfirmedAt: null, mfaRecoveryCodeHashes: [], mfaRecoveryCodeLastUsedAt: null },
-  });
-  await writeAuditLog(req, { action: 'MFA_SETUP_STARTED', entityType: 'user', entityId: user.id, entityLabel: user.email, summary: `MFA setup started for ${user.email}` });
-  return res.json({ secret, otpauthUri: buildTotpUri(user.email, secret) });
-};
-
-export const confirmMfa = async (req: Request, res: Response) => {
-  const authUser = (req as any).user as { userId?: string; role?: string } | undefined;
-  if (!authUser?.userId || !isPlatformAdmin(authUser.role)) return res.status(403).json({ error: 'Admin account required' });
-
-  const user = await prisma.user.findUnique({
-    where: { id: authUser.userId },
-    include: { firm: { select: { kind: true, subscriptionEndsAt: true } } },
-  });
-  const secret = decryptedMfaSecret(user?.mfaSecret);
-  if (!user || !secret) return res.status(400).json({ error: 'MFA setup is not active' });
-  if (!verifyTotp(secret, req.body?.code)) {
-    await auditAuth(req, 'MFA_CONFIRM_FAILED', user.email, false, { userId: user.id });
-    return res.status(401).json({ error: 'Invalid MFA code' });
-  }
-
-  const recoveryCodes = generateRecoveryCodes();
-  const hashes = await Promise.all(recoveryCodes.map((code) => bcrypt.hash(code, 10)));
-  const updated = await prisma.user.update({
-    where: { id: user.id },
-    data: { mfaConfirmedAt: new Date(), mfaRecoveryCodeHashes: hashes, sessionVersion: { increment: 1 } },
-    include: { firm: { select: { kind: true, subscriptionEndsAt: true } } },
-  });
-  const cookieSession = req.body?.sessionTransport !== 'token';
-  const transport = await issueSession(res, updated, cookieSession);
-  await writeAuditLog(req, { action: 'MFA_ENABLED', entityType: 'user', entityId: user.id, entityLabel: user.email, summary: `MFA enabled for ${user.email}` });
-  return res.json({ ...transport, user: sessionUser(updated), recoveryCodes });
-};
-
-export const verifyMfaLogin = async (req: Request, res: Response) => {
-  const jwtSecret = process.env.JWT_SECRET;
-  if (!jwtSecret || !jwtSecret.trim()) return res.status(500).json({ error: 'Server misconfigured' });
+export const verifyDeviceLogin = async (req: Request, res: Response) => {
+  const jwtSecret = String(process.env.JWT_SECRET || '').trim();
+  if (!jwtSecret) return res.status(500).json({ error: 'Server misconfigured' });
+  let ticket;
   try {
-    const ticket = verifyMfaTicket(String(req.body?.mfaTicket || ''), jwtSecret);
-    const user = await prisma.user.findUnique({
-      where: { id: ticket.userId },
-      include: { firm: { select: { kind: true, subscriptionEndsAt: true } } },
-    });
-    const secret = decryptedMfaSecret(user?.mfaSecret);
-    if (!user || user.status !== 'ACTIVE' || user.deletedAt || user.sessionVersion !== ticket.sessionVersion || !user.mfaConfirmedAt || !secret) throw new Error('Invalid MFA session');
-    if (!verifyTotp(secret, req.body?.code)) {
-      await auditAuth(req, 'MFA_LOGIN_FAILED', user.email, false, { userId: user.id });
-      return res.status(401).json({ error: 'Invalid MFA code' });
-    }
-    const cookieSession = req.body?.sessionTransport === 'cookie';
-    const transport = await issueSession(res, user, cookieSession);
-    await auditAuth(req, 'MFA_LOGIN_SUCCEEDED', user.email, true, { userId: user.id });
-    return res.json({ ...transport, user: sessionUser(user) });
+    ticket = verifyDeviceVerificationTicket(String(req.body?.challengeTicket || ''), jwtSecret);
   } catch {
-    return res.status(401).json({ error: 'Invalid MFA session' });
+    return res.status(401).json({ error: 'Invalid or expired verification session' });
   }
+  const challenge = await prisma.loginVerificationChallenge.findUnique({
+    where: { id: ticket.challengeId },
+    include: { user: { include: { firm: { select: { kind: true, subscriptionEndsAt: true } } } } },
+  });
+  const user = challenge?.user;
+  if (!challenge || !user || challenge.userId !== ticket.userId || challenge.consumedAt
+    || challenge.expiresAt <= new Date() || user.status !== 'ACTIVE' || user.deletedAt
+    || user.sessionVersion !== ticket.sessionVersion) {
+    return res.status(401).json({ error: 'Invalid or expired verification session' });
+  }
+  if (challenge.attempts >= 5) return res.status(429).json({ error: 'Too many verification attempts. Sign in again.' });
+  if (!verifyLoginVerificationCode(challenge.id, req.body?.code, challenge.codeHash, jwtSecret)) {
+    await prisma.loginVerificationChallenge.updateMany({ where: { id: challenge.id, consumedAt: null }, data: { attempts: { increment: 1 } } });
+    await auditAuth(req, 'LOGIN_DEVICE_VERIFICATION_FAILED', user.email, false, { userId: user.id, challengeId: challenge.id });
+    return res.status(401).json({ error: 'Invalid verification code' });
+  }
+  const consumed = await prisma.loginVerificationChallenge.updateMany({
+    where: { id: challenge.id, consumedAt: null, attempts: { lt: 5 }, expiresAt: { gt: new Date() } },
+    data: { consumedAt: new Date() },
+  });
+  if (!consumed.count) return res.status(401).json({ error: 'Invalid or expired verification session' });
+  await trustCurrentDevice(req, res, user);
+  await issueSession(res, user);
+  await auditAuth(req, 'LOGIN_SUCCEEDED', user.email, true, { userId: user.id, newTrustedDevice: true });
+  return res.json({ user: sessionUser(user) });
 };
 
-export const recoverMfaLogin = async (req: Request, res: Response) => {
-  const jwtSecret = process.env.JWT_SECRET;
-  if (!jwtSecret || !jwtSecret.trim()) return res.status(500).json({ error: 'Server misconfigured' });
+export const resendDeviceLoginCode = async (req: Request, res: Response) => {
+  const jwtSecret = String(process.env.JWT_SECRET || '').trim();
+  if (!jwtSecret) return res.status(500).json({ error: 'Server misconfigured' });
+  let ticket;
   try {
-    const ticket = verifyMfaTicket(String(req.body?.mfaTicket || ''), jwtSecret);
-    const user = await prisma.user.findUnique({
-      where: { id: ticket.userId },
-      include: { firm: { select: { kind: true, subscriptionEndsAt: true } } },
-    });
-    if (!user || user.status !== 'ACTIVE' || user.deletedAt || user.sessionVersion !== ticket.sessionVersion || !user.mfaConfirmedAt) throw new Error('Invalid MFA session');
-    const code = String(req.body?.recoveryCode || '').trim().toUpperCase();
-    let usedIndex = -1;
-    for (let i = 0; i < user.mfaRecoveryCodeHashes.length; i += 1) {
-      if (await bcrypt.compare(code, user.mfaRecoveryCodeHashes[i])) {
-        usedIndex = i;
-        break;
-      }
-    }
-    if (usedIndex < 0) {
-      await auditAuth(req, 'MFA_RECOVERY_FAILED', user.email, false, { userId: user.id });
-      return res.status(401).json({ error: 'Invalid recovery code' });
-    }
-    const nextHashes = user.mfaRecoveryCodeHashes.filter((_, index) => index !== usedIndex);
-    const updated = await prisma.user.update({
-      where: { id: user.id },
-      data: { mfaRecoveryCodeHashes: nextHashes, mfaRecoveryCodeLastUsedAt: new Date() },
-      include: { firm: { select: { kind: true, subscriptionEndsAt: true } } },
-    });
-    const cookieSession = req.body?.sessionTransport === 'cookie';
-    const transport = await issueSession(res, updated, cookieSession);
-    await auditAuth(req, 'MFA_RECOVERY_SUCCEEDED', user.email, true, { userId: user.id });
-    return res.json({ ...transport, user: sessionUser(updated) });
+    ticket = verifyDeviceVerificationTicket(String(req.body?.challengeTicket || ''), jwtSecret);
   } catch {
-    return res.status(401).json({ error: 'Invalid MFA session' });
+    return res.status(401).json({ error: 'Invalid or expired verification session' });
+  }
+  const challenge = await prisma.loginVerificationChallenge.findUnique({ where: { id: ticket.challengeId }, include: { user: true } });
+  const user = challenge?.user;
+  if (!challenge || !user || challenge.consumedAt || challenge.expiresAt <= new Date()
+    || user.status !== 'ACTIVE' || user.deletedAt || user.sessionVersion !== ticket.sessionVersion) {
+    return res.status(401).json({ error: 'Invalid or expired verification session' });
+  }
+  const retryAfterSeconds = Math.max(0, 60 - Math.floor((Date.now() - challenge.sentAt.getTime()) / 1000));
+  if (retryAfterSeconds > 0) return res.status(429).json({ error: 'Wait before requesting another code', retryAfterSeconds });
+  try {
+    const nextChallenge = await createLoginChallenge(req, user);
+    await prisma.loginVerificationChallenge.update({ where: { id: challenge.id }, data: { consumedAt: new Date() } });
+    await auditAuth(req, 'LOGIN_DEVICE_VERIFICATION_RESENT', user.email, true, { userId: user.id });
+    return res.json(challengeResponse(nextChallenge, user, jwtSecret));
+  } catch {
+    await auditAuth(req, 'LOGIN_VERIFICATION_DELIVERY_FAILED', user.email, false, { userId: user.id });
+    return res.status(503).json({ error: 'Sign-in verification is temporarily unavailable. Contact your administrator.' });
   }
 };
 
-export const disableMfa = async (req: Request, res: Response) => {
-  const authUser = (req as any).user as { userId?: string; role?: string } | undefined;
+export const forgetTrustedDevice = async (req: Request, res: Response) => {
+  const authUser = (req as any).user as { userId?: string } | undefined;
   if (!authUser?.userId) return res.status(401).json({ error: 'Unauthorized' });
-  const targetUserId = String(req.body?.userId || authUser.userId);
-  const isSelf = targetUserId === authUser.userId;
-  if (!isSelf && String(authUser.role).toUpperCase() !== Role.SUPERADMIN) return res.status(403).json({ error: 'Superadmin required' });
-
-  const user = await prisma.user.findUnique({ where: { id: targetUserId } });
-  if (!user || !isPlatformAdmin(user.role)) return res.status(404).json({ error: 'Admin account not found' });
-  if (isSelf) {
-    const validPassword = typeof req.body?.password === 'string' && await bcrypt.compare(req.body.password, user.password);
-    const secret = decryptedMfaSecret(user.mfaSecret);
-    const validCode = secret && verifyTotp(secret, req.body?.code);
-    if (!validPassword || !validCode) return res.status(401).json({ error: 'Password and MFA code are required' });
+  const parsed = parseTrustedDeviceCookie(readTrustedDeviceCookie(req.headers.cookie));
+  if (parsed) {
+    await prisma.trustedDevice.updateMany({ where: { id: parsed.deviceId, userId: authUser.userId, revokedAt: null }, data: { revokedAt: new Date() } });
   }
-
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { mfaSecret: null, mfaConfirmedAt: null, mfaRecoveryCodeHashes: [], mfaRecoveryCodeLastUsedAt: null, sessionVersion: { increment: 1 } },
+  clearTrustedDeviceCookie(res);
+  await writeAuditLog(req, {
+    action: 'TRUSTED_DEVICE_FORGOTTEN', entityType: 'user', entityId: authUser.userId,
+    summary: 'Removed trust from the current device',
   });
-  await writeAuditLog(req, { action: 'MFA_DISABLED', entityType: 'user', entityId: user.id, entityLabel: user.email, summary: `MFA disabled for ${user.email}` });
   return res.json({ ok: true });
 };
 
@@ -526,17 +638,22 @@ export const updateAdmin = async (req: Request, res: Response) => {
 
   try {
     const data: Prisma.UserUpdateInput = { role: nextRole, readOnlyAccess: nextReadOnlyAccess };
-    if (typeof req.body?.email === 'string' && req.body.email.trim()) data.email = req.body.email.trim().toLowerCase();
+    const nextEmail = typeof req.body?.email === 'string' && req.body.email.trim() ? req.body.email.trim().toLowerCase() : existing.email;
+    const securityChanged = nextRole !== existing.role || nextReadOnlyAccess !== existing.readOnlyAccess
+      || nextEmail !== existing.email.toLowerCase() || (typeof req.body?.password === 'string' && Boolean(req.body.password))
+      || Array.isArray(req.body?.firmIds);
+    if (nextEmail !== existing.email.toLowerCase()) data.email = nextEmail;
     if (typeof req.body?.fullName === 'string') data.fullName = req.body.fullName.trim() || null;
     if (typeof req.body?.phone === 'string') data.phone = req.body.phone.trim() || null;
     if (typeof req.body?.password === 'string' && req.body.password) {
       if (!passwordMeetsPolicy(req.body.password)) return res.status(400).json({ error: PASSWORD_LENGTH_ERROR });
       data.password = await bcrypt.hash(req.body.password, 10);
-      data.sessionVersion = { increment: 1 };
     }
+    if (securityChanged) data.sessionVersion = { increment: 1 };
 
     await prisma.$transaction(async (tx) => {
       await tx.user.update({ where: { id: userId }, data });
+      if (securityChanged) await revokeTrustedSecurityState(tx, userId);
       if (Array.isArray(req.body?.firmIds)) {
         const firmIds: string[] = nextRole === Role.ADMIN ? req.body.firmIds.map(String) : [];
         const uniqueFirmIds = Array.from(new Set(firmIds.map((id) => id.trim()).filter(Boolean)));
@@ -591,6 +708,7 @@ export const deleteAdmin = async (req: Request, res: Response) => {
 
     const deleted = await prisma.$transaction(async (tx) => {
       await tx.userFirmAccess.deleteMany({ where: { userId } });
+      await revokeTrustedSecurityState(tx, userId);
       return tx.user.update({
         where: { id: userId },
         data: {
@@ -598,6 +716,7 @@ export const deleteAdmin = async (req: Request, res: Response) => {
           deletedAt: new Date(),
           deletedByUserId: actorUserId,
           deleteReason: typeof req.body?.reason === 'string' ? req.body.reason.trim() || null : null,
+          sessionVersion: { increment: 1 },
         },
         select: adminUserSelect,
       });
@@ -641,7 +760,11 @@ export const updateUser = async (req: Request, res: Response) => {
 
   try {
     const data: Prisma.UserUpdateInput = { role: nextRole, readOnlyAccess: nextReadOnlyAccess };
-    if (typeof req.body?.email === 'string' && req.body.email.trim()) data.email = req.body.email.trim().toLowerCase();
+    const nextEmail = typeof req.body?.email === 'string' && req.body.email.trim() ? req.body.email.trim().toLowerCase() : existing.email;
+    const securityChanged = nextRole !== existing.role || nextReadOnlyAccess !== existing.readOnlyAccess
+      || nextEmail !== existing.email.toLowerCase() || (typeof req.body?.password === 'string' && Boolean(req.body.password))
+      || req.body?.firmId !== undefined || req.body?.firmRole !== undefined || Array.isArray(req.body?.firmIds);
+    if (nextEmail !== existing.email.toLowerCase()) data.email = nextEmail;
     if (typeof req.body?.fullName === 'string') data.fullName = req.body.fullName.trim() || null;
     if (typeof req.body?.phone === 'string') data.phone = req.body.phone.trim() || null;
     if (nextRole === Role.FIRM) {
@@ -650,8 +773,8 @@ export const updateUser = async (req: Request, res: Response) => {
     if (typeof req.body?.password === 'string' && req.body.password) {
       if (!passwordMeetsPolicy(req.body.password)) return res.status(400).json({ error: PASSWORD_LENGTH_ERROR });
       data.password = await bcrypt.hash(req.body.password, 10);
-      data.sessionVersion = { increment: 1 };
     }
+    if (securityChanged) data.sessionVersion = { increment: 1 };
 
     if (req.body?.firmId !== undefined) {
       const firmId = typeof req.body.firmId === 'string' && req.body.firmId.trim() ? req.body.firmId.trim() : null;
@@ -683,6 +806,7 @@ export const updateUser = async (req: Request, res: Response) => {
 
     await prisma.$transaction(async (tx) => {
       await tx.user.update({ where: { id: userId }, data });
+      if (securityChanged) await revokeTrustedSecurityState(tx, userId);
 
       if (Array.isArray(req.body?.firmIds)) {
         const firmIds: string[] = nextRole === Role.ADMIN ? req.body.firmIds.map(String) : [];
@@ -741,6 +865,7 @@ export const deleteUser = async (req: Request, res: Response) => {
   try {
     const deleted = await prisma.$transaction(async (tx) => {
       await tx.userFirmAccess.deleteMany({ where: { userId } });
+      await revokeTrustedSecurityState(tx, userId);
       return tx.user.update({
         where: { id: userId },
         data: {
@@ -748,6 +873,7 @@ export const deleteUser = async (req: Request, res: Response) => {
           deletedAt: new Date(),
           deletedByUserId: actorUserId,
           deleteReason: typeof req.body?.reason === 'string' ? req.body.reason.trim() || null : null,
+          sessionVersion: { increment: 1 },
         },
         select: adminUserSelect,
       });
@@ -780,7 +906,11 @@ export const setUserFirmAccess = async (req: Request, res: Response) => {
 
   try {
     const before = await prisma.user.findUnique({ where: { id: userId }, select: adminUserSelect });
-    await replaceAdminFirmAccess(userId, firmIds);
+    await prisma.$transaction(async (tx) => {
+      await replaceAdminFirmAccess(tx, userId, firmIds);
+      await tx.user.update({ where: { id: userId }, data: { sessionVersion: { increment: 1 } } });
+      await revokeTrustedSecurityState(tx, userId);
+    });
     const updated = await prisma.user.findUnique({
       where: { id: userId },
       select: adminUserSelect,
